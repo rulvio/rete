@@ -3,16 +3,11 @@ defmodule Rete do
   Documentation for `Rete`.
   """
 
-  @doc """
-  Hello world.
+  def get_rule_data(modules) do
+    Enum.flat_map(modules, & &1.get_rule_data())
+  end
 
-  ## Examples
-
-      iex> Rete.hello()
-      :world
-
-  """
-  def hello do
-    :world
+  def get_taxo_data(modules) do
+    Enum.flat_map(modules, & &1.get_taxo_data())
   end
 end
