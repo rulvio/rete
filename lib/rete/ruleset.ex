@@ -4,11 +4,11 @@ defmodule Rete.Ruleset do
   end
 
   defmodule TypeExprNode do
-    defstruct [:type, :bind, :expr]
+    defstruct [:fact, :type, :bind, :expr]
   end
 
   defmodule IntoExprNode do
-    defstruct [:type, :bind, :expr, :into]
+    defstruct [:into, :type, :bind, :expr]
   end
 
   defmodule RuleNode do
@@ -53,52 +53,81 @@ defmodule Rete.Ruleset do
 
   defp parse_bind_expr(fact_expr, bind) do
     bind_expr = {:%{}, [], Map.to_list(bind)}
-    expr_key = strip_meta(fact_expr)
 
-    quote do
-      {unquote(Macro.escape(expr_key)),
-       :erlang.term_to_binary(fn
-         unquote(fact_expr) -> unquote(bind_expr)
-         _ -> nil
-       end)}
-    end
+    expr_fn =
+      quote do: fn
+              unquote(fact_expr) -> unquote(bind_expr)
+              _ -> nil
+            end
+
+    expr_key = Macro.escape(strip_meta(expr_fn))
+    expr_data = quote do: :erlang.term_to_binary(unquote(expr_fn))
+    {expr_key, expr_data}
+  end
+
+  defp parse_bind_expr(fact_expr, test_expr, bind) do
+    bind_expr = {:%{}, [], Map.to_list(bind)}
+
+    expr_fn =
+      quote do: fn
+              unquote(fact_expr) ->
+                if unquote(test_expr) do
+                  unquote(bind_expr)
+                else
+                  nil
+                end
+
+              _ ->
+                nil
+            end
+
+    expr_key = Macro.escape(strip_meta(expr_fn))
+    expr_data = quote do: :erlang.term_to_binary(unquote(expr_fn))
+    {expr_key, expr_data}
   end
 
   defp parse_test_expr(test_expr, bind) do
     bind_expr = {:%{}, [], Map.to_list(bind)}
-    expr_key = strip_meta(test_expr)
 
-    quote do
-      {unquote(Macro.escape(expr_key)),
-       :erlang.term_to_binary(fn
-         unquote(bind_expr) -> unquote(test_expr)
-         _ -> nil
-       end)}
-    end
+    expr_fn =
+      quote do: fn
+              unquote(bind_expr) -> unquote(test_expr)
+              _ -> nil
+            end
+
+    expr_key = Macro.escape(strip_meta(expr_fn))
+    expr_data = quote do: :erlang.term_to_binary(unquote(expr_fn))
+    {expr_key, expr_data}
   end
 
   defp parse_lhs(lhs_expr) do
     case lhs_expr do
-      match_expr = {fact_type, fact_args} ->
-        bind = parse_bind(match_expr)
-        expr = parse_bind_expr(match_expr, bind)
-        %{type: fact_type, args: fact_args, bind: bind, expr: expr, meta: []}
+      {:when, _, [lhs_expr = {_, _}, lhs_test]} ->
+        lhs = parse_lhs(lhs_expr)
+        expr = parse_bind_expr(lhs.ast, lhs_test, lhs.bind)
+        Map.put(lhs, :expr, expr)
 
-      [match_expr = {fact_type, fact_args}] ->
-        bind = parse_bind(match_expr)
-        expr = parse_bind_expr(match_expr, bind)
-        %{type: fact_type, args: fact_args, bind: bind, expr: expr, meta: [], into: :_}
+      {:when, _, [lhs_expr = {:=, _, [_, {_, _}]}, lhs_test]} ->
+        lhs = parse_lhs(lhs_expr)
+        expr = parse_bind_expr(lhs.ast, lhs_test, lhs.bind)
+        Map.put(lhs, :expr, expr)
 
-      match_expr = {:=, meta, [_, {fact_type, fact_args}]} ->
-        bind = parse_bind(match_expr)
-        expr = parse_bind_expr(match_expr, bind)
-        %{type: fact_type, args: fact_args, bind: bind, expr: expr, meta: meta}
+      bind_expr = {type, args} ->
+        bind = parse_bind(bind_expr)
+        expr = parse_bind_expr(bind_expr, bind)
+        %{ast: bind_expr, fact: :_, type: type, args: args, bind: bind, expr: expr}
 
-      {:=, meta, [into, [match_expr = {fact_type, fact_args}]]} ->
-        {into_var, _, _} = into
-        bind = parse_bind(match_expr)
-        expr = parse_bind_expr(match_expr, bind)
-        %{type: fact_type, args: fact_args, bind: bind, expr: expr, meta: meta, into: into_var}
+      [lhs_expr = {:when, _, [{_, _}, _]}] ->
+        parse_lhs(lhs_expr)
+        |> Map.put(:into, :_)
+
+      [lhs_expr = {_, _}] ->
+        parse_lhs(lhs_expr)
+        |> Map.put(:into, :_)
+
+      {:=, _, [{bind, _, nil}, bind_expr]} when is_atom(bind) ->
+        lhs = parse_lhs(bind_expr)
+        if Map.get(lhs, :into), do: Map.put(lhs, :into, bind), else: Map.put(lhs, :fact, bind)
     end
   end
 
@@ -111,7 +140,7 @@ defmodule Rete.Ruleset do
 
   defp parse_rule(rule_hash, rule_decl, rule_body, rule_attr) do
     case rule_decl do
-      {:when, meta, [rule_decl, rule_test]} ->
+      {:when, _, [rule_decl, rule_test]} ->
         bind = parse_bind(rule_test)
         expr = parse_test_expr(rule_test, bind)
 
@@ -120,11 +149,11 @@ defmodule Rete.Ruleset do
           :lhs,
           [],
           &Enum.concat(&1, [
-            %{test: true, bind: bind, expr: expr, meta: meta}
+            %{bind: bind, expr: expr}
           ])
         )
 
-      {rule_name, meta, rule_args} ->
+      {rule_name, _, rule_args} ->
         {rule_opts, rule_lhs} = parse_args(rule_args)
 
         Map.merge(
@@ -135,8 +164,7 @@ defmodule Rete.Ruleset do
             opts: rule_opts,
             bind: parse_bind(rule_lhs),
             lhs: Enum.map(rule_lhs, &parse_lhs/1),
-            rhs: rule_body,
-            meta: meta
+            rhs: rule_body
           }
         )
     end
@@ -163,12 +191,12 @@ defmodule Rete.Ruleset do
                node_ast = {:%{}, [], [type: type, bind: Map.keys(bind), expr: expr, into: into]}
                {:%, [], [struct_alias, node_ast]}
 
-             %{type: type, bind: bind, expr: expr} ->
+             %{fact: fact, type: type, bind: bind, expr: expr} ->
                struct_alias = {:__aliases__, [alias: false], [:Rete, :Ruleset, :TypeExprNode]}
-               node_ast = {:%{}, [], [type: type, bind: Map.keys(bind), expr: expr]}
+               node_ast = {:%{}, [], [fact: fact, type: type, bind: Map.keys(bind), expr: expr]}
                {:%, [], [struct_alias, node_ast]}
 
-             %{test: true, bind: bind, expr: expr} ->
+             %{bind: bind, expr: expr} ->
                struct_alias = {:__aliases__, [alias: false], [:Rete, :Ruleset, :TestExprNode]}
                node_ast = {:%{}, [], [bind: Map.keys(bind), expr: expr]}
                {:%, [], [struct_alias, node_ast]}
@@ -178,12 +206,11 @@ defmodule Rete.Ruleset do
   end
 
   defmacro defrule(rule_decl, rule_body \\ nil) do
-    {_, rule_meta, _} = rule_decl
     rule_hash = :erlang.phash2([rule_decl, rule_body])
     rule = parse_rule(rule_hash, rule_decl, rule_body, %{type: :rule})
     %{name: rule_name, bind: rule_bind} = rule
     rule_args = [rule_hash, {:%{}, [], Map.to_list(rule_bind)}]
-    rule_head = {rule_name, rule_meta, rule_args}
+    rule_head = {rule_name, [], rule_args}
     rule_data = parse_rule_data(rule)
 
     quote do

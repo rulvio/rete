@@ -17,12 +17,13 @@ defmodule ReteTest do
     id1 = 1
 
     defrule foo_rule(
+              %{salience: 100},
               {:foo, id = ^id1},
-              bar = {:bar, id},
+              bar = {:bar, id} when id > 0,
               {:foo, id},
               [{:bar, id}],
               foo = {:foo, id},
-              bars = [{:bar, id}]
+              bars = [{:bar, id} when id > 0]
             )
             when id > 0 do
       [id, foo, bar, bars]
@@ -42,13 +43,12 @@ defmodule ReteTest do
     id1 = 1
 
     defrule bar_rule(
-              %{salience: 100},
               {:foo, id = ^id1},
-              bar = {:bar, id},
+              bar = {:bar, id} when id > 0,
               {:foo, id},
-              [{:bar, id}],
-              foo = {:foo, id},
-              bars = [{:bar, id}]
+              [{:bar, id} when id > 0],
+              foo = {:foo, %{id: id}},
+              bars = [{:bar, id: id}]
             )
             when id > 0 do
       [id, foo, bar, bars]
@@ -70,7 +70,7 @@ defmodule ReteTest do
       rule
       |> Map.get(:lhs)
       |> Enum.map(fn cond ->
-        {expr, expr_data} = Map.get(cond, :expr)
+        {_, expr_data} = Map.get(cond, :expr)
         :erlang.binary_to_term(expr_data)
       end)
 
@@ -78,13 +78,44 @@ defmodule ReteTest do
 
     assert %{id: 1} == bind1.({:foo, 1})
     assert nil == bind1.({:foo, 0})
-    assert %{id: 1, bar: {:bar, 1}} == bind2.({:bar, 1})
+    assert %{id: 1} == bind2.({:bar, 1})
+    assert nil == bind2.({:bar, 0})
     assert %{id: 1} == bind3.({:foo, 1})
     assert %{id: 1} == bind4.({:bar, 1})
-    assert %{id: 1, foo: {:foo, 1}} == bind5.({:foo, 1})
+    assert %{id: 1} == bind5.({:foo, 1})
     assert %{id: 1} == bind6.({:bar, 1})
+    assert nil == bind6.({:bar, 0})
     assert true == test1.(%{id: 1})
     assert false == test1.(%{id: 0})
+  end
+
+  test "create foo rule with lhs and rhs parsed data" do
+    [rule | _] = ReteTest.ExampleFooRuleset.get_rule_data()
+
+    rhs =
+      rule
+      |> Map.get(:rhs)
+
+    expected_rhs = &ReteTest.ExampleFooRuleset.foo_rule/2
+    assert expected_rhs == rhs
+
+    assert :foo_rule == Map.get(rule, :name)
+    assert [salience: 100] == Map.get(rule, :opts)
+    assert [:id, :foo, :bar, :bars] == Map.get(rule, :bind)
+    assert is_integer(Map.get(rule, :hash))
+
+    lhs =
+      rule
+      |> Map.get(:lhs)
+
+    [bind1 | [bind2 | [bind3 | [bind4 | [bind5 | [bind6 | [test1 | _]]]]]]] = lhs
+    assert %{type: :foo, fact: :_, bind: [:id]} == Map.take(bind1, [:type, :fact, :bind])
+    assert %{type: :bar, fact: :bar, bind: [:id]} == Map.take(bind2, [:type, :fact, :bind])
+    assert %{type: :foo, fact: :_, bind: [:id]} == Map.take(bind3, [:type, :fact, :bind])
+    assert %{type: :bar, bind: [:id], into: :_} == Map.take(bind4, [:type, :bind, :into])
+    assert %{type: :foo, fact: :foo, bind: [:id]} == Map.take(bind5, [:type, :fact, :bind])
+    assert %{type: :bar, into: :bars, bind: [:id]} == Map.take(bind6, [:type, :bind, :into])
+    assert %{bind: [:id]} == Map.take(test1, [:bind])
   end
 
   test "creates taxonomy from single module" do
