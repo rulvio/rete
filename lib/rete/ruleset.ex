@@ -12,7 +12,7 @@ defmodule Rete.Ruleset do
   end
 
   defmodule RuleNode do
-    defstruct [:name, :hash, :opts, :bind, :lhs, :rhs]
+    defstruct [:name, :type, :hash, :opts, :bind, :lhs, :rhs]
   end
 
   @moduledoc """
@@ -102,6 +102,11 @@ defmodule Rete.Ruleset do
 
   defp parse_lhs(lhs_expr) do
     case lhs_expr do
+      bind_expr = {type, args} ->
+        bind = parse_bind(bind_expr)
+        expr = parse_bind_expr(bind_expr, bind)
+        %{ast: bind_expr, fact: :_, type: type, args: args, bind: bind, expr: expr}
+
       {:when, _, [lhs_expr = {_, _}, lhs_test]} ->
         lhs = parse_lhs(lhs_expr)
         expr = parse_bind_expr(lhs.ast, lhs_test, lhs.bind)
@@ -111,11 +116,6 @@ defmodule Rete.Ruleset do
         lhs = parse_lhs(lhs_expr)
         expr = parse_bind_expr(lhs.ast, lhs_test, lhs.bind)
         Map.put(lhs, :expr, expr)
-
-      bind_expr = {type, args} ->
-        bind = parse_bind(bind_expr)
-        expr = parse_bind_expr(bind_expr, bind)
-        %{ast: bind_expr, fact: :_, type: type, args: args, bind: bind, expr: expr}
 
       [lhs_expr = {:when, _, [{_, _}, _]}] ->
         parse_lhs(lhs_expr)
@@ -138,13 +138,13 @@ defmodule Rete.Ruleset do
     end
   end
 
-  defp parse_rule(rule_hash, rule_decl, rule_body, rule_attr) do
+  defp parse_rule(rule_hash, rule_decl, rule_body) do
     case rule_decl do
       {:when, _, [rule_decl, rule_test]} ->
         bind = parse_bind(rule_test)
         expr = parse_test_expr(rule_test, bind)
 
-        parse_rule(rule_hash, rule_decl, rule_body, rule_attr)
+        parse_rule(rule_hash, rule_decl, rule_body)
         |> Map.update(
           :lhs,
           [],
@@ -156,32 +156,33 @@ defmodule Rete.Ruleset do
       {rule_name, _, rule_args} ->
         {rule_opts, rule_lhs} = parse_args(rule_args)
 
-        Map.merge(
-          rule_attr,
-          %{
-            name: rule_name,
-            hash: rule_hash,
-            opts: rule_opts,
-            bind: parse_bind(rule_lhs),
-            lhs: Enum.map(rule_lhs, &parse_lhs/1),
-            rhs: rule_body
-          }
-        )
+        %{
+          name: rule_name,
+          hash: rule_hash,
+          opts: rule_opts,
+          bind: parse_bind(rule_lhs),
+          lhs: Enum.map(rule_lhs, &parse_lhs/1),
+          rhs: rule_body
+        }
     end
   end
 
-  def parse_rule_data(%{
-        name: rule_name,
-        hash: rule_hash,
-        opts: rule_opts,
-        bind: rule_bind,
-        lhs: rule_lhs
-      }) do
+  def parse_rule_data(
+        %{
+          name: rule_name,
+          hash: rule_hash,
+          opts: rule_opts,
+          bind: rule_bind,
+          lhs: rule_lhs
+        },
+        type: rule_type
+      ) do
     {:%{}, [],
      [
        name: rule_name,
        hash: rule_hash,
        opts: rule_opts,
+       type: rule_type,
        bind: Map.keys(rule_bind),
        lhs:
          for cond <- rule_lhs do
@@ -205,13 +206,13 @@ defmodule Rete.Ruleset do
      ]}
   end
 
-  defmacro defrule(rule_decl, rule_body \\ nil) do
+  defp defproduction(rule_decl, rule_body, rule_attr) do
     rule_hash = :erlang.phash2([rule_decl, rule_body])
-    rule = parse_rule(rule_hash, rule_decl, rule_body, %{type: :rule})
+    rule = parse_rule(rule_hash, rule_decl, rule_body)
     %{name: rule_name, bind: rule_bind} = rule
     rule_args = [rule_hash, {:%{}, [], Map.to_list(rule_bind)}]
     rule_head = {rule_name, [], rule_args}
-    rule_data = parse_rule_data(rule)
+    rule_data = parse_rule_data(rule, rule_attr)
 
     quote do
       @rule_data Enum.concat(
@@ -226,6 +227,14 @@ defmodule Rete.Ruleset do
                  )
       Kernel.def(unquote(rule_head), unquote(rule_body))
     end
+  end
+
+  defmacro defrule(rule_decl, rule_body \\ nil) do
+    defproduction(rule_decl, rule_body, type: :rule)
+  end
+
+  defmacro defquery(rule_decl, rule_body \\ nil) do
+    defproduction(rule_decl, rule_body, type: :query)
   end
 
   @doc """
