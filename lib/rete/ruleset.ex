@@ -174,16 +174,16 @@ defmodule Rete.Ruleset do
     end
   end
 
-  def escape_rule(
-        %{
-          name: rule_name,
-          hash: rule_hash,
-          opts: rule_opts,
-          bind: rule_bind,
-          lhs: rule_lhs
-        },
-        type: rule_type
-      ) do
+  defp escape_rule(
+         %{
+           name: rule_name,
+           hash: rule_hash,
+           opts: rule_opts,
+           bind: rule_bind,
+           lhs: rule_lhs
+         },
+         type: rule_type
+       ) do
     {:%{}, [],
      [
        name: rule_name,
@@ -226,6 +226,7 @@ defmodule Rete.Ruleset do
     )
   end
 
+  @doc false
   def rule_data(module, rule = %{name: rule_name, lhs: rule_lhs}) do
     rule_lhs =
       Enum.map(
@@ -258,10 +259,14 @@ defmodule Rete.Ruleset do
     end
   end
 
+  @doc """
+  """
   defmacro defrule(rule_decl, rule_body \\ nil) do
     defproduction(rule_decl, rule_body, type: :rule)
   end
 
+  @doc """
+  """
   defmacro defquery(rule_decl, rule_body \\ nil) do
     defproduction(rule_decl, rule_body, type: :query)
   end
