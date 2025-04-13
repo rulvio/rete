@@ -31,8 +31,9 @@ defmodule Rete.Ruleset do
     end
   end
 
-  defp strip_meta(expr) do
+  defp expr_key(expr) do
     Macro.postwalk(expr, &Macro.update_meta(&1, fn _ -> [] end))
+    |> Macro.escape()
   end
 
   defp parse_bind(expr) do
@@ -55,12 +56,14 @@ defmodule Rete.Ruleset do
     bind_expr = {:%{}, [], Map.to_list(bind)}
 
     expr_fn =
-      quote do: fn
-              unquote(fact_expr) -> unquote(bind_expr)
-              _ -> nil
-            end
+      quote do
+        fn
+          unquote(fact_expr) -> unquote(bind_expr)
+          _ -> nil
+        end
+      end
 
-    expr_key = Macro.escape(strip_meta(expr_fn))
+    expr_key = expr_key(expr_fn)
     expr_data = quote do: :erlang.term_to_binary(unquote(expr_fn))
     {expr_key, expr_data}
   end
@@ -69,19 +72,21 @@ defmodule Rete.Ruleset do
     bind_expr = {:%{}, [], Map.to_list(bind)}
 
     expr_fn =
-      quote do: fn
-              unquote(fact_expr) ->
-                if unquote(test_expr) do
-                  unquote(bind_expr)
-                else
-                  nil
-                end
-
-              _ ->
-                nil
+      quote do
+        fn
+          unquote(fact_expr) ->
+            if unquote(test_expr) do
+              unquote(bind_expr)
+            else
+              nil
             end
 
-    expr_key = Macro.escape(strip_meta(expr_fn))
+          _ ->
+            nil
+        end
+      end
+
+    expr_key = expr_key(expr_fn)
     expr_data = quote do: :erlang.term_to_binary(unquote(expr_fn))
     {expr_key, expr_data}
   end
@@ -90,12 +95,14 @@ defmodule Rete.Ruleset do
     bind_expr = {:%{}, [], Map.to_list(bind)}
 
     expr_fn =
-      quote do: fn
-              unquote(bind_expr) -> unquote(test_expr)
-              _ -> nil
-            end
+      quote do
+        fn
+          unquote(bind_expr) -> unquote(test_expr)
+          _ -> nil
+        end
+      end
 
-    expr_key = Macro.escape(strip_meta(expr_fn))
+    expr_key = expr_key(expr_fn)
     expr_data = quote do: :erlang.term_to_binary(unquote(expr_fn))
     {expr_key, expr_data}
   end
@@ -167,7 +174,7 @@ defmodule Rete.Ruleset do
     end
   end
 
-  def parse_rule_data(
+  def escape_rule(
         %{
           name: rule_name,
           hash: rule_hash,
@@ -206,25 +213,47 @@ defmodule Rete.Ruleset do
      ]}
   end
 
+  defp qualify_pinned(ast, module) do
+    Macro.prewalk(
+      ast,
+      fn
+        {:^, [], [{pinned, [], nil}]} when is_atom(pinned) ->
+          {:^, [], [{pinned, [], module}]}
+
+        expr ->
+          expr
+      end
+    )
+  end
+
+  def rule_data(module, rule = %{name: rule_name, lhs: rule_lhs}) do
+    rule_lhs =
+      Enum.map(
+        rule_lhs,
+        &Map.update(&1, :expr, nil, fn
+          {expr_key, expr_data} ->
+            {qualify_pinned(expr_key, module), expr_data}
+        end)
+      )
+
+    rule_rhs = Function.capture(module, rule_name, 2)
+
+    struct(
+      Rete.Ruleset.RuleNode,
+      Map.merge(rule, %{lhs: rule_lhs, rhs: rule_rhs})
+    )
+  end
+
   defp defproduction(rule_decl, rule_body, rule_attr) do
     rule_hash = :erlang.phash2([rule_decl, rule_body])
     rule = parse_rule(rule_hash, rule_decl, rule_body)
     %{name: rule_name, bind: rule_bind} = rule
     rule_args = [rule_hash, {:%{}, [], Map.to_list(rule_bind)}]
     rule_head = {rule_name, [], rule_args}
-    rule_data = parse_rule_data(rule, rule_attr)
+    rule_ast = escape_rule(rule, rule_attr)
 
     quote do
-      @rule_data Enum.concat(
-                   @rule_data,
-                   [
-                     struct(
-                       Rete.Ruleset.RuleNode,
-                       unquote(rule_data)
-                       |> Map.put(:rhs, &(__MODULE__.unquote(rule_name) / 2))
-                     )
-                   ]
-                 )
+      @rule_data @rule_data ++ [rule_data(__MODULE__, unquote(rule_ast))]
       Kernel.def(unquote(rule_head), unquote(rule_body))
     end
   end

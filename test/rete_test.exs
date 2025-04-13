@@ -11,7 +11,6 @@ defmodule ReteTest do
     derive(:mammal, :plant)
     derive(:animal, :living_thing)
     derive(:plant, :living_thing)
-    # remove plant from mammal
     underive(:mammal, :plant)
 
     id1 = 1
