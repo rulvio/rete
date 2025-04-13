@@ -56,7 +56,7 @@ defmodule ReteTest do
 
   doctest Rete
 
-  test "create foo rule with lhs and rhs bindings and output" do
+  test "verify foo rule with lhs and rhs bindings and output" do
     [rule | _] = ReteTest.ExampleFooRuleset.get_rule_data()
 
     rhs =
@@ -88,7 +88,7 @@ defmodule ReteTest do
     assert false == test1.(%{id: 0})
   end
 
-  test "create foo rule with lhs and rhs parsed data" do
+  test "verify foo rule with lhs and rhs parsed data" do
     [rule | _] = ReteTest.ExampleFooRuleset.get_rule_data()
 
     rhs =
@@ -118,7 +118,7 @@ defmodule ReteTest do
     assert %{bind: [:id]} == Map.take(test1, [:bind])
   end
 
-  test "create bar query with lhs and rhs bindings and output" do
+  test "verify bar query with lhs and rhs bindings and output" do
     [rule | _] = ReteTest.ExampleBarRuleset.get_rule_data()
 
     rhs =
@@ -150,7 +150,7 @@ defmodule ReteTest do
     assert false == test1.(%{id: 0})
   end
 
-  test "create bar query with lhs and rhs parsed data" do
+  test "verify bar query with lhs and rhs parsed data" do
     [rule | _] = ReteTest.ExampleBarRuleset.get_rule_data()
 
     rhs =
@@ -180,7 +180,7 @@ defmodule ReteTest do
     assert %{bind: [:id]} == Map.take(test1, [:bind])
   end
 
-  test "creates taxonomy from single module" do
+  test "get taxonomy data from single module" do
     assert [
              {:derive, :dog, :mammal},
              {:derive, :cat, :mammal},
@@ -192,13 +192,13 @@ defmodule ReteTest do
            ] == Rete.get_taxo_data([ExampleFooRuleset])
   end
 
-  test "creates ruleset from single module" do
+  test "get rule data from single module" do
     assert [:foo_rule] ==
              Rete.get_rule_data([ExampleFooRuleset])
              |> Enum.map(&Map.get(&1, :name))
   end
 
-  test "creates taxonomy from combined modules" do
+  test "get taxonomy data from combined modules" do
     assert [
              {:derive, :dog, :mammal},
              {:derive, :cat, :mammal},
@@ -216,7 +216,7 @@ defmodule ReteTest do
            ] == Rete.get_taxo_data([ExampleFooRuleset, ExampleBarRuleset])
   end
 
-  test "creates ruleset from combined modules" do
+  test "get rule data from combined modules" do
     assert [:foo_rule, :bar_query] ==
              Rete.get_rule_data([ExampleFooRuleset, ExampleBarRuleset])
              |> Enum.map(&Map.get(&1, :name))

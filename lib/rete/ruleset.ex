@@ -290,6 +290,21 @@ defmodule Rete.Ruleset do
   @doc false
   defmacro __before_compile__(_env) do
     quote do
+      def get_expr_data do
+        Enum.flat_map(
+          @rule_data,
+          fn
+            %{lhs: lhs} ->
+              Enum.map(
+                lhs,
+                fn
+                  %{expr: expr} -> expr
+                end
+              )
+          end
+        )
+      end
+
       def get_rule_data do
         @rule_data
       end
