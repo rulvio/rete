@@ -109,12 +109,12 @@ defmodule ReteTest do
       |> Map.get(:lhs)
 
     [bind1 | [bind2 | [bind3 | [bind4 | [bind5 | [bind6 | [test1 | _]]]]]]] = lhs
-    assert %{type: :foo, fact: :_, bind: [:id]} == Map.take(bind1, [:type, :fact, :bind])
-    assert %{type: :bar, fact: :bar, bind: [:id]} == Map.take(bind2, [:type, :fact, :bind])
-    assert %{type: :foo, fact: :_, bind: [:id]} == Map.take(bind3, [:type, :fact, :bind])
-    assert %{type: :bar, bind: [:id], into: :_} == Map.take(bind4, [:type, :bind, :into])
-    assert %{type: :foo, fact: :foo, bind: [:id]} == Map.take(bind5, [:type, :fact, :bind])
-    assert %{type: :bar, into: :bars, bind: [:id]} == Map.take(bind6, [:type, :bind, :into])
+    assert %{fact: :_, type: :foo, bind: [:id]} == Map.take(bind1, [:type, :fact, :bind])
+    assert %{fact: :bar, type: :bar, bind: [:id]} == Map.take(bind2, [:type, :fact, :bind])
+    assert %{fact: :_, type: :foo, bind: [:id]} == Map.take(bind3, [:type, :fact, :bind])
+    assert %{coll: :_, type: :bar, bind: [:id]} == Map.take(bind4, [:type, :bind, :coll])
+    assert %{fact: :foo, type: :foo, bind: [:id]} == Map.take(bind5, [:type, :fact, :bind])
+    assert %{coll: :bars, type: :bar, bind: [:id]} == Map.take(bind6, [:type, :bind, :coll])
     assert %{bind: [:id]} == Map.take(test1, [:bind])
   end
 
@@ -171,12 +171,12 @@ defmodule ReteTest do
       |> Map.get(:lhs)
 
     [bind1 | [bind2 | [bind3 | [bind4 | [bind5 | [bind6 | [test1 | _]]]]]]] = lhs
-    assert %{type: :foo, fact: :_, bind: [:id]} == Map.take(bind1, [:type, :fact, :bind])
-    assert %{type: :bar, fact: :bar, bind: [:id]} == Map.take(bind2, [:type, :fact, :bind])
-    assert %{type: :foo, fact: :_, bind: [:id]} == Map.take(bind3, [:type, :fact, :bind])
-    assert %{type: :bar, bind: [:id], into: :_} == Map.take(bind4, [:type, :bind, :into])
+    assert %{fact: :_, type: :foo, bind: [:id]} == Map.take(bind1, [:type, :fact, :bind])
+    assert %{fact: :bar, type: :bar, bind: [:id]} == Map.take(bind2, [:type, :fact, :bind])
+    assert %{fact: :_, type: :foo, bind: [:id]} == Map.take(bind3, [:type, :fact, :bind])
+    assert %{coll: :_, type: :bar, bind: [:id]} == Map.take(bind4, [:type, :bind, :coll])
     assert %{type: :foo, fact: :foo, bind: [:id]} == Map.take(bind5, [:type, :fact, :bind])
-    assert %{type: :bar, into: :bars, bind: [:id]} == Map.take(bind6, [:type, :bind, :into])
+    assert %{coll: :bars, type: :bar, bind: [:id]} == Map.take(bind6, [:type, :bind, :coll])
     assert %{bind: [:id]} == Map.take(test1, [:bind])
   end
 

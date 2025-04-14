@@ -1,17 +1,17 @@
 defmodule Rete.Ruleset do
-  defmodule TestExprNode do
+  defmodule BindTestExprNode do
     defstruct [:bind, :expr]
   end
 
-  defmodule TypeExprNode do
+  defmodule FactTypeExprNode do
     defstruct [:fact, :type, :bind, :expr]
   end
 
-  defmodule IntoExprNode do
-    defstruct [:into, :type, :bind, :expr]
+  defmodule CollTypeExprNode do
+    defstruct [:coll, :type, :bind, :expr]
   end
 
-  defmodule RuleNode do
+  defmodule ProductionNode do
     defstruct [:name, :type, :hash, :opts, :bind, :lhs, :rhs]
   end
 
@@ -126,15 +126,15 @@ defmodule Rete.Ruleset do
 
       [lhs_expr = {:when, _, [{_, _}, _]}] ->
         parse_lhs(lhs_expr)
-        |> Map.put(:into, :_)
+        |> Map.put(:coll, :_)
 
       [lhs_expr = {_, _}] ->
         parse_lhs(lhs_expr)
-        |> Map.put(:into, :_)
+        |> Map.put(:coll, :_)
 
       {:=, _, [{bind, _, nil}, bind_expr]} when is_atom(bind) ->
         lhs = parse_lhs(bind_expr)
-        if Map.get(lhs, :into), do: Map.put(lhs, :into, bind), else: Map.put(lhs, :fact, bind)
+        if Map.get(lhs, :coll), do: Map.put(lhs, :coll, bind), else: Map.put(lhs, :fact, bind)
     end
   end
 
@@ -194,18 +194,18 @@ defmodule Rete.Ruleset do
        lhs:
          for cond <- rule_lhs do
            case cond do
-             %{type: type, bind: bind, expr: expr, into: into} ->
-               struct_alias = {:__aliases__, [alias: false], [:Rete, :Ruleset, :IntoExprNode]}
-               node_ast = {:%{}, [], [type: type, bind: Map.keys(bind), expr: expr, into: into]}
+             %{coll: coll, type: type, bind: bind, expr: expr} ->
+               struct_alias = {:__aliases__, [alias: false], [:Rete, :Ruleset, :CollTypeExprNode]}
+               node_ast = {:%{}, [], [coll: coll, type: type, bind: Map.keys(bind), expr: expr]}
                {:%, [], [struct_alias, node_ast]}
 
              %{fact: fact, type: type, bind: bind, expr: expr} ->
-               struct_alias = {:__aliases__, [alias: false], [:Rete, :Ruleset, :TypeExprNode]}
+               struct_alias = {:__aliases__, [alias: false], [:Rete, :Ruleset, :FactTypeExprNode]}
                node_ast = {:%{}, [], [fact: fact, type: type, bind: Map.keys(bind), expr: expr]}
                {:%, [], [struct_alias, node_ast]}
 
              %{bind: bind, expr: expr} ->
-               struct_alias = {:__aliases__, [alias: false], [:Rete, :Ruleset, :TestExprNode]}
+               struct_alias = {:__aliases__, [alias: false], [:Rete, :Ruleset, :BindTestExprNode]}
                node_ast = {:%{}, [], [bind: Map.keys(bind), expr: expr]}
                {:%, [], [struct_alias, node_ast]}
            end
@@ -240,7 +240,7 @@ defmodule Rete.Ruleset do
     rule_rhs = Function.capture(module, rule_name, 2)
 
     struct(
-      Rete.Ruleset.RuleNode,
+      Rete.Ruleset.ProductionNode,
       Map.merge(rule, %{lhs: rule_lhs, rhs: rule_rhs})
     )
   end
