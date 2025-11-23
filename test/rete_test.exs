@@ -57,7 +57,7 @@ defmodule ReteTest do
   doctest Rete
 
   test "verify foo rule with lhs and rhs bindings and output" do
-    [rule | _] = ReteTest.ExampleFooRuleset.get_rule_data()
+    [rule] = ReteTest.ExampleFooRuleset.get_rule_data()
 
     rhs =
       rule
@@ -73,7 +73,7 @@ defmodule ReteTest do
         :erlang.binary_to_term(expr_data)
       end)
 
-    [bind1 | [bind2 | [bind3 | [bind4 | [bind5 | [bind6 | [test1 | _]]]]]]] = lhs_expr
+    [bind1 | [bind2 | [bind3 | [bind4 | [bind5 | [bind6 | [test1]]]]]]] = lhs_expr
 
     assert %{id: 1} == bind1.({:foo, 1})
     assert nil == bind1.({:foo, 0})
@@ -89,7 +89,7 @@ defmodule ReteTest do
   end
 
   test "verify foo rule with lhs and rhs parsed data" do
-    [rule | _] = ReteTest.ExampleFooRuleset.get_rule_data()
+    [rule] = ReteTest.ExampleFooRuleset.get_rule_data()
 
     rhs =
       rule
@@ -108,7 +108,7 @@ defmodule ReteTest do
       rule
       |> Map.get(:lhs)
 
-    [bind1 | [bind2 | [bind3 | [bind4 | [bind5 | [bind6 | [test1 | _]]]]]]] = lhs
+    [bind1 | [bind2 | [bind3 | [bind4 | [bind5 | [bind6 | [test1]]]]]]] = lhs
     assert %{fact: :_, type: :foo, bind: [:id]} == Map.take(bind1, [:type, :fact, :bind])
     assert %{fact: :bar, type: :bar, bind: [:id]} == Map.take(bind2, [:type, :fact, :bind])
     assert %{fact: :_, type: :foo, bind: [:id]} == Map.take(bind3, [:type, :fact, :bind])
@@ -119,7 +119,7 @@ defmodule ReteTest do
   end
 
   test "verify bar query with lhs and rhs bindings and output" do
-    [rule | _] = ReteTest.ExampleBarRuleset.get_rule_data()
+    [rule] = ReteTest.ExampleBarRuleset.get_rule_data()
 
     rhs =
       rule
@@ -135,7 +135,7 @@ defmodule ReteTest do
         :erlang.binary_to_term(expr_data)
       end)
 
-    [bind1 | [bind2 | [bind3 | [bind4 | [bind5 | [bind6 | [test1 | _]]]]]]] = lhs_expr
+    [bind1 | [bind2 | [bind3 | [bind4 | [bind5 | [bind6 | [test1]]]]]]] = lhs_expr
 
     assert %{id: 1} == bind1.({:foo, 1})
     assert nil == bind1.({:foo, 0})
@@ -151,7 +151,7 @@ defmodule ReteTest do
   end
 
   test "verify bar query with lhs and rhs parsed data" do
-    [rule | _] = ReteTest.ExampleBarRuleset.get_rule_data()
+    [rule] = ReteTest.ExampleBarRuleset.get_rule_data()
 
     rhs =
       rule
@@ -170,7 +170,7 @@ defmodule ReteTest do
       rule
       |> Map.get(:lhs)
 
-    [bind1 | [bind2 | [bind3 | [bind4 | [bind5 | [bind6 | [test1 | _]]]]]]] = lhs
+    [bind1 | [bind2 | [bind3 | [bind4 | [bind5 | [bind6 | [test1]]]]]]] = lhs
     assert %{fact: :_, type: :foo, bind: [:id]} == Map.take(bind1, [:type, :fact, :bind])
     assert %{fact: :bar, type: :bar, bind: [:id]} == Map.take(bind2, [:type, :fact, :bind])
     assert %{fact: :_, type: :foo, bind: [:id]} == Map.take(bind3, [:type, :fact, :bind])
