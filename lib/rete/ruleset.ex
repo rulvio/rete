@@ -312,6 +312,11 @@ defmodule Rete.Ruleset do
       def get_taxo_data do
         @taxo_data
       end
+
+      @version :erlang.phash2([__MODULE__, @rule_data, @taxo_data])
+      def get_version do
+        @version
+      end
     end
   end
 end

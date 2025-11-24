@@ -56,6 +56,24 @@ defmodule ReteTest do
 
   doctest Rete
 
+  test "verify version" do
+    assert ReteTest.ExampleFooRuleset.get_version() ==
+             :erlang.phash2([
+               ReteTest.ExampleFooRuleset,
+               ReteTest.ExampleFooRuleset.get_rule_data(),
+               ReteTest.ExampleFooRuleset.get_taxo_data()
+             ])
+
+    assert ReteTest.ExampleBarRuleset.get_version() ==
+             :erlang.phash2([
+               ReteTest.ExampleBarRuleset,
+               ReteTest.ExampleBarRuleset.get_rule_data(),
+               ReteTest.ExampleBarRuleset.get_taxo_data()
+             ])
+
+    assert ReteTest.ExampleFooRuleset.get_version() != ReteTest.ExampleBarRuleset.get_version()
+  end
+
   test "verify foo rule with lhs and rhs bindings and output" do
     [rule] = ReteTest.ExampleFooRuleset.get_rule_data()
 
