@@ -47,25 +47,12 @@ defmodule Rete.Ruleset do
     end
   end
 
-  # Creates a standardized expression form for given arguments and body.
-  # This form is used for hashing and identification of unique expressions.
-  defp expr_form(args, body) do
-    expr_fn =
-      quote do
-        fn
-          unquote(args) -> unquote(body)
-          _ -> nil
-        end
-      end
-
-    Macro.postwalk(expr_fn, &Macro.update_meta(&1, fn _ -> [] end))
-    |> Macro.escape()
-  end
-
   # Generates a unique identifier for an expression based on its type, arguments, body, and bindings.
   # Returns a hash value representing the expression.
   defp expr_hash(args, body) do
-    expr_form(args, body)
+    {args, body}
+    |> Macro.postwalk(&Macro.update_meta(&1, fn _ -> [] end))
+    |> Macro.escape()
     |> :erlang.term_to_binary()
     |> :erlang.phash2()
   end
@@ -102,7 +89,7 @@ defmodule Rete.Ruleset do
   end
 
   # Parses a binding expression without an associated test expression.
-  # Returns a map containing the expression name, form, arguments, and body.
+  # Returns a map containing the expression name, id, arguments, and body.
   defp parse_bind_expr(fact_expr, fact_bind) do
     {fact_type, args_expr} = parse_args_expr(fact_expr)
     bind_keys = Map.keys(fact_bind) |> Enum.sort()
@@ -116,7 +103,7 @@ defmodule Rete.Ruleset do
   end
 
   # Parses a binding expression with an associated test expression.
-  # Returns a map containing the expression name, form, arguments, and body.
+  # Returns a map containing the expression name, id, arguments, and body.
   defp parse_bind_expr(fact_expr, test_expr, fact_bind) do
     {fact_type, args_expr} = parse_args_expr(fact_expr)
     bind_keys = Map.keys(fact_bind) |> Enum.sort()
@@ -136,7 +123,7 @@ defmodule Rete.Ruleset do
   end
 
   # Parses a test expression with associated bindings.
-  # Returns a map containing the expression name, form, arguments, and body.
+  # Returns a map containing the expression name, id, arguments, and body.
   defp parse_test_expr(test_expr, test_bind) do
     bind_expr = {:%{}, [], Map.to_list(test_bind)}
     bind_keys = Map.keys(test_bind) |> Enum.sort()
