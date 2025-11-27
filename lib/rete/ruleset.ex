@@ -31,8 +31,16 @@ defmodule Rete.Ruleset do
     end
   end
 
-  defp expr_key(expr) do
-    Macro.postwalk(expr, &Macro.update_meta(&1, fn _ -> [] end))
+  defp expr_form(args, body) do
+    expr_fn =
+      quote do
+        fn
+          unquote(args) -> unquote(body)
+          _ -> nil
+        end
+      end
+
+    Macro.postwalk(expr_fn, &Macro.update_meta(&1, fn _ -> [] end))
     |> Macro.escape()
   end
 
@@ -52,76 +60,78 @@ defmodule Rete.Ruleset do
     bind
   end
 
-  defp parse_bind_expr(fact_expr, bind) do
+  defp parse_bind_expr(fact_type, fact_expr, bind) do
     bind_expr = {:%{}, [], Map.to_list(bind)}
 
-    expr_fn =
-      quote do
-        fn
-          unquote(fact_expr) -> unquote(bind_expr)
-          _ -> nil
-        end
-      end
+    expr_form = expr_form(fact_expr, bind_expr)
+    expr_hash = :erlang.phash2(expr_form)
+    expr_name_str = "__bind_" <> to_string(fact_type) <> "_" <> to_string(expr_hash) <> "__"
+    expr_name = String.to_atom(expr_name_str)
 
-    expr_key = expr_key(expr_fn)
-    expr_data = quote do: :erlang.term_to_binary(unquote(expr_fn))
-    {expr_key, expr_data}
+    %{
+      name: expr_name,
+      form: expr_form,
+      args: fact_expr,
+      body: bind_expr
+    }
   end
 
-  defp parse_bind_expr(fact_expr, test_expr, bind) do
+  defp parse_bind_expr(fact_type, fact_expr, test_expr, bind) do
     bind_expr = {:%{}, [], Map.to_list(bind)}
 
-    expr_fn =
+    body_expr =
       quote do
-        fn
-          unquote(fact_expr) ->
-            if unquote(test_expr) do
-              unquote(bind_expr)
-            else
-              nil
-            end
-
-          _ ->
-            nil
+        if unquote(test_expr) do
+          unquote(bind_expr)
+        else
+          nil
         end
       end
 
-    expr_key = expr_key(expr_fn)
-    expr_data = quote do: :erlang.term_to_binary(unquote(expr_fn))
-    {expr_key, expr_data}
+    expr_form = expr_form(fact_expr, body_expr)
+    expr_hash = :erlang.phash2(expr_form)
+    expr_name_str = "__test_bind_" <> to_string(fact_type) <> "_" <> to_string(expr_hash) <> "__"
+    expr_name = String.to_atom(expr_name_str)
+
+    %{
+      name: expr_name,
+      form: expr_form,
+      args: fact_expr,
+      body: body_expr
+    }
   end
 
   defp parse_test_expr(test_expr, bind) do
     bind_expr = {:%{}, [], Map.to_list(bind)}
 
-    expr_fn =
-      quote do
-        fn
-          unquote(bind_expr) -> unquote(test_expr)
-          _ -> nil
-        end
-      end
+    expr_form = expr_form(bind_expr, test_expr)
+    expr_hash = :erlang.phash2(expr_form)
+    expr_name_str = "__test_" <> to_string(expr_hash) <> "__"
+    expr_name = String.to_atom(expr_name_str)
 
-    expr_key = expr_key(expr_fn)
-    expr_data = quote do: :erlang.term_to_binary(unquote(expr_fn))
-    {expr_key, expr_data}
+    %{
+      name: expr_name,
+      form: expr_form,
+      args: bind_expr,
+      body: test_expr
+    }
   end
 
   defp parse_lhs(lhs_expr) do
     case lhs_expr do
       bind_expr = {type, args} ->
         bind = parse_bind(bind_expr)
-        expr = parse_bind_expr(bind_expr, bind)
+        expr = parse_bind_expr(type, bind_expr, bind)
         %{ast: bind_expr, fact: :_, type: type, args: args, bind: bind, expr: expr}
 
       {:when, _, [lhs_expr = {_, _}, lhs_test]} ->
         lhs = parse_lhs(lhs_expr)
-        expr = parse_bind_expr(lhs.ast, lhs_test, lhs.bind)
+        expr = parse_bind_expr(lhs.type, lhs.ast, lhs_test, lhs.bind)
         Map.put(lhs, :expr, expr)
 
       {:when, _, [lhs_expr = {:=, _, [_, {_, _}]}, lhs_test]} ->
         lhs = parse_lhs(lhs_expr)
-        expr = parse_bind_expr(lhs.ast, lhs_test, lhs.bind)
+        expr = parse_bind_expr(lhs.type, lhs.ast, lhs_test, lhs.bind)
         Map.put(lhs, :expr, expr)
 
       [lhs_expr = {:when, _, [{_, _}, _]}] ->
@@ -196,29 +206,35 @@ defmodule Rete.Ruleset do
            case cond do
              %{coll: coll, type: type, bind: bind, expr: expr} ->
                struct_alias = {:__aliases__, [alias: false], [:Rete, :Ruleset, :CollTypeExprNode]}
-               node_ast = {:%{}, [], [coll: coll, type: type, bind: Map.keys(bind), expr: expr]}
+               node_expr = {expr.form, expr.name}
+               bind_keys = Map.keys(bind)
+               node_ast = {:%{}, [], [coll: coll, type: type, bind: bind_keys, expr: node_expr]}
                {:%, [], [struct_alias, node_ast]}
 
              %{fact: fact, type: type, bind: bind, expr: expr} ->
                struct_alias = {:__aliases__, [alias: false], [:Rete, :Ruleset, :FactTypeExprNode]}
-               node_ast = {:%{}, [], [fact: fact, type: type, bind: Map.keys(bind), expr: expr]}
+               node_expr = {expr.form, expr.name}
+               bind_keys = Map.keys(bind)
+               node_ast = {:%{}, [], [fact: fact, type: type, bind: bind_keys, expr: node_expr]}
                {:%, [], [struct_alias, node_ast]}
 
              %{bind: bind, expr: expr} ->
                struct_alias = {:__aliases__, [alias: false], [:Rete, :Ruleset, :BindTestExprNode]}
-               node_ast = {:%{}, [], [bind: Map.keys(bind), expr: expr]}
+               node_expr = {expr.form, expr.name}
+               bind_keys = Map.keys(bind)
+               node_ast = {:%{}, [], [bind: bind_keys, expr: node_expr]}
                {:%, [], [struct_alias, node_ast]}
            end
          end
      ]}
   end
 
-  defp qualify_pinned(ast, module) do
+  defp qualify_special(ast, module) do
     Macro.prewalk(
       ast,
       fn
-        {:^, [], [{pinned, [], nil}]} when is_atom(pinned) ->
-          {:^, [], [{pinned, [], module}]}
+        {:@, m1, [{x, m2, nil}]} when is_atom(x) ->
+          {:@, m1, [{x, m2, module}]}
 
         expr ->
           expr
@@ -232,8 +248,8 @@ defmodule Rete.Ruleset do
       Enum.map(
         rule_lhs,
         &Map.update(&1, :expr, nil, fn
-          {expr_key, expr_data} ->
-            {qualify_pinned(expr_key, module), expr_data}
+          {expr_form, expr_name} ->
+            {expr_form, Function.capture(module, expr_name, 1)}
         end)
       )
 
@@ -245,15 +261,39 @@ defmodule Rete.Ruleset do
     )
   end
 
-  defp defproduction(rule_decl, rule_body, rule_attr) do
+  defp defproduction(rule_module, rule_decl, rule_body, rule_attr) do
+    rule_decl = qualify_special(rule_decl, rule_module)
+    rule_body = qualify_special(rule_body, rule_module)
     rule_hash = :erlang.phash2([rule_decl, rule_body])
     rule = parse_rule(rule_hash, rule_decl, rule_body)
-    %{name: rule_name, bind: rule_bind} = rule
+    %{name: rule_name, bind: rule_bind, lhs: rule_lhs} = rule
     rule_args = [rule_hash, {:%{}, [], Map.to_list(rule_bind)}]
     rule_head = {rule_name, [], rule_args}
     rule_ast = escape_rule(rule, rule_attr)
 
+    rule_lhs =
+      Enum.uniq_by(
+        rule_lhs,
+        fn cond -> cond.expr.name end
+      )
+
+    lhs_func =
+      for %{expr: expr} <- rule_lhs do
+        quote do
+          if not Module.defines?(__MODULE__, {unquote(expr.name), 1}) do
+            def unquote(expr.name)(args) do
+              case args do
+                unquote(expr.args) -> unquote(expr.body)
+                _ -> nil
+              end
+            end
+          end
+        end
+      end
+
     quote do
+      unquote_splicing(lhs_func)
+
       @rule_data @rule_data ++ [rule_data(__MODULE__, unquote(rule_ast))]
       Kernel.def(unquote(rule_head), unquote(rule_body))
     end
@@ -262,13 +302,13 @@ defmodule Rete.Ruleset do
   @doc """
   """
   defmacro defrule(rule_decl, rule_body \\ nil) do
-    defproduction(rule_decl, rule_body, type: :rule)
+    defproduction(__CALLER__.module, rule_decl, rule_body, type: :rule)
   end
 
   @doc """
   """
   defmacro defquery(rule_decl, rule_body \\ nil) do
-    defproduction(rule_decl, rule_body, type: :query)
+    defproduction(__CALLER__.module, rule_decl, rule_body, type: :query)
   end
 
   @doc """
@@ -291,18 +331,9 @@ defmodule Rete.Ruleset do
   defmacro __before_compile__(_env) do
     quote do
       def get_expr_data do
-        Enum.flat_map(
-          @rule_data,
-          fn
-            %{lhs: lhs} ->
-              Enum.map(
-                lhs,
-                fn
-                  %{expr: expr} -> expr
-                end
-              )
-          end
-        )
+        @rule_data
+        |> Enum.flat_map(&Enum.map(&1.lhs, fn cond -> cond.expr end))
+        |> Enum.uniq()
       end
 
       def get_rule_data do
