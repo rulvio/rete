@@ -22,10 +22,11 @@ defmodule ReteTest do
               {:foo, id},
               [{:bar, id}],
               foo = {:foo, id},
-              bars = [{:bar, id} when id > 0]
+              bars = [{:bar, id} when id > 0],
+              {:living_thing, name}
             )
             when id > 0 do
-      [id, foo, bar, bars]
+      [id, foo, bar, bars, name]
     end
 
     defrule foo2_rule(
@@ -35,10 +36,11 @@ defmodule ReteTest do
               {:foo, id},
               [{:bar, id}],
               foo = {:foo, id},
-              bars = [{:bar, id} when id > 0]
+              bars = [{:bar, id} when id > 0],
+              {:living_thing, name}
             )
             when id > 0 do
-      [id, foo, bar, bars]
+      [id, foo, bar, bars, name]
     end
   end
 
@@ -60,10 +62,11 @@ defmodule ReteTest do
                {:foo, id},
                [{:bar, id}],
                foo = {:foo, id},
-               bars = [{:bar, id} when id > 0]
+               bars = [{:bar, id} when id > 0],
+               {:mammal, name}
              )
              when id > 0 do
-      [id, foo, bar, bars]
+      [id, foo, bar, bars, name]
     end
 
     defquery bar2_query(
@@ -72,10 +75,11 @@ defmodule ReteTest do
                {:foo, id},
                [{:bar, id}],
                foo = {:foo, id},
-               bars = [{:bar, id} when id > 0]
+               bars = [{:bar, id} when id > 0],
+               {:mammal, name}
              )
              when id > 0 do
-      [id, foo, bar, bars]
+      [id, foo, bar, bars, name]
     end
   end
 
@@ -103,14 +107,14 @@ defmodule ReteTest do
     rule_data = ReteTest.ExampleFooRuleset.get_rule_data()
     expr_data = ReteTest.ExampleFooRuleset.get_expr_data()
     assert length(rule_data) == 2
-    assert length(expr_data) == 5
+    assert length(expr_data) == 6
 
     for rule <- rule_data do
       rhs =
         rule
         |> Map.get(:rhs)
 
-      assert [1, 2, 3, 4] == rhs.(rule.hash, %{id: 1, foo: 2, bar: 3, bars: 4})
+      assert [1, 2, 3, 4, "Foo"] == rhs.(rule.hash, %{id: 1, foo: 2, bar: 3, bars: 4, name: "Foo"})
 
       lhs_expr =
         rule
@@ -120,7 +124,7 @@ defmodule ReteTest do
           expr_func
         end)
 
-      [bind1 | [bind2 | [bind3 | [bind4 | [bind5 | [bind6 | [test1]]]]]]] = lhs_expr
+      [bind1 | [bind2 | [bind3 | [bind4 | [bind5 | [bind6 | [bind7 | [test1]]]]]]]] = lhs_expr
 
       assert %{id: 1} == bind1.({:foo, 1})
       assert nil == bind1.({:foo, 0})
@@ -130,6 +134,7 @@ defmodule ReteTest do
       assert %{id: 1} == bind4.({:bar, 1})
       assert %{id: 1} == bind5.({:foo, 1})
       assert %{id: 1} == bind6.({:bar, 1})
+      assert %{name: "Foo"} == bind7.({:living_thing, "Foo"})
       assert nil == bind6.({:bar, 0})
       assert true == test1.(%{id: 1})
       assert false == test1.(%{id: 0})
@@ -138,7 +143,9 @@ defmodule ReteTest do
 
   test "verify foo rule with lhs and rhs parsed data" do
     rule_data = ReteTest.ExampleFooRuleset.get_rule_data()
+    expr_data = ReteTest.ExampleFooRuleset.get_expr_data()
     assert length(rule_data) == 2
+    assert length(expr_data) == 6
 
     for rule <- rule_data do
       rhs =
@@ -154,7 +161,7 @@ defmodule ReteTest do
       assert expected_rhs == rhs
 
       assert [salience: 100] == Map.get(rule, :opts)
-      assert [:id, :foo, :bar, :bars] == Map.get(rule, :bind)
+      assert [:id, :name, :foo, :bar, :bars] == Map.get(rule, :bind)
       assert is_integer(Map.get(rule, :hash))
       assert :rule == Map.get(rule, :type)
 
@@ -162,27 +169,31 @@ defmodule ReteTest do
         rule
         |> Map.get(:lhs)
 
-      [bind1 | [bind2 | [bind3 | [bind4 | [bind5 | [bind6 | [test1]]]]]]] = lhs
+      [bind1 | [bind2 | [bind3 | [bind4 | [bind5 | [bind6 | [bind7 | [test1]]]]]]]] = lhs
+
       assert %{fact: :_, type: :foo, bind: [:id]} == Map.take(bind1, [:type, :fact, :bind])
       assert %{fact: :bar, type: :bar, bind: [:id]} == Map.take(bind2, [:type, :fact, :bind])
       assert %{fact: :_, type: :foo, bind: [:id]} == Map.take(bind3, [:type, :fact, :bind])
       assert %{coll: :_, type: :bar, bind: [:id]} == Map.take(bind4, [:type, :bind, :coll])
       assert %{fact: :foo, type: :foo, bind: [:id]} == Map.take(bind5, [:type, :fact, :bind])
       assert %{coll: :bars, type: :bar, bind: [:id]} == Map.take(bind6, [:type, :bind, :coll])
+      assert %{fact: :_, type: :living_thing, bind: [:name]} == Map.take(bind7, [:type, :fact, :bind])
       assert %{bind: [:id]} == Map.take(test1, [:bind])
     end
   end
 
   test "verify bar query with lhs and rhs bindings and output" do
     rule_data = ReteTest.ExampleBarRuleset.get_rule_data()
+    expr_data = ReteTest.ExampleBarRuleset.get_expr_data()
     assert length(rule_data) == 2
+    assert length(expr_data) == 6
 
     for rule <- rule_data do
       rhs =
         rule
         |> Map.get(:rhs)
 
-      assert [1, 2, 3, 4] == rhs.(rule.hash, %{id: 1, foo: 2, bar: 3, bars: 4})
+      assert [1, 2, 3, 4, "Foo"] == rhs.(rule.hash, %{id: 1, name: "Foo", foo: 2, bar: 3, bars: 4})
 
       lhs_expr =
         rule
@@ -192,7 +203,7 @@ defmodule ReteTest do
           expr_func
         end)
 
-      [bind1 | [bind2 | [bind3 | [bind4 | [bind5 | [bind6 | [test1]]]]]]] = lhs_expr
+      [bind1 | [bind2 | [bind3 | [bind4 | [bind5 | [bind6 | [bind7 | [test1]]]]]]]] = lhs_expr
 
       assert %{id: 1} == bind1.({:foo, 1})
       assert nil == bind1.({:foo, 0})
@@ -202,6 +213,7 @@ defmodule ReteTest do
       assert %{id: 1} == bind4.({:bar, 1})
       assert %{id: 1} == bind5.({:foo, 1})
       assert %{id: 1} == bind6.({:bar, 1})
+      assert %{name: "Bar"} == bind7.({:mammal, "Bar"})
       assert nil == bind6.({:bar, 0})
       assert true == test1.(%{id: 1})
       assert false == test1.(%{id: 0})
@@ -210,7 +222,9 @@ defmodule ReteTest do
 
   test "verify bar query with lhs and rhs parsed data" do
     rule_data = ReteTest.ExampleBarRuleset.get_rule_data()
+    expr_data = ReteTest.ExampleBarRuleset.get_expr_data()
     assert length(rule_data) == 2
+    assert length(expr_data) == 6
 
     for rule <- rule_data do
       rhs =
@@ -226,7 +240,7 @@ defmodule ReteTest do
       assert expected_rhs == rhs
 
       assert [] == Map.get(rule, :opts)
-      assert [:id, :foo, :bar, :bars] == Map.get(rule, :bind)
+      assert [:id, :name, :foo, :bar, :bars] == Map.get(rule, :bind)
       assert is_integer(Map.get(rule, :hash))
       assert :query == Map.get(rule, :type)
 
@@ -234,13 +248,15 @@ defmodule ReteTest do
         rule
         |> Map.get(:lhs)
 
-      [bind1 | [bind2 | [bind3 | [bind4 | [bind5 | [bind6 | [test1]]]]]]] = lhs
+      [bind1 | [bind2 | [bind3 | [bind4 | [bind5 | [bind6 | [bind7 | [test1]]]]]]]] = lhs
+
       assert %{fact: :_, type: :foo, bind: [:id]} == Map.take(bind1, [:type, :fact, :bind])
       assert %{fact: :bar, type: :bar, bind: [:id]} == Map.take(bind2, [:type, :fact, :bind])
       assert %{fact: :_, type: :foo, bind: [:id]} == Map.take(bind3, [:type, :fact, :bind])
       assert %{coll: :_, type: :bar, bind: [:id]} == Map.take(bind4, [:type, :bind, :coll])
       assert %{type: :foo, fact: :foo, bind: [:id]} == Map.take(bind5, [:type, :fact, :bind])
       assert %{coll: :bars, type: :bar, bind: [:id]} == Map.take(bind6, [:type, :bind, :coll])
+      assert %{fact: :_, type: :mammal, bind: [:name]} == Map.take(bind7, [:type, :fact, :bind])
       assert %{bind: [:id]} == Map.take(test1, [:bind])
     end
   end
