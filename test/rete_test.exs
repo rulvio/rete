@@ -114,7 +114,8 @@ defmodule ReteTest do
         rule
         |> Map.get(:rhs)
 
-      assert [1, 2, 3, 4, "Foo"] == rhs.(rule.hash, %{id: 1, foo: 2, bar: 3, bars: 4, name: "Foo"})
+      assert [1, 2, 3, 4, "Foo"] ==
+               rhs.(rule.hash, %{id: 1, foo: 2, bar: 3, bars: 4, name: "Foo"})
 
       lhs_expr =
         rule
@@ -134,7 +135,14 @@ defmodule ReteTest do
       assert %{id: 1} == bind4.({:bar, 1})
       assert %{id: 1} == bind5.({:foo, 1})
       assert %{id: 1} == bind6.({:bar, 1})
+      # bind7 tests that the fact matches any fact type, because the expr do not validate taxonomy
+      # as it would not be efficient to do so in the rete network, instead the taxonomy is validated
+      # not when evaluating the lhs conditions but when deciding if a fact should be propagated to a node
       assert %{name: "Foo"} == bind7.({:living_thing, "Foo"})
+      assert %{name: "Fido"} == bind7.({:dog, "Fido"})
+      assert %{name: "Whiskers"} == bind7.({:cat, "Whiskers"})
+      assert %{name: "Oregano"} == bind7.({:plant, "Oregano"})
+      assert %{name: "Thing"} == bind7.({:any, "Thing"})
       assert nil == bind6.({:bar, 0})
       assert true == test1.(%{id: 1})
       assert false == test1.(%{id: 0})
@@ -177,7 +185,10 @@ defmodule ReteTest do
       assert %{coll: :_, type: :bar, bind: [:id]} == Map.take(bind4, [:type, :bind, :coll])
       assert %{fact: :foo, type: :foo, bind: [:id]} == Map.take(bind5, [:type, :fact, :bind])
       assert %{coll: :bars, type: :bar, bind: [:id]} == Map.take(bind6, [:type, :bind, :coll])
-      assert %{fact: :_, type: :living_thing, bind: [:name]} == Map.take(bind7, [:type, :fact, :bind])
+
+      assert %{fact: :_, type: :living_thing, bind: [:name]} ==
+               Map.take(bind7, [:type, :fact, :bind])
+
       assert %{bind: [:id]} == Map.take(test1, [:bind])
     end
   end
@@ -193,7 +204,8 @@ defmodule ReteTest do
         rule
         |> Map.get(:rhs)
 
-      assert [1, 2, 3, 4, "Foo"] == rhs.(rule.hash, %{id: 1, name: "Foo", foo: 2, bar: 3, bars: 4})
+      assert [1, 2, 3, 4, "Foo"] ==
+               rhs.(rule.hash, %{id: 1, name: "Foo", foo: 2, bar: 3, bars: 4})
 
       lhs_expr =
         rule

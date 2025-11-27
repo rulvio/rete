@@ -1,23 +1,39 @@
 defmodule Rete.Ruleset do
+  @moduledoc """
+  Provides macros and structures for defining rulesets in a Rete network.
+  This module allows users to define rules and queries using `defrule/2` and
+  `defquery/2` macros, which parse the provided expressions and generate the
+  necessary internal representations. The module also supports taxonomy definitions through
+  `derive/2` and `underive/2` macros.
+  """
+
   defmodule BindTestExprNode do
+    @moduledoc """
+    Represents a binding test expression node in a Rete network.
+    """
     defstruct [:bind, :expr]
   end
 
   defmodule FactTypeExprNode do
+    @moduledoc """
+    Represents a fact type expression node in a Rete network.
+    """
     defstruct [:fact, :type, :bind, :expr]
   end
 
   defmodule CollTypeExprNode do
+    @moduledoc """
+    Represents a collection type expression node in a Rete network.
+    """
     defstruct [:coll, :type, :bind, :expr]
   end
 
   defmodule ProductionNode do
+    @moduledoc """
+    Represents a production node (rule or query) in a Rete network.
+    """
     defstruct [:name, :type, :hash, :opts, :bind, :lhs, :rhs]
   end
-
-  @moduledoc """
-  Documentation for `Rete.Ruleset`.
-  """
 
   @doc false
   defmacro __using__(_opts) do
@@ -31,6 +47,8 @@ defmodule Rete.Ruleset do
     end
   end
 
+  # Creates a standardized expression form for given arguments and body.
+  # This form is used for hashing and identification of unique expressions.
   defp expr_form(args, body) do
     expr_fn =
       quote do
@@ -44,6 +62,8 @@ defmodule Rete.Ruleset do
     |> Macro.escape()
   end
 
+  # Parses the binding variables from an expression.
+  # Returns a map of variable names to their AST representations.
   defp parse_bind(expr) do
     {_, bind} =
       Macro.prewalk(expr, %{}, fn
@@ -60,7 +80,23 @@ defmodule Rete.Ruleset do
     bind
   end
 
-  defp parse_bind_expr(fact_type, fact_expr, bind) do
+  # Parses the arguments of a fact expression.
+  # Returns a tuple of the fact type and the arguments expression.
+  defp parse_args_expr(fact_expr) do
+    case fact_expr do
+      {fact_type, fact_args} ->
+        fact_expr = quote do: {_, unquote(fact_args)}
+        {fact_type, fact_expr}
+
+      {:=, _, [fact, {fact_type, fact_args}]} ->
+        {fact_type, quote(do: unquote(fact) = {_, unquote(fact_args)})}
+    end
+  end
+
+  # Parses a binding expression without an associated test expression.
+  # Returns a map containing the expression name, form, arguments, and body.
+  defp parse_bind_expr(fact_expr, bind) do
+    {fact_type, args_expr} = parse_args_expr(fact_expr)
     bind_expr = {:%{}, [], Map.to_list(bind)}
 
     expr_form = expr_form(fact_expr, bind_expr)
@@ -71,24 +107,24 @@ defmodule Rete.Ruleset do
     %{
       name: expr_name,
       form: expr_form,
-      args: fact_expr,
+      args: args_expr,
       body: bind_expr
     }
   end
 
-  defp parse_bind_expr(fact_type, fact_expr, test_expr, bind) do
-    bind_expr = {:%{}, [], Map.to_list(bind)}
+  # Parses a binding expression with an associated test expression.
+  # Returns a map containing the expression name, form, arguments, and body.
+  defp parse_bind_expr(fact_expr, test_expr, bind) do
+    {fact_type, args_expr} = parse_args_expr(fact_expr)
 
-    body_expr =
+    bind_expr =
       quote do
         if unquote(test_expr) do
-          unquote(bind_expr)
-        else
-          nil
+          unquote({:%{}, [], Map.to_list(bind)})
         end
       end
 
-    expr_form = expr_form(fact_expr, body_expr)
+    expr_form = expr_form(fact_expr, bind_expr)
     expr_hash = :erlang.phash2(expr_form)
     expr_name_str = "__test_bind_" <> to_string(fact_type) <> "_" <> to_string(expr_hash) <> "__"
     expr_name = String.to_atom(expr_name_str)
@@ -96,11 +132,13 @@ defmodule Rete.Ruleset do
     %{
       name: expr_name,
       form: expr_form,
-      args: fact_expr,
-      body: body_expr
+      args: args_expr,
+      body: bind_expr
     }
   end
 
+  # Parses a test expression with associated bindings.
+  # Returns a map containing the expression name, form, arguments, and body.
   defp parse_test_expr(test_expr, bind) do
     bind_expr = {:%{}, [], Map.to_list(bind)}
 
@@ -117,21 +155,23 @@ defmodule Rete.Ruleset do
     }
   end
 
+  # Parses the left-hand side (LHS) of a rule or query.
+  # Returns a map containing the fact or collection, type, arguments, bindings, and expression
   defp parse_lhs(lhs_expr) do
     case lhs_expr do
-      bind_expr = {type, args} ->
-        bind = parse_bind(bind_expr)
-        expr = parse_bind_expr(type, bind_expr, bind)
-        %{ast: bind_expr, fact: :_, type: type, args: args, bind: bind, expr: expr}
+      {type, args} ->
+        bind = parse_bind(lhs_expr)
+        expr = parse_bind_expr(lhs_expr, bind)
+        %{ast: lhs_expr, fact: :_, type: type, args: args, bind: bind, expr: expr}
 
       {:when, _, [lhs_expr = {_, _}, lhs_test]} ->
         lhs = parse_lhs(lhs_expr)
-        expr = parse_bind_expr(lhs.type, lhs.ast, lhs_test, lhs.bind)
+        expr = parse_bind_expr(lhs.ast, lhs_test, lhs.bind)
         Map.put(lhs, :expr, expr)
 
       {:when, _, [lhs_expr = {:=, _, [_, {_, _}]}, lhs_test]} ->
         lhs = parse_lhs(lhs_expr)
-        expr = parse_bind_expr(lhs.type, lhs.ast, lhs_test, lhs.bind)
+        expr = parse_bind_expr(lhs.ast, lhs_test, lhs.bind)
         Map.put(lhs, :expr, expr)
 
       [lhs_expr = {:when, _, [{_, _}, _]}] ->
@@ -148,6 +188,8 @@ defmodule Rete.Ruleset do
     end
   end
 
+  # Parses the arguments of a rule declaration.
+  # Returns a tuple of rule options and the left-hand side expressions.
   defp parse_args(rule_args) do
     case rule_args do
       [{:%{}, _, rule_opts} | rule_lhs] -> {rule_opts, rule_lhs}
@@ -155,6 +197,8 @@ defmodule Rete.Ruleset do
     end
   end
 
+  # Parses a rule declaration and body.
+  # Returns a map containing the rule name, hash, options, bindings, LHS, and RHS.
   defp parse_rule(rule_hash, rule_decl, rule_body) do
     case rule_decl do
       {:when, _, [rule_decl, rule_test]} ->
@@ -184,6 +228,7 @@ defmodule Rete.Ruleset do
     end
   end
 
+  # Escapes a rule structure into an AST representation.
   defp escape_rule(
          %{
            name: rule_name,
@@ -229,6 +274,8 @@ defmodule Rete.Ruleset do
      ]}
   end
 
+  # Qualifies special forms in the AST with the given module.
+  # This ensures that attributes are correctly referenced within the module context.
   defp qualify_special(ast, module) do
     Macro.prewalk(
       ast,
@@ -261,6 +308,7 @@ defmodule Rete.Ruleset do
     )
   end
 
+  @doc false
   defp defproduction(rule_module, rule_decl, rule_body, rule_attr) do
     rule_decl = qualify_special(rule_decl, rule_module)
     rule_body = qualify_special(rule_body, rule_module)
@@ -300,18 +348,27 @@ defmodule Rete.Ruleset do
   end
 
   @doc """
+  Allows defining a rule within a ruleset.
+  The `defrule/2` macro takes a rule declaration and an optional rule body,
+  parses them, and generates the necessary internal representation for the rule.
   """
   defmacro defrule(rule_decl, rule_body \\ nil) do
     defproduction(__CALLER__.module, rule_decl, rule_body, type: :rule)
   end
 
   @doc """
+  Allows defining a query within a ruleset.
+  The `defquery/2` macro takes a query declaration and an optional query body,
+  parses them, and generates the necessary internal representation for the query.
   """
   defmacro defquery(rule_decl, rule_body \\ nil) do
     defproduction(__CALLER__.module, rule_decl, rule_body, type: :query)
   end
 
   @doc """
+  Allows defining a derivation relationship between two types in the taxonomy.
+  The `derive/2` macro takes a child type and a parent type, and records the derivation
+  in the ruleset's taxonomy data.
   """
   defmacro derive(child, parent) do
     quote do
@@ -320,6 +377,9 @@ defmodule Rete.Ruleset do
   end
 
   @doc """
+  Allows removing a derivation relationship between two types in the taxonomy.
+  The `underive/2` macro takes a child type and a parent type, and records the removal
+  of the derivation in the ruleset's taxonomy data.
   """
   defmacro underive(child, parent) do
     quote do
