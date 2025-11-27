@@ -62,6 +62,14 @@ defmodule Rete.Ruleset do
     |> Macro.escape()
   end
 
+  # Generates a unique identifier for an expression based on its type, arguments, body, and bindings.
+  # Returns a hash value representing the expression.
+  defp expr_hash(args, body) do
+    expr_form(args, body)
+    |> :erlang.term_to_binary()
+    |> :erlang.phash2()
+  end
+
   # Parses the binding variables from an expression.
   # Returns a map of variable names to their AST representations.
   defp parse_bind(expr) do
@@ -95,64 +103,49 @@ defmodule Rete.Ruleset do
 
   # Parses a binding expression without an associated test expression.
   # Returns a map containing the expression name, form, arguments, and body.
-  defp parse_bind_expr(fact_expr, bind) do
+  defp parse_bind_expr(fact_expr, fact_bind) do
     {fact_type, args_expr} = parse_args_expr(fact_expr)
-    bind_expr = {:%{}, [], Map.to_list(bind)}
+    bind_keys = Map.keys(fact_bind) |> Enum.sort()
+    bind_expr = {:%{}, [], Map.to_list(fact_bind)}
 
-    expr_form = expr_form(fact_expr, bind_expr)
-    expr_hash = :erlang.phash2(expr_form)
-    expr_name_str = "__bind_" <> to_string(fact_type) <> "_" <> to_string(expr_hash) <> "__"
-    expr_name = String.to_atom(expr_name_str)
+    expr_hash = expr_hash(fact_expr, bind_expr)
+    expr_id = [:bind, fact_type, bind_keys, expr_hash]
+    expr_name = String.to_atom("__bind_#{fact_type}_#{expr_hash}__")
 
-    %{
-      name: expr_name,
-      form: expr_form,
-      args: args_expr,
-      body: bind_expr
-    }
+    %{id: expr_id, name: expr_name, args: args_expr, body: bind_expr}
   end
 
   # Parses a binding expression with an associated test expression.
   # Returns a map containing the expression name, form, arguments, and body.
-  defp parse_bind_expr(fact_expr, test_expr, bind) do
+  defp parse_bind_expr(fact_expr, test_expr, fact_bind) do
     {fact_type, args_expr} = parse_args_expr(fact_expr)
+    bind_keys = Map.keys(fact_bind) |> Enum.sort()
 
     bind_expr =
       quote do
         if unquote(test_expr) do
-          unquote({:%{}, [], Map.to_list(bind)})
+          unquote({:%{}, [], Map.to_list(fact_bind)})
         end
       end
 
-    expr_form = expr_form(fact_expr, bind_expr)
-    expr_hash = :erlang.phash2(expr_form)
-    expr_name_str = "__test_bind_" <> to_string(fact_type) <> "_" <> to_string(expr_hash) <> "__"
-    expr_name = String.to_atom(expr_name_str)
+    expr_hash = expr_hash(fact_expr, bind_expr)
+    expr_id = [:test_bind, fact_type, bind_keys, expr_hash]
+    expr_name = String.to_atom("__test_bind_#{fact_type}_#{expr_hash}__")
 
-    %{
-      name: expr_name,
-      form: expr_form,
-      args: args_expr,
-      body: bind_expr
-    }
+    %{id: expr_id, name: expr_name, args: args_expr, body: bind_expr}
   end
 
   # Parses a test expression with associated bindings.
   # Returns a map containing the expression name, form, arguments, and body.
-  defp parse_test_expr(test_expr, bind) do
-    bind_expr = {:%{}, [], Map.to_list(bind)}
+  defp parse_test_expr(test_expr, test_bind) do
+    bind_expr = {:%{}, [], Map.to_list(test_bind)}
+    bind_keys = Map.keys(test_bind) |> Enum.sort()
 
-    expr_form = expr_form(bind_expr, test_expr)
-    expr_hash = :erlang.phash2(expr_form)
-    expr_name_str = "__test_" <> to_string(expr_hash) <> "__"
-    expr_name = String.to_atom(expr_name_str)
+    expr_hash = expr_hash(bind_expr, test_expr)
+    expr_id = [:test, bind_keys, expr_hash]
+    expr_name = String.to_atom("__test_#{expr_hash}__")
 
-    %{
-      name: expr_name,
-      form: expr_form,
-      args: bind_expr,
-      body: test_expr
-    }
+    %{id: expr_id, name: expr_name, args: bind_expr, body: test_expr}
   end
 
   # Parses the left-hand side (LHS) of a rule or query.
@@ -251,21 +244,21 @@ defmodule Rete.Ruleset do
            case cond do
              %{coll: coll, type: type, bind: bind, expr: expr} ->
                struct_alias = {:__aliases__, [alias: false], [:Rete, :Ruleset, :CollTypeExprNode]}
-               node_expr = {expr.form, expr.name}
+               node_expr = {expr.id, expr.name}
                bind_keys = Map.keys(bind)
                node_ast = {:%{}, [], [coll: coll, type: type, bind: bind_keys, expr: node_expr]}
                {:%, [], [struct_alias, node_ast]}
 
              %{fact: fact, type: type, bind: bind, expr: expr} ->
                struct_alias = {:__aliases__, [alias: false], [:Rete, :Ruleset, :FactTypeExprNode]}
-               node_expr = {expr.form, expr.name}
+               node_expr = {expr.id, expr.name}
                bind_keys = Map.keys(bind)
                node_ast = {:%{}, [], [fact: fact, type: type, bind: bind_keys, expr: node_expr]}
                {:%, [], [struct_alias, node_ast]}
 
              %{bind: bind, expr: expr} ->
                struct_alias = {:__aliases__, [alias: false], [:Rete, :Ruleset, :BindTestExprNode]}
-               node_expr = {expr.form, expr.name}
+               node_expr = {expr.id, expr.name}
                bind_keys = Map.keys(bind)
                node_ast = {:%{}, [], [bind: bind_keys, expr: node_expr]}
                {:%, [], [struct_alias, node_ast]}
@@ -295,8 +288,8 @@ defmodule Rete.Ruleset do
       Enum.map(
         rule_lhs,
         &Map.update(&1, :expr, nil, fn
-          {expr_form, expr_name} ->
-            {expr_form, Function.capture(module, expr_name, 1)}
+          {expr_id, expr_name} ->
+            {expr_id, Function.capture(module, expr_name, 1)}
         end)
       )
 

@@ -291,6 +291,20 @@ defmodule ReteTest do
              |> Enum.map(&Map.get(&1, :name))
   end
 
+  test "get expr data from single module" do
+    assert [
+             [:bind, :foo, [:id], 120_263_234],
+             [:test_bind, :bar, [:id], 102_863_477],
+             [:bind, :foo, [:id], 52_895_894],
+             [:bind, :bar, [:id], 14_521_031],
+             [:bind, :living_thing, [:name], 102_001_071],
+             [:test, [:id], 44_499_647]
+           ] ==
+             [ExampleFooRuleset]
+             |> Rete.get_expr_data()
+             |> Enum.map(fn {expr_id, _} -> expr_id end)
+  end
+
   test "get taxonomy data from combined modules" do
     assert [
              {:derive, :dog, :mammal},
@@ -313,5 +327,21 @@ defmodule ReteTest do
     assert [:foo1_rule, :foo2_rule, :bar1_query, :bar2_query] ==
              Rete.get_rule_data([ExampleFooRuleset, ExampleBarRuleset])
              |> Enum.map(&Map.get(&1, :name))
+  end
+
+  test "get expr data from combined modules" do
+    assert [
+             [:bind, :foo, [:id], 40_896_745],
+             [:test_bind, :bar, [:id], 102_863_477],
+             [:bind, :foo, [:id], 52_895_894],
+             [:bind, :bar, [:id], 14_521_031],
+             [:bind, :mammal, [:name], 21_593_349],
+             [:test, [:id], 44_499_647],
+             [:bind, :foo, [:id], 120_263_234],
+             [:bind, :living_thing, [:name], 102_001_071]
+           ] ==
+             [ExampleFooRuleset, ExampleBarRuleset]
+             |> Rete.get_expr_data()
+             |> Enum.map(fn {expr_id, _} -> expr_id end)
   end
 end
