@@ -293,12 +293,12 @@ defmodule ReteTest do
 
   test "get expr data from single module" do
     assert [
-             [:bind, :foo, [:id], 51_194_764],
-             [:test_bind, :bar, [:id], 32_016_514],
-             [:bind, :foo, [:id], 25_092_275],
-             [:bind, :bar, [:id], 44_631_555],
-             [:bind, :living_thing, [:name], 122_732_082],
-             [:test, [:id], 72_899_215]
+             :fact_foo_bind_id_expr_51194764,
+             :test_fact_bar_bind_id_expr_32016514,
+             :fact_foo_bind_id_expr_25092275,
+             :fact_bar_bind_id_expr_44631555,
+             :fact_living_thing_bind_name_expr_122732082,
+             :test_bind_id_expr_72899215
            ] ==
              [ExampleFooRuleset]
              |> Rete.get_expr_data()
@@ -331,14 +331,14 @@ defmodule ReteTest do
 
   test "get expr data from combined modules" do
     assert [
-             [:bind, :foo, [:id], 59_925_075],
-             [:test_bind, :bar, [:id], 32_016_514],
-             [:bind, :foo, [:id], 25_092_275],
-             [:bind, :bar, [:id], 44_631_555],
-             [:bind, :mammal, [:name], 41_148_079],
-             [:test, [:id], 72_899_215],
-             [:bind, :foo, [:id], 51_194_764],
-             [:bind, :living_thing, [:name], 122_732_082]
+             :fact_foo_bind_id_expr_59925075,
+             :test_fact_bar_bind_id_expr_32016514,
+             :fact_foo_bind_id_expr_25092275,
+             :fact_bar_bind_id_expr_44631555,
+             :fact_mammal_bind_name_expr_41148079,
+             :test_bind_id_expr_72899215,
+             :fact_foo_bind_id_expr_51194764,
+             :fact_living_thing_bind_name_expr_122732082
            ] ==
              [ExampleFooRuleset, ExampleBarRuleset]
              |> Rete.get_expr_data()

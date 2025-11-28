@@ -96,8 +96,15 @@ defmodule Rete.Ruleset do
     bind_expr = {:%{}, [], Map.to_list(fact_bind)}
 
     expr_hash = expr_hash(fact_expr, bind_expr)
-    expr_id = [:bind, fact_type, bind_keys, expr_hash]
-    expr_name = String.to_atom("__bind_#{fact_type}_#{expr_hash}__")
+
+    expr_id =
+      [:fact, fact_type, :bind]
+      |> Enum.concat(bind_keys)
+      |> Enum.concat([:expr, expr_hash])
+      |> Enum.join("_")
+      |> String.to_atom()
+
+    expr_name = String.to_atom("__#{expr_id}__")
 
     %{id: expr_id, name: expr_name, args: args_expr, body: bind_expr}
   end
@@ -116,8 +123,15 @@ defmodule Rete.Ruleset do
       end
 
     expr_hash = expr_hash(fact_expr, bind_expr)
-    expr_id = [:test_bind, fact_type, bind_keys, expr_hash]
-    expr_name = String.to_atom("__test_bind_#{fact_type}_#{expr_hash}__")
+
+    expr_id =
+      [:test, :fact, fact_type, :bind]
+      |> Enum.concat(bind_keys)
+      |> Enum.concat([:expr, expr_hash])
+      |> Enum.join("_")
+      |> String.to_atom()
+
+    expr_name = String.to_atom("__#{expr_id}__")
 
     %{id: expr_id, name: expr_name, args: args_expr, body: bind_expr}
   end
@@ -129,8 +143,15 @@ defmodule Rete.Ruleset do
     bind_keys = Map.keys(test_bind) |> Enum.sort()
 
     expr_hash = expr_hash(bind_expr, test_expr)
-    expr_id = [:test, bind_keys, expr_hash]
-    expr_name = String.to_atom("__test_#{expr_hash}__")
+
+    expr_id =
+      [:test, :bind]
+      |> Enum.concat(bind_keys)
+      |> Enum.concat([:expr, expr_hash])
+      |> Enum.join("_")
+      |> String.to_atom()
+
+    expr_name = String.to_atom("__#{expr_id}__")
 
     %{id: expr_id, name: expr_name, args: bind_expr, body: test_expr}
   end
@@ -262,6 +283,9 @@ defmodule Rete.Ruleset do
       fn
         {:@, m1, [{x, m2, nil}]} when is_atom(x) ->
           {:@, m1, [{x, m2, module}]}
+
+        {:^, m1, [{x, m2, nil}]} when is_atom(x) ->
+          {:^, m1, [{x, m2, module}]}
 
         expr ->
           expr
