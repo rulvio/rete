@@ -1,15 +1,37 @@
 defmodule Rete.Ruleset do
   @moduledoc """
   Provides macros and structures for defining rulesets in a Rete network.
+
   This module allows users to define rules and queries using `defrule/2` and
   `defquery/2` macros, which parse the provided expressions and generate the
   necessary internal representations. The module also supports taxonomy definitions through
   `derive/2` and `underive/2` macros.
+
+  ## Usage
+
+      defmodule MyRuleset do
+        use Rete.Ruleset
+
+        derive(:dog, :mammal)
+        derive(:mammal, :animal)
+
+        defrule process_animal({:animal, name}) do
+          IO.puts("Found animal: \#{name}")
+        end
+      end
   """
 
   defmodule BindTestExprNode do
     @moduledoc """
     Represents a binding test expression node in a Rete network.
+
+    Used for `when` clauses that test conditions on already-bound variables
+    (e.g., `when id > 0`).
+
+    ## Fields
+
+    - `:bind` - List of variable names used in the test expression
+    - `:expr` - Tuple of `{expr_id, expr_function}` for evaluating the test
     """
     defstruct [:bind, :expr]
   end
@@ -17,6 +39,15 @@ defmodule Rete.Ruleset do
   defmodule FactTypeExprNode do
     @moduledoc """
     Represents a fact type expression node in a Rete network.
+
+    Matches individual facts against a pattern and extracts bound variables.
+
+    ## Fields
+
+    - `:fact` - Variable name the matched fact is bound to (or `:_` if not bound)
+    - `:type` - The fact type atom to match against
+    - `:bind` - List of variable names bound by this pattern
+    - `:expr` - Tuple of `{expr_id, expr_function}` for matching and extracting values
     """
     defstruct [:fact, :type, :bind, :expr]
   end
@@ -24,6 +55,15 @@ defmodule Rete.Ruleset do
   defmodule CollTypeExprNode do
     @moduledoc """
     Represents a collection type expression node in a Rete network.
+
+    Matches collections of facts (specified with `[{:type, var}]` syntax).
+
+    ## Fields
+
+    - `:coll` - Variable name the collection is bound to (or `:_` if not bound)
+    - `:type` - The fact type atom to match against
+    - `:bind` - List of variable names bound by this pattern
+    - `:expr` - Tuple of `{expr_id, expr_function}` for matching collection elements
     """
     defstruct [:coll, :type, :bind, :expr]
   end
@@ -31,6 +71,19 @@ defmodule Rete.Ruleset do
   defmodule ProductionNode do
     @moduledoc """
     Represents a production node (rule or query) in a Rete network.
+
+    Contains the complete definition of a rule or query including its conditions
+    and action.
+
+    ## Fields
+
+    - `:name` - The rule/query name (atom)
+    - `:type` - Either `:rule` or `:query`
+    - `:hash` - Unique hash identifying this production based on its declaration and body
+    - `:opts` - Options keyword list (e.g., `[salience: 100]`)
+    - `:bind` - List of all variable names bound across all LHS conditions
+    - `:lhs` - List of condition nodes (FactTypeExprNode, CollTypeExprNode, or BindTestExprNode)
+    - `:rhs` - Captured function reference with signature `(hash, bindings_map) -> result`
     """
     defstruct [:name, :type, :hash, :opts, :bind, :lhs, :rhs]
   end
@@ -47,8 +100,9 @@ defmodule Rete.Ruleset do
     end
   end
 
-  # Generates a unique identifier for an expression based on its type, arguments, body, and bindings.
-  # Returns a hash value representing the expression.
+  # Generates a hash for an expression based on its arguments and body.
+  # Strips metadata, escapes the AST, serializes to binary, then hashes with :erlang.phash2/1.
+  # Returns an integer hash value.
   defp expr_hash(args, body) do
     {args, body}
     |> Macro.postwalk(&Macro.update_meta(&1, fn _ -> [] end))
@@ -59,6 +113,7 @@ defmodule Rete.Ruleset do
 
   # Parses the binding variables from an expression.
   # Returns a map of variable names to their AST representations.
+  # Excludes pinned variables (prefixed with ^) from the binding map.
   defp parse_bind(expr) do
     {_, bind} =
       Macro.prewalk(expr, %{}, fn
@@ -275,17 +330,15 @@ defmodule Rete.Ruleset do
      ]}
   end
 
-  # Qualifies special forms in the AST with the given module.
-  # This ensures that attributes are correctly referenced within the module context.
+  # Qualifies module attributes in the AST with the given module context.
+  # This ensures that module attributes (@) are correctly referenced within the module scope
+  # when used in rule definitions.
   defp qualify_special(ast, module) do
     Macro.prewalk(
       ast,
       fn
         {:@, m1, [{x, m2, nil}]} when is_atom(x) ->
           {:@, m1, [{x, m2, module}]}
-
-        {:^, m1, [{x, m2, nil}]} when is_atom(x) ->
-          {:^, m1, [{x, m2, module}]}
 
         expr ->
           expr
@@ -353,8 +406,34 @@ defmodule Rete.Ruleset do
 
   @doc """
   Allows defining a rule within a ruleset.
+
   The `defrule/2` macro takes a rule declaration and an optional rule body,
   parses them, and generates the necessary internal representation for the rule.
+
+  ## Examples
+
+      # Simple rule
+      defrule process_user({:user, id, name}) do
+        IO.puts("User \#{id}: \#{name}")
+      end
+
+      # Rule with salience and multiple conditions
+      defrule high_priority_rule(
+        %{salience: 100},
+        {:user, id},
+        {:order, id, total} when total > 1000
+      ) do
+        IO.puts("High value order for user \#{id}")
+      end
+
+      # Rule with bound facts and collections
+      defrule process_orders(
+        user = {:user, id},
+        orders = [{:order, id, amount}]
+      ) do
+        total = Enum.sum(Enum.map(orders, fn {_, _, amt} -> amt end))
+        {user, total}
+      end
   """
   defmacro defrule(rule_decl, rule_body \\ nil) do
     defproduction(__CALLER__.module, rule_decl, rule_body, type: :rule)
@@ -362,8 +441,24 @@ defmodule Rete.Ruleset do
 
   @doc """
   Allows defining a query within a ruleset.
+
   The `defquery/2` macro takes a query declaration and an optional query body,
   parses them, and generates the necessary internal representation for the query.
+
+  ## Examples
+
+      # Simple query
+      defquery find_user({:user, id, name}) do
+        {id, name}
+      end
+
+      # Query with multiple conditions
+      defquery find_high_value_customers(
+        {:user, id, name},
+        orders = [{:order, id, total} when total > 1000]
+      ) do
+        {id, name, length(orders)}
+      end
   """
   defmacro defquery(rule_decl, rule_body \\ nil) do
     defproduction(__CALLER__.module, rule_decl, rule_body, type: :query)
@@ -371,8 +466,20 @@ defmodule Rete.Ruleset do
 
   @doc """
   Allows defining a derivation relationship between two types in the taxonomy.
+
   The `derive/2` macro takes a child type and a parent type, and records the derivation
   in the ruleset's taxonomy data.
+
+  ## Examples
+
+      derive(:dog, :mammal)
+      derive(:cat, :mammal)
+      derive(:mammal, :animal)
+
+      # Now rules matching :animal will also match :dog and :cat facts
+      defrule process_animal({:animal, name}) do
+        IO.puts("Found animal: \#{name}")
+      end
   """
   defmacro derive(child, parent) do
     quote do
@@ -382,8 +489,19 @@ defmodule Rete.Ruleset do
 
   @doc """
   Allows removing a derivation relationship between two types in the taxonomy.
+
   The `underive/2` macro takes a child type and a parent type, and records the removal
   of the derivation in the ruleset's taxonomy data.
+
+  ## Examples
+
+      derive(:dog, :mammal)
+      derive(:cat, :mammal)
+
+      # Later, remove one of the derivations
+      underive(:cat, :mammal)
+
+      # Now :cat facts will no longer match rules looking for :mammal
   """
   defmacro underive(child, parent) do
     quote do
