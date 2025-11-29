@@ -68,6 +68,20 @@ defmodule Rete.Ruleset do
     defstruct [:coll, :type, :bind, :expr]
   end
 
+  defmodule BindTestGateNode do
+    @moduledoc """
+    Represents a logical gate node (AND, OR, NOT, etc.) in a Rete network.
+
+    Combines multiple binding test expressions using logical operations.
+
+    ## Fields
+
+    - `:gate` - The logical gate type (`:and`, `:or`, `:not`, `:nand`, `:nor`, `:xor`, `:xnor`)
+    - `:args` - List of condition nodes (FactTypeExprNode, CollTypeExprNode, BindTestExprNode, or nested BindTestGateNode)
+    """
+    defstruct [:gate, :args]
+  end
+
   defmodule ProductionNode do
     @moduledoc """
     Represents a production node (rule or query) in a Rete network.
@@ -215,6 +229,9 @@ defmodule Rete.Ruleset do
   # Returns a map containing the fact or collection, type, arguments, bindings, and expression
   defp parse_lhs(lhs_expr) do
     case lhs_expr do
+      {gate, args} when is_list(args) and gate in [:and, :or, :not, :nand, :nor, :xor, :xnor] ->
+        %{gate: gate, args: Enum.map(args, &parse_lhs/1)}
+
       {type, args} ->
         bind = parse_bind(lhs_expr)
         expr = parse_bind_expr(lhs_expr, bind)
@@ -284,6 +301,36 @@ defmodule Rete.Ruleset do
     end
   end
 
+  defp escape_cond(cond) do
+    case cond do
+      %{coll: coll, type: type, bind: bind, expr: expr} ->
+        struct_alias = {:__aliases__, [alias: false], [:Rete, :Ruleset, :CollTypeExprNode]}
+        node_expr = {expr.id, expr.name}
+        bind_keys = Map.keys(bind)
+        node_ast = {:%{}, [], [coll: coll, type: type, bind: bind_keys, expr: node_expr]}
+        {:%, [], [struct_alias, node_ast]}
+
+      %{fact: fact, type: type, bind: bind, expr: expr} ->
+        struct_alias = {:__aliases__, [alias: false], [:Rete, :Ruleset, :FactTypeExprNode]}
+        node_expr = {expr.id, expr.name}
+        bind_keys = Map.keys(bind)
+        node_ast = {:%{}, [], [fact: fact, type: type, bind: bind_keys, expr: node_expr]}
+        {:%, [], [struct_alias, node_ast]}
+
+      %{bind: bind, expr: expr} ->
+        struct_alias = {:__aliases__, [alias: false], [:Rete, :Ruleset, :BindTestExprNode]}
+        node_expr = {expr.id, expr.name}
+        bind_keys = Map.keys(bind)
+        node_ast = {:%{}, [], [bind: bind_keys, expr: node_expr]}
+        {:%, [], [struct_alias, node_ast]}
+
+      %{gate: gate, args: args} ->
+        struct_alias = {:__aliases__, [alias: false], [:Rete, :Ruleset, :BindTestGateNode]}
+        node_ast = {:%{}, [], [gate: gate, args: Enum.map(args, &escape_cond/1)]}
+        {:%, [], [struct_alias, node_ast]}
+    end
+  end
+
   # Escapes a rule structure into an AST representation.
   defp escape_rule(
          %{
@@ -302,31 +349,7 @@ defmodule Rete.Ruleset do
        opts: rule_opts,
        type: rule_type,
        bind: Map.keys(rule_bind),
-       lhs:
-         for cond <- rule_lhs do
-           case cond do
-             %{coll: coll, type: type, bind: bind, expr: expr} ->
-               struct_alias = {:__aliases__, [alias: false], [:Rete, :Ruleset, :CollTypeExprNode]}
-               node_expr = {expr.id, expr.name}
-               bind_keys = Map.keys(bind)
-               node_ast = {:%{}, [], [coll: coll, type: type, bind: bind_keys, expr: node_expr]}
-               {:%, [], [struct_alias, node_ast]}
-
-             %{fact: fact, type: type, bind: bind, expr: expr} ->
-               struct_alias = {:__aliases__, [alias: false], [:Rete, :Ruleset, :FactTypeExprNode]}
-               node_expr = {expr.id, expr.name}
-               bind_keys = Map.keys(bind)
-               node_ast = {:%{}, [], [fact: fact, type: type, bind: bind_keys, expr: node_expr]}
-               {:%, [], [struct_alias, node_ast]}
-
-             %{bind: bind, expr: expr} ->
-               struct_alias = {:__aliases__, [alias: false], [:Rete, :Ruleset, :BindTestExprNode]}
-               node_expr = {expr.id, expr.name}
-               bind_keys = Map.keys(bind)
-               node_ast = {:%{}, [], [bind: bind_keys, expr: node_expr]}
-               {:%, [], [struct_alias, node_ast]}
-           end
-         end
+       lhs: Enum.map(rule_lhs, &escape_cond/1)
      ]}
   end
 
@@ -346,16 +369,19 @@ defmodule Rete.Ruleset do
     )
   end
 
+  defp cond_data(module, cond = %{expr: {expr_id, expr_name}}) do
+    expr_func = Function.capture(module, expr_name, 1)
+    Map.put(cond, :expr, {expr_id, expr_func})
+  end
+
+  defp cond_data(module, cond = %{args: args}) do
+    args = Enum.map(args, &cond_data(module, &1))
+    Map.put(cond, :args, args)
+  end
+
   @doc false
   def rule_data(module, rule = %{name: rule_name, lhs: rule_lhs}) do
-    rule_lhs =
-      Enum.map(
-        rule_lhs,
-        &Map.update(&1, :expr, nil, fn
-          {expr_id, expr_name} ->
-            {expr_id, Function.capture(module, expr_name, 1)}
-        end)
-      )
+    rule_lhs = Enum.map(rule_lhs, &cond_data(module, &1))
 
     rule_rhs = Function.capture(module, rule_name, 2)
 
@@ -364,6 +390,9 @@ defmodule Rete.Ruleset do
       Map.merge(rule, %{lhs: rule_lhs, rhs: rule_rhs})
     )
   end
+
+  defp rule_cond(cond = %{expr: _}), do: [cond]
+  defp rule_cond(%{gate: _, args: args}), do: Enum.flat_map(args, &rule_cond/1)
 
   @doc false
   defp defproduction(rule_module, rule_decl, rule_body, rule_attr) do
@@ -377,10 +406,9 @@ defmodule Rete.Ruleset do
     rule_ast = escape_rule(rule, rule_attr)
 
     rule_lhs =
-      Enum.uniq_by(
-        rule_lhs,
-        fn cond -> cond.expr.name end
-      )
+      rule_lhs
+      |> Enum.flat_map(&rule_cond/1)
+      |> Enum.uniq_by(fn cond -> cond.expr.name end)
 
     lhs_func =
       for %{expr: expr} <- rule_lhs do
@@ -512,9 +540,17 @@ defmodule Rete.Ruleset do
   @doc false
   defmacro __before_compile__(_env) do
     quote do
+      defp get_expr_data(%{expr: expr}) do
+        [expr]
+      end
+
+      defp get_expr_data(%{args: args}) do
+        Enum.flat_map(args, &get_expr_data/1)
+      end
+
       def get_expr_data do
         @rule_data
-        |> Enum.flat_map(&Enum.map(&1.lhs, fn cond -> cond.expr end))
+        |> Enum.flat_map(&Enum.flat_map(&1.lhs, fn cond -> get_expr_data(cond) end))
         |> Enum.uniq()
       end
 

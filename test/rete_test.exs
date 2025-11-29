@@ -83,6 +83,33 @@ defmodule ReteTest do
     end
   end
 
+  defmodule ExampleLogicGateRuleset do
+    use Rete.Ruleset
+
+    derive(:bird, :animal)
+    derive(:fish, :animal)
+    derive(:animal, :living_thing)
+
+    @id1 1
+
+    defrule logic_rule(
+              %{salience: 50},
+              # simple logic gates
+              {:and, [{:bird, id = @id1}, {:fish, id}]},
+              {:or, [{:bird, id = @id1}, {:fish, id}]},
+              {:not, [{:bird, id = @id1}, {:fish, id}]},
+              {:nand, [{:bird, id = @id1}, {:fish, id}]},
+              {:nor, [{:bird, id = @id1}, {:fish, id}]},
+              {:xor, [{:bird, id = @id1}, {:fish, id}]},
+              {:xnor, [{:bird, id = @id1}, {:fish, id}]},
+              # nested logic gates
+              {:or, [{:bird, id = @id1}, {:not, [{:fish, id}]}]}
+            )
+            when id > 0 do
+      [id, :bird_or_fish]
+    end
+  end
+
   doctest Rete
 
   test "verify version" do
