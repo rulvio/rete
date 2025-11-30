@@ -100,7 +100,7 @@ defmodule Rete.Ruleset do
     - `:hash` - Unique hash identifying this production based on its declaration and body
     - `:opts` - Options keyword list (e.g., `[salience: 100]`)
     - `:bind` - List of all variable names bound across all LHS conditions
-    - `:lhs` - List of condition nodes (FactTypeExprNode, CollTypeExprNode, or BindTestExprNode)
+    - `:lhs` - List of condition nodes (FactTypeExprNode, CollTypeExprNode, BindTestExprNode, or BindTestGateNode)
     - `:rhs` - Captured function reference with signature `(hash, bindings_map) -> result`
     """
     defstruct [:name, :type, :hash, :opts, :bind, :lhs, :rhs]
