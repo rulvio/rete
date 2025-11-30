@@ -104,8 +104,7 @@ defmodule ReteTest do
               {:xnor, [{:bird, id = @id1}, {:fish, id}]},
               # nested logic gates
               {:or, [{:bird, id = @id1}, {:not, [{:fish, id}]}]}
-            )
-            when id > 0 do
+            ) do
       [id, :bird_or_fish]
     end
   end
@@ -147,10 +146,7 @@ defmodule ReteTest do
       lhs_expr =
         rule
         |> Map.get(:lhs)
-        |> Enum.map(fn cond ->
-          {_, expr_func} = Map.get(cond, :expr)
-          expr_func
-        end)
+        |> Enum.map(& &1.expr)
 
       [bind1 | [bind2 | [bind3 | [bind4 | [bind5 | [bind6 | [bind7 | [test1]]]]]]]] = lhs_expr
 
@@ -237,10 +233,7 @@ defmodule ReteTest do
       lhs_expr =
         rule
         |> Map.get(:lhs)
-        |> Enum.map(fn cond ->
-          {_, expr_func} = Map.get(cond, :expr)
-          expr_func
-        end)
+        |> Enum.map(& &1.expr)
 
       [bind1 | [bind2 | [bind3 | [bind4 | [bind5 | [bind6 | [bind7 | [test1]]]]]]]] = lhs_expr
 

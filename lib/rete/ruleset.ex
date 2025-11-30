@@ -30,10 +30,11 @@ defmodule Rete.Ruleset do
 
     ## Fields
 
+    - `:code` - Unique code identifier for the test expression
     - `:bind` - List of variable names used in the test expression
-    - `:expr` - Tuple of `{expr_id, expr_function}` for evaluating the test
+    - `:expr` - The test expression function reference
     """
-    defstruct [:bind, :expr]
+    defstruct [:code, :bind, :expr]
   end
 
   defmodule FactTypeExprNode do
@@ -44,12 +45,13 @@ defmodule Rete.Ruleset do
 
     ## Fields
 
+    - `:code` - Unique code identifier for the fact type expression
     - `:fact` - Variable name the matched fact is bound to (or `:_` if not bound)
     - `:type` - The fact type atom to match against
     - `:bind` - List of variable names bound by this pattern
-    - `:expr` - Tuple of `{expr_id, expr_function}` for matching and extracting values
+    - `:expr` - The fact matching expression function reference
     """
-    defstruct [:fact, :type, :bind, :expr]
+    defstruct [:code, :fact, :type, :bind, :expr]
   end
 
   defmodule CollTypeExprNode do
@@ -60,12 +62,13 @@ defmodule Rete.Ruleset do
 
     ## Fields
 
+    - `:code` - Unique code identifier for the collection pattern
     - `:coll` - Variable name the collection is bound to (or `:_` if not bound)
     - `:type` - The fact type atom to match against
     - `:bind` - List of variable names bound by this pattern
-    - `:expr` - Tuple of `{expr_id, expr_function}` for matching collection elements
+    - `:expr` - The collection matching expression function reference
     """
-    defstruct [:coll, :type, :bind, :expr]
+    defstruct [:code, :coll, :type, :bind, :expr]
   end
 
   defmodule BindTestGateNode do
@@ -76,10 +79,11 @@ defmodule Rete.Ruleset do
 
     ## Fields
 
+    - `:code` - Unique code identifier for the gate node
     - `:gate` - The logical gate type (`:and`, `:or`, `:not`, `:nand`, `:nor`, `:xor`, `:xnor`)
     - `:args` - List of condition nodes (FactTypeExprNode, CollTypeExprNode, BindTestExprNode, or nested BindTestGateNode)
     """
-    defstruct [:gate, :args]
+    defstruct [:code, :gate, :args]
   end
 
   defmodule ProductionNode do
@@ -166,16 +170,16 @@ defmodule Rete.Ruleset do
 
     expr_hash = expr_hash(fact_expr, bind_expr)
 
-    expr_id =
+    expr_code =
       [:fact, fact_type, :bind]
       |> Enum.concat(bind_keys)
       |> Enum.concat([:expr, expr_hash])
       |> Enum.join("_")
       |> String.to_atom()
 
-    expr_name = String.to_atom("__#{expr_id}__")
+    expr_name = String.to_atom("__#{expr_code}__")
 
-    %{id: expr_id, name: expr_name, args: args_expr, body: bind_expr}
+    %{code: expr_code, name: expr_name, args: args_expr, body: bind_expr}
   end
 
   # Parses a binding expression with an associated test expression.
@@ -193,16 +197,16 @@ defmodule Rete.Ruleset do
 
     expr_hash = expr_hash(fact_expr, bind_expr)
 
-    expr_id =
+    expr_code =
       [:test, :fact, fact_type, :bind]
       |> Enum.concat(bind_keys)
       |> Enum.concat([:expr, expr_hash])
       |> Enum.join("_")
       |> String.to_atom()
 
-    expr_name = String.to_atom("__#{expr_id}__")
+    expr_name = String.to_atom("__#{expr_code}__")
 
-    %{id: expr_id, name: expr_name, args: args_expr, body: bind_expr}
+    %{code: expr_code, name: expr_name, args: args_expr, body: bind_expr}
   end
 
   # Parses a test expression with associated bindings.
@@ -213,16 +217,16 @@ defmodule Rete.Ruleset do
 
     expr_hash = expr_hash(bind_expr, test_expr)
 
-    expr_id =
+    expr_code =
       [:test, :bind]
       |> Enum.concat(bind_keys)
       |> Enum.concat([:expr, expr_hash])
       |> Enum.join("_")
       |> String.to_atom()
 
-    expr_name = String.to_atom("__#{expr_id}__")
+    expr_name = String.to_atom("__#{expr_code}__")
 
-    %{id: expr_id, name: expr_name, args: bind_expr, body: test_expr}
+    %{code: expr_code, name: expr_name, args: bind_expr, body: test_expr}
   end
 
   # Parses the left-hand side (LHS) of a rule or query.
@@ -301,32 +305,61 @@ defmodule Rete.Ruleset do
     end
   end
 
+  defp cond_code(%{expr: expr}), do: expr.code
+  defp cond_code(%{gate: gate, args: args}), do: Enum.concat([gate], Enum.map(args, &cond_code/1))
+
   defp escape_cond(cond) do
     case cond do
       %{coll: coll, type: type, bind: bind, expr: expr} ->
         struct_alias = {:__aliases__, [alias: false], [:Rete, :Ruleset, :CollTypeExprNode]}
-        node_expr = {expr.id, expr.name}
         bind_keys = Map.keys(bind)
-        node_ast = {:%{}, [], [coll: coll, type: type, bind: bind_keys, expr: node_expr]}
+
+        node_ast =
+          {:%{}, [],
+           [
+             code: expr.code,
+             coll: coll,
+             type: type,
+             bind: bind_keys,
+             expr: expr.name
+           ]}
+
         {:%, [], [struct_alias, node_ast]}
 
       %{fact: fact, type: type, bind: bind, expr: expr} ->
         struct_alias = {:__aliases__, [alias: false], [:Rete, :Ruleset, :FactTypeExprNode]}
-        node_expr = {expr.id, expr.name}
         bind_keys = Map.keys(bind)
-        node_ast = {:%{}, [], [fact: fact, type: type, bind: bind_keys, expr: node_expr]}
+
+        node_ast =
+          {:%{}, [],
+           [
+             code: expr.code,
+             fact: fact,
+             type: type,
+             bind: bind_keys,
+             expr: expr.name
+           ]}
+
         {:%, [], [struct_alias, node_ast]}
 
       %{bind: bind, expr: expr} ->
         struct_alias = {:__aliases__, [alias: false], [:Rete, :Ruleset, :BindTestExprNode]}
-        node_expr = {expr.id, expr.name}
         bind_keys = Map.keys(bind)
-        node_ast = {:%{}, [], [bind: bind_keys, expr: node_expr]}
+
+        node_ast =
+          {:%{}, [],
+           [
+             code: expr.code,
+             bind: bind_keys,
+             expr: expr.name
+           ]}
+
         {:%, [], [struct_alias, node_ast]}
 
       %{gate: gate, args: args} ->
         struct_alias = {:__aliases__, [alias: false], [:Rete, :Ruleset, :BindTestGateNode]}
-        node_ast = {:%{}, [], [gate: gate, args: Enum.map(args, &escape_cond/1)]}
+        code = cond_code(cond)
+        node_ast = {:%{}, [], [code: code, gate: gate, args: Enum.map(args, &escape_cond/1)]}
         {:%, [], [struct_alias, node_ast]}
     end
   end
@@ -369,9 +402,9 @@ defmodule Rete.Ruleset do
     )
   end
 
-  defp cond_data(module, cond = %{expr: {expr_id, expr_name}}) do
+  defp cond_data(module, cond = %{expr: expr_name}) do
     expr_func = Function.capture(module, expr_name, 1)
-    Map.put(cond, :expr, {expr_id, expr_func})
+    Map.put(cond, :expr, expr_func)
   end
 
   defp cond_data(module, cond = %{args: args}) do
@@ -540,8 +573,8 @@ defmodule Rete.Ruleset do
   @doc false
   defmacro __before_compile__(_env) do
     quote do
-      defp get_expr_data(%{expr: expr}) do
-        [expr]
+      defp get_expr_data(%{code: code, expr: expr}) do
+        [{code, expr}]
       end
 
       defp get_expr_data(%{args: args}) do
