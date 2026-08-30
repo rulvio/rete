@@ -321,7 +321,7 @@ defmodule Rete.DSL.ParserTest do
       assert true == test_node.expr.fun.(%{amount: 1})
       assert false == test_node.expr.fun.(%{amount: 0})
 
-      assert (&Rules.mixed/2) == mixed.rhs
+      assert (&Rules.__rhs_mixed__/2) == mixed.rhs
 
       assert {:loyalty, 1, "a", 2, 0} ==
                mixed.rhs.(mixed.hash, %{cid: 1, name: "a", amount: 2, items: []})

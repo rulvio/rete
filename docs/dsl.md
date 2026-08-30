@@ -15,7 +15,7 @@ is the barrier, not the syntax.
 * [Negation](#negation)
 * [Collections](#collections)
 * [Taxonomy](#taxonomy)
-* [Options: salience and query parameters](#options-salience-and-query-parameters)
+* [Options: salience](#options-salience)
 * [Queries](#queries)
 * [The right hand side](#the-right-hand-side)
 * [Condition order](#condition-order)
@@ -382,7 +382,7 @@ expression.
 Struct types work the same way, with the module as the type: `derive MyApp.Refund,
 MyApp.Adjustment`.
 
-## Options: salience and query parameters
+## Options: salience
 
 A `%{...}` literal in **first** position is the rule's options, not a condition — unless
 it has a `__type__` key, which makes it a tagged-map condition instead.
@@ -422,12 +422,17 @@ defquery summary({:customer, cid, name}, orders = [{:large_order, cid, amt}]) do
 end
 ```
 
+**A query is a function in its own module.** `defquery large_orders(...)` defines
+`large_orders/1` and `large_orders/2`, so you run it by calling it:
+
 ```elixir
-Rete.Session.query(session, :large_orders)              #=> [{1, 250}, {1, 900}, {2, 30}]
-Rete.Session.query(session, :large_orders, cid: 1)      #=> [{1, 250}, {1, 900}]
-Rete.Session.query(session, :large_orders, cid: 1, amt: 250)  #=> [{1, 250}]
-Rete.Session.query(session, :large_orders, %{cid: 2})   #=> [{2, 30}]
-Rete.Session.query(session, :summary)                   #=> [%{customer: "Ada", count: 2}]
+MyRuleset.large_orders(session)                    #=> [{1, 250}, {1, 900}, {2, 30}]
+MyRuleset.large_orders(session, cid: 1)            #=> [{1, 250}, {1, 900}]
+MyRuleset.large_orders(session, cid: 1, amt: 250)  #=> [{1, 250}]
+MyRuleset.large_orders(session, %{cid: 2})         #=> [{2, 30}]
+MyRuleset.summary(session)                         #=> [%{customer: "Ada", count: 2}]
+
+session |> MyRuleset.large_orders(cid: 1)          # a plain function, so it pipes
 ```
 
 There is nothing to declare. Any variable the left hand side binds can be constrained at
@@ -435,15 +440,36 @@ call time, as a keyword list or a map. Naming something the query does not bind 
 listing what it does bind, rather than quietly answering `[]`:
 
 ```elixir
-Rete.Session.query(session, :large_orders, nope: 1)
-#=> ** (ArgumentError) the query large_orders binds [:amt, :cid], and was given [:nope]
+MyRuleset.large_orders(session, nope: 1)
+#=> ** (ArgumentError) the query MyRuleset.large_orders binds [:amt, :cid], and was given [:nope]
 ```
 
-This is where the engine differs from Clara, deliberately. Clara declares a query's
-parameters up front and uses them to key the query node's memory, so a lookup is a hash
-lookup. Here a filter is applied to the matches at the terminal, which is simpler and
-means the caller is not restricted to a fixed set of keys — you can slice a query
-however you like without redeclaring it.
+### Two rulesets may use the same query name
+
+A query is identified by **module and name together**, never by the name alone. Two
+rulesets that each define a `:summary` compose into one session without collision, and
+`MyRuleset.summary(session)` is unambiguous by construction — it is an ordinary function
+call, so a typo is a compile error rather than an empty result at runtime.
+
+When the query is not known until it runs, name it with the pair:
+
+```elixir
+Rete.Session.query(session, {MyRuleset, :large_orders}, cid: 1)
+
+for q <- [:large_orders, :summary], do: Rete.Session.query(session, {MyRuleset, q})
+```
+
+That is the whole of the addressing scheme: **call it, or name it with `{module, name}`.**
+A bare `:large_orders` is rejected, with an error pointing at both forms. The same pair
+names a rule for `Rete.Inspect.why_not/2`.
+
+This is where the engine differs from Clara, deliberately, in two ways. Clara declares a
+query's parameters up front and uses them to key the query node's memory, so a lookup is
+a hash lookup; here a filter is applied to the matches at the terminal, which means the
+caller is not restricted to a fixed set of keys and can slice a query however they like
+without redeclaring it. And Clara's `defquery` binds a var that you pass to `query`,
+where Elixir's module system already gives every query a home and a name — so the query
+*is* the function.
 
 Two things to know:
 

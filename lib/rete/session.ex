@@ -14,7 +14,7 @@ defmodule Rete.Session do
         |> Rete.Session.fire_rules()
 
       Rete.Session.facts(session)
-      Rete.Session.query(session, :flagged_for)
+      MyRuleset.flagged_for(session, cid: 1)
 
   ## Insert, retract, and what a rule may do
 
@@ -107,13 +107,23 @@ defmodule Rete.Session do
   def fire_rules(session, opts \\ []), do: update(session, &Engine.fire_rules(&1, opts))
 
   @doc """
-  Runs a query: one result per match, computed by the query's body.
+  Runs a query by `{module, name}`: one result per match, computed by its body.
 
-      Rete.Session.query(session, :flagged_for)
+      Rete.Session.query(session, {MyRuleset, :flagged_for}, cid: 1)
       #=> [{1, 250}]
 
-      Rete.Session.query(session, :flagged_for, cid: 1)
-      #=> [{1, 250}]
+  **Usually you would not write this.** `defquery flagged_for(...)` defines
+  `flagged_for/2` in its own module, so the same call reads:
+
+      MyRuleset.flagged_for(session, cid: 1)
+      session |> MyRuleset.flagged_for(cid: 1)
+
+  which is a plain function call the compiler checks. This is the form to reach
+  for when the query is decided at runtime rather than written down.
+
+  A query is addressed by module and name together because a bare name belongs
+  to no one: two rulesets composed into one session may each define a
+  `:summary`, and the pair is what tells them apart.
 
   `filters` narrows the matches by equality on the *bindings*, before the body
   runs, and may name any variable the left hand side binds — there is no
@@ -127,9 +137,9 @@ defmodule Rete.Session do
   inserted in, so a given set of facts always answers the same way, but sort the
   result if you need a particular order.
   """
-  @spec query(t(), atom(), keyword() | %{atom() => term()}) :: [term()]
-  def query(%__MODULE__{state: state}, name, filters \\ []),
-    do: Engine.query(state, name, filters)
+  @spec query(t(), {module(), atom()}, keyword() | %{atom() => term()}) :: [term()]
+  def query(%__MODULE__{state: state}, ref, filters \\ []),
+    do: Engine.query(state, ref, filters)
 
   @doc """
   Every fact the session holds, inserted or concluded.

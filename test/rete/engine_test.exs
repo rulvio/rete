@@ -632,7 +632,7 @@ defmodule Rete.EngineTest do
       session = run([LeadColl], [{:o, 1}, {:o, 2}])
 
       assert [{:count, 2}] == derived(session, :count)
-      assert [[{:o, 1}, {:o, 2}]] == Session.query(session, :all)
+      assert [[{:o, 1}, {:o, 2}]] == LeadColl.all(session)
     end
 
     # The case that forces the root token to be planted when the state is built
@@ -642,7 +642,7 @@ defmodule Rete.EngineTest do
       session = [LeadColl] |> Session.new() |> Session.fire_rules()
 
       assert [{:count, 0}] == Session.facts(session)
-      assert [[]] == Session.query(session, :all)
+      assert [[]] == LeadColl.all(session)
     end
 
     # The collection binds no new variable, so by the locked rule it has one
@@ -1231,24 +1231,24 @@ defmodule Rete.EngineTest do
     test "a query returns what its body computes, not the bindings" do
       session = run([Queries], [{:order, 1, 250}, {:order, 2, 50}])
 
-      assert [{1, 250}] == Session.query(session, :flagged_for)
-      assert [%{customer: 1, doubled: 500}] == Session.query(session, :summary)
+      assert [{1, 250}] == Queries.flagged_for(session)
+      assert [%{customer: 1, doubled: 500}] == Queries.summary(session)
     end
 
     test "one result per match" do
       session = run([Queries], [{:order, 1, 250}, {:order, 1, 900}, {:order, 2, 300}])
 
-      assert [{1, 250}, {1, 900}, {2, 300}] == Session.query(session, :flagged_for)
+      assert [{1, 250}, {1, 900}, {2, 300}] == Queries.flagged_for(session)
     end
 
     # No declaration: anything the left hand side binds can be constrained.
     test "any binding can be filtered on, as a keyword list or a map" do
       session = run([Queries], [{:order, 1, 250}, {:order, 1, 900}, {:order, 2, 300}])
 
-      assert [{1, 250}, {1, 900}] == Session.query(session, :flagged_for, cid: 1)
-      assert [{1, 250}] == Session.query(session, :flagged_for, cid: 1, amt: 250)
-      assert [{2, 300}] == Session.query(session, :flagged_for, %{cid: 2})
-      assert [] == Session.query(session, :flagged_for, cid: 99)
+      assert [{1, 250}, {1, 900}] == Queries.flagged_for(session, cid: 1)
+      assert [{1, 250}] == Queries.flagged_for(session, cid: 1, amt: 250)
+      assert [{2, 300}] == Queries.flagged_for(session, %{cid: 2})
+      assert [] == Queries.flagged_for(session, cid: 99)
     end
 
     # Filtering happens on the bindings, before the body runs, which is what
@@ -1256,23 +1256,68 @@ defmodule Rete.EngineTest do
     test "a filter names a binding even when the body hides it" do
       session = run([Queries], [{:order, 1, 250}, {:order, 2, 300}])
 
-      assert [%{customer: 1, doubled: 500}] == Session.query(session, :summary, amt: 250)
+      assert [%{customer: 1, doubled: 500}] == Queries.summary(session, amt: 250)
     end
 
     test "a query reflects retraction" do
       session = run([Queries], [{:order, 1, 250}])
-      assert [_] = Session.query(session, :flagged_for)
+      assert [_] = Queries.flagged_for(session)
 
       session = session |> Session.retract({:order, 1, 250}) |> Session.fire_rules()
-      assert [] == Session.query(session, :flagged_for)
+      assert [] == Queries.flagged_for(session)
     end
 
-    test "an unknown query name is an error naming what is available" do
+    # The query the generated function delegates to, for a query chosen at
+    # runtime rather than written down.
+    test "a query can be addressed by {module, name}" do
+      session = run([Queries], [{:order, 1, 250}])
+
+      assert [{1, 250}] == Session.query(session, {Queries, :flagged_for})
+      assert [{1, 250}] == Session.query(session, {Queries, :flagged_for}, cid: 1)
+    end
+
+    test "an unknown query is an error naming what is available" do
+      session = run([Queries], [])
+
+      error =
+        assert_raise ArgumentError, fn -> Session.query(session, {Queries, :nope}) end
+
+      assert error.message =~ "no query Rete.EngineTest.Queries.nope"
+      assert error.message =~ "Rete.EngineTest.Queries.flagged_for"
+    end
+
+    # A query in a module the session was never built from reads as a typo
+    # unless the error says which rulesets are actually in there.
+    test "a query from a module not in the session names the modules that are" do
+      session = run([Queries], [])
+
+      error =
+        assert_raise ArgumentError, fn -> Session.query(session, {Elsewhere, :flagged_for}) end
+
+      assert error.message =~ "no query Elsewhere.flagged_for"
+      assert error.message =~ "Elsewhere contributed nothing to this session"
+      assert error.message =~ "built from [Rete.EngineTest.Queries]"
+    end
+
+    # A bare name was how this worked before queries were module scoped, so the
+    # error has to teach the new form rather than complain about a tuple.
+    test "a bare query name is an error pointing at the module that defines it" do
+      session = run([Queries], [])
+
+      error = assert_raise ArgumentError, fn -> Session.query(session, :flagged_for) end
+
+      assert error.message =~ "a query is named by {module, name}"
+      assert error.message =~ "Rete.EngineTest.Queries.flagged_for(session, filters)"
+      assert error.message =~ "{Rete.EngineTest.Queries, :flagged_for}"
+    end
+
+    test "a bare name nothing defines says so rather than guessing" do
       session = run([Queries], [])
 
       error = assert_raise ArgumentError, fn -> Session.query(session, :nope) end
-      assert error.message =~ "no query named :nope"
-      assert error.message =~ "flagged_for"
+
+      assert error.message =~ "No query of that name is defined here"
+      assert error.message =~ "Rete.EngineTest.Queries.flagged_for"
     end
 
     # A filter naming something the query does not bind would silently match
@@ -1281,7 +1326,7 @@ defmodule Rete.EngineTest do
       session = run([Queries], [])
 
       error =
-        assert_raise ArgumentError, fn -> Session.query(session, :flagged_for, bogus: 1) end
+        assert_raise ArgumentError, fn -> Queries.flagged_for(session, bogus: 1) end
 
       assert error.message =~ "binds [:amt, :cid]"
       assert error.message =~ "was given [:bogus]"
@@ -1370,7 +1415,7 @@ defmodule Rete.EngineTest do
     end
 
     test "a cap of zero with an activation waiting raises" do
-      assert_raise RuntimeError, ~r/Still pending:\n  one %\{\}/, fn ->
+      assert_raise RuntimeError, ~r/Still pending:\n  Rete.EngineTest.Settles.one %\{\}/, fn ->
         [Settles] |> Session.new() |> Session.insert({:go}) |> Session.fire_rules(max_cycles: 0)
       end
     end

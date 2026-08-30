@@ -72,7 +72,8 @@ run before `Codegen.compile/1`. Both are idempotent.
 ### What a ruleset module ends up containing
 
 * `__<code>__/1` and `__<code>__/2` - one function per distinct expression,
-* `<rule_name>/2` - the RHS of each production,
+* `<query_name>/1,2` - one per query, running it against a session,
+* `__rhs_<name>__/2` - the RHS of each production,
 * `get_rule_data/0`, `get_expr_data/0`, `get_taxo_data/0`, `get_version/0`.
 
 `get_expr_data/0` returns `{code, fun}` for **every** expression reachable from

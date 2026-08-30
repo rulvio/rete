@@ -13,7 +13,11 @@ defmodule Rete.Inspect do
 
       Rete.Inspect.explain(session, {:escalated, 1})
       Rete.Inspect.fired(session)
-      Rete.Inspect.why_not(session, :some_rule)
+      Rete.Inspect.why_not(session, {MyRuleset, :some_rule})
+
+  A rule is named by the `{module, name}` pair it was defined under, the same
+  identity `Rete.Session.query/3` uses, because a bare name belongs to no one:
+  two rulesets composed into one session may each define a `:summary`.
 
   ## Internal machinery is translated, not leaked
 
@@ -40,6 +44,10 @@ defmodule Rete.Inspect do
     * `:origin` — `:asserted` when you inserted it, `:derived` when a rule
       concluded it, `:unknown` when the session does not hold it
     * `:rule` — the rule that concluded it, `nil` when asserted
+    * `:module` — the ruleset that rule was defined in, `nil` when asserted.
+      Reported alongside `:rule` rather than folded into it, so that a caller
+      matching on a bare name still works while two rules of the same name
+      remain distinguishable.
     * `:bindings` — the match that concluded it, `nil` when asserted
     * `:supports` — one nested explanation per fact the match rested on
   """
@@ -47,6 +55,7 @@ defmodule Rete.Inspect do
           fact: term(),
           origin: :asserted | :derived | :unknown,
           rule: atom() | nil,
+          module: module() | nil,
           bindings: map() | nil,
           supports: [explanation()]
         }
@@ -81,15 +90,33 @@ defmodule Rete.Inspect do
       MapSet.member?(seen, fact) ->
         # A conclusion that supports itself, directly or through a cycle. Report
         # it once rather than recursing forever.
-        [%{fact: fact, origin: :derived, rule: :"...cycle", bindings: nil, supports: []}]
+        [
+          %{
+            fact: fact,
+            origin: :derived,
+            rule: :"...cycle",
+            module: nil,
+            bindings: nil,
+            supports: []
+          }
+        ]
 
       not Map.has_key?(state.memory.facts, fact) ->
-        [%{fact: fact, origin: :unknown, rule: nil, bindings: nil, supports: []}]
+        [%{fact: fact, origin: :unknown, rule: nil, module: nil, bindings: nil, supports: []}]
 
       true ->
         case derivations(state, fact) do
           [] ->
-            [%{fact: fact, origin: :asserted, rule: nil, bindings: nil, supports: []}]
+            [
+              %{
+                fact: fact,
+                origin: :asserted,
+                rule: nil,
+                module: nil,
+                bindings: nil,
+                supports: []
+              }
+            ]
 
           derivations ->
             seen = MapSet.put(seen, fact)
@@ -99,6 +126,7 @@ defmodule Rete.Inspect do
                 fact: fact,
                 origin: :derived,
                 rule: node.name,
+                module: node.module,
                 bindings: token.bindings,
                 supports: Enum.flat_map(matched_facts(state, token), &do_explain(state, &1, seen))
               }
@@ -141,7 +169,9 @@ defmodule Rete.Inspect do
 
   Generated negation helpers are excluded unless `generated: true`.
   """
-  @spec fired(Session.t(), keyword()) :: [%{rule: atom(), bindings: map(), inserted: [term()]}]
+  @spec fired(Session.t(), keyword()) :: [
+          %{rule: atom(), module: module(), bindings: map(), inserted: [term()]}
+        ]
   def fired(%Session{state: state}, opts \\ []) do
     include_generated? = Keyword.get(opts, :generated, false)
 
@@ -151,9 +181,9 @@ defmodule Rete.Inspect do
         include_generated? or not node.generated?,
         {token, batches} <- by_token,
         facts <- batches do
-      %{rule: node.name, bindings: token.bindings, inserted: facts}
+      %{rule: node.name, module: node.module, bindings: token.bindings, inserted: facts}
     end
-    |> Enum.sort_by(&{&1.rule, inspect(&1.bindings)})
+    |> Enum.sort_by(&{&1.rule, inspect(&1.module), inspect(&1.bindings)})
   end
 
   @doc """
@@ -181,19 +211,27 @@ defmodule Rete.Inspect do
   `0` in one column is not by itself a failure. Compare the columns, and compare
   a node with the one before it.
   """
-  @spec why_not(Session.t(), atom()) :: [map()]
-  def why_not(%Session{state: state}, rule) do
-    case terminal(state, rule) do
+  @spec why_not(Session.t(), {module(), atom()}) :: [map()]
+  def why_not(%Session{state: state}, {module, name} = ref)
+      when is_atom(module) and is_atom(name) do
+    case terminal(state, ref) do
       nil ->
         raise ArgumentError,
-              "no rule or query named #{inspect(rule)} in this network. Defined: " <>
-                inspect(rule_names(state))
+              "no rule or query #{Network.ref_string(ref)} in this network. Defined: " <>
+                Enum.map_join(rule_refs(state), ", ", &Network.ref_string/1)
 
       terminal ->
         state
         |> chain_to(terminal.id)
         |> Enum.map(fn id -> describe_node(state, id) end)
     end
+  end
+
+  def why_not(%Session{state: state}, name) when is_atom(name) do
+    raise ArgumentError,
+          "a rule is named by {module, name}, not by #{inspect(name)} alone — " <>
+            "two rulesets may each define one. Defined: " <>
+            Enum.map_join(rule_refs(state), ", ", &Network.ref_string/1)
   end
 
   @doc """
@@ -233,9 +271,9 @@ defmodule Rete.Inspect do
 
   # --- helpers ------------------------------------------------------------------
 
-  defp terminal(state, rule) do
+  defp terminal(state, {module, name}) do
     Enum.find(Network.beta_nodes(state.network), fn node ->
-      terminal?(node) and node.name == rule
+      terminal?(node) and node.name == name and node.module == module
     end)
   end
 
@@ -243,11 +281,11 @@ defmodule Rete.Inspect do
   defp terminal?(%Node.Query{}), do: true
   defp terminal?(_node), do: false
 
-  defp rule_names(state) do
+  defp rule_refs(state) do
     for node <- Network.beta_nodes(state.network),
         terminal?(node),
         not generated?(node),
-        do: node.name
+        do: {node.module, node.name}
   end
 
   # Walks back from the terminal to the root, then reports root-first, so the

@@ -160,6 +160,13 @@ defmodule Rete.Engine do
   @doc """
   Runs a query: one result per match, computed by the query's body.
 
+  A query is named by the `{module, name}` pair it was defined under, because a
+  bare name belongs to no one — two rulesets may each define a `:summary`.
+  Callers normally do not write the pair at all: `defquery summary(...)` defines
+  `summary/2` in its own module, so the readable form is
+  `MyRuleset.summary(session, filters)`. This is what that calls, and what to
+  use when the query is decided at runtime.
+
   `filters` narrows the matches by equality on the *bindings*, before the body
   runs, and may name any variable the query's left hand side binds. There is no
   separate parameter declaration — a query is its conditions and its body, and
@@ -169,9 +176,12 @@ defmodule Rete.Engine do
   for a given set of facts, so the same session always answers the same way, but
   nothing about the order is a guarantee to build on.
   """
-  @spec query(State.t(), atom(), keyword() | %{atom() => term()}) :: [term()]
-  def query(%State{} = state, name, filters \\ []) do
-    node = query_node!(state, name)
+  @spec query(State.t(), {module(), atom()}, keyword() | %{atom() => term()}) :: [term()]
+  def query(state, ref, filters \\ [])
+
+  def query(%State{} = state, {module, name} = ref, filters)
+      when is_atom(module) and is_atom(name) do
+    node = query_node!(state, ref)
     filters = normalize_filters(filters)
     check_filters!(node, filters)
 
@@ -190,15 +200,62 @@ defmodule Rete.Engine do
     |> Enum.sort()
   end
 
-  defp query_node!(state, name) do
-    case Network.query(state.network, name) do
+  def query(%State{} = state, name, _filters) when is_atom(name) do
+    raise ArgumentError, bare_name_message(state, name)
+  end
+
+  # A bare name used to be the way to run a query, and the fix is not obvious
+  # from "expected a tuple": say which module, when the network knows.
+  defp bare_name_message(state, name) do
+    suggestions =
+      for {module, ^name} = ref <- Network.query_refs(state.network),
+          do:
+            "    #{inspect(module)}.#{name}(session, filters)\n" <>
+              "    Rete.Session.query(session, #{inspect(ref)}, filters)"
+
+    detail =
+      case suggestions do
+        [] -> "No query of that name is defined here. " <> defined(state)
+        _ -> "Did you mean:\n\n" <> Enum.join(suggestions, "\n")
+      end
+
+    "a query is named by {module, name}, not by #{inspect(name)} alone — " <>
+      "two rulesets may each define one. " <> detail
+  end
+
+  defp query_node!(state, {module, _name} = ref) do
+    case Network.query(state.network, ref) do
       nil ->
         raise ArgumentError,
-              "no query named #{inspect(name)} in this network. Defined: " <>
-                inspect(Enum.sort(Map.keys(state.network.queries)))
+              "no query #{Network.ref_string(ref)} in this network. " <>
+                missing_module(state, module) <> defined(state)
 
       node ->
         node
+    end
+  end
+
+  # Naming a query in a ruleset the session was never built from reads exactly
+  # like a typo unless the error separates the two.
+  defp missing_module(state, module) do
+    modules = Network.modules(state.network)
+
+    if module in modules do
+      ""
+    else
+      "#{inspect(module)} contributed nothing to this session, which was built " <>
+        "from #{inspect(modules)}. "
+    end
+  end
+
+  defp defined(state) do
+    case Network.query_refs(state.network) do
+      [] ->
+        "This session was built from #{inspect(Network.modules(state.network))}, " <>
+          "which define no queries at all."
+
+      refs ->
+        "Defined: " <> Enum.map_join(refs, ", ", &Network.ref_string/1) <> "."
     end
   end
 
@@ -214,8 +271,8 @@ defmodule Rete.Engine do
 
       unknown ->
         raise ArgumentError,
-              "the query #{node.name} binds #{inspect(node.bind)}, and was given " <>
-                "#{inspect(Enum.sort(unknown))}"
+              "the query #{Network.ref_string({node.module, node.name})} binds " <>
+                "#{inspect(node.bind)}, and was given #{inspect(Enum.sort(unknown))}"
     end
   end
 
@@ -283,9 +340,12 @@ defmodule Rete.Engine do
     """
   end
 
+  # Qualified, because a loop between two rules of the same name in different
+  # rulesets is exactly the case where the bare name explains nothing.
   defp rule_name(%State{} = state, node_id) do
     case Network.node(state.network, node_id) do
-      %{name: name} -> name
+      %{name: name, module: module} -> Network.ref_string({module, name})
+      %{name: name} -> to_string(name)
       _ -> inspect(node_id)
     end
   end
@@ -400,7 +460,7 @@ defmodule Rete.Engine do
 
   defp describe(state, %Activation{node_id: id, token: token}) do
     case Network.node(state.network, id) do
-      %{name: name} -> "#{name} #{inspect(token.bindings)}"
+      %{name: _} -> "#{rule_name(state, id)} #{inspect(token.bindings)}"
       other -> inspect(other)
     end
   end

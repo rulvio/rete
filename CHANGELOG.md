@@ -12,10 +12,9 @@ First release. A complete forward-chaining Rete engine: the DSL front end, the n
 compiler, the propagation loop, truth maintenance and the observability tools.
 
 `0.1.0` rather than `1.0.0` deliberately. Everything documented works and is covered by
-641 tests, but two parts of the surface are known to be unsettled and are likely to
-change without a major version: what a query's declaration means (its body is currently
-ignored and its parameters live in the options map), and how a collection reaches
-per-group firing. See the known gaps in `docs/design/`.
+660 tests, but one part of the surface is known to be unsettled and is likely to change
+without a major version: how a collection reaches per-group firing. See the known gaps
+in `docs/design/`.
 
 ### The DSL
 
@@ -33,7 +32,10 @@ per-group firing. See the known gaps in `docs/design/`.
 * Negation of a single condition, and of a conjunction — the latter extracted into a
   generated helper whose marker fact carries the bindings the negation is scoped by.
 * `derive/2` and `underive/2` for fact-type hierarchies, applied by the alpha index.
-* `defquery/2`, with parameters through the options map.
+* `defquery/2`. A query returns what its body computes, one result per match, and defines
+  `<name>/1,2` in its own module so it is run by calling it —
+  `MyRuleset.find_user(session, id: 1)`. Any binding can be filtered on; there is no
+  parameter declaration.
 * `%{salience: n}` for firing priority.
 * Pinned values, module attributes and aliases resolved into a condition's identity, so
   that two conditions share a compiled node exactly when they behave the same.
@@ -41,8 +43,8 @@ per-group firing. See the known gaps in `docs/design/`.
   nothing binds, a left hand side that cannot be ordered, a binding that shadows an
   upstream variable, reading a collection-local variable outside its collection, a
   discarded (`_`-prefixed) variable read by a guard, a bound collection element, a
-  production with no body, a duplicate production name, a query parameter the left hand
-  side does not bind, and two conditions reading the same module attribute at different
+  production with no body, a production name declared twice in one module, the obsolete
+  `params:` option, and two conditions reading the same module attribute at different
   values.
 
 ### The compiler
@@ -73,4 +75,13 @@ per-group firing. See the known gaps in `docs/design/`.
 * `Rete.Listener` — one callback, every event emitted in one place, costing nothing when
   nobody is listening. `Rete.Listener.Collect` and `Rete.Listener.Trace` ship.
 * `Rete.Inspect` — `explain/2`, `fired/2`, `why_not/2` and `collection/3`, all derived
-  from working memory, so they need no setup and cannot drift.
+  from working memory, so they need no setup and cannot drift. A rule is named the same
+  way a query is, by `{module, name}`.
+
+### Naming
+
+* A production is identified by **`{module, name}`**, not by name alone, so two rulesets
+  that each define a `:summary` compose into one session. A repeat within one module is
+  still rejected.
+* Queries are run by calling them; `Rete.Session.query/3` takes `{module, name}` for the
+  runtime-chosen case. A bare name raises, naming the module that defines it.

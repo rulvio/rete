@@ -226,7 +226,18 @@ defmodule Rete.ObservabilityTest do
     test "reports the rule, its match and what it inserted" do
       fired = Inspect.fired(session())
 
-      assert %{rule: :flag, bindings: %{cid: 1, amt: 250}, inserted: [{:flagged, 1}]} in fired
+      assert %{
+               rule: :flag,
+               module: Rules,
+               bindings: %{cid: 1, amt: 250},
+               inserted: [{:flagged, 1}]
+             } in fired
+    end
+
+    # Two rulesets may each define a :flag. The bare name stays, so a caller
+    # matching on it still works, and the module says which one this was.
+    test "reports the module the rule was defined in" do
+      assert Enum.all?(Inspect.fired(session()), &(&1.module == Rules))
     end
 
     test "generated negation helpers are hidden unless asked for" do
@@ -252,7 +263,7 @@ defmodule Rete.ObservabilityTest do
 
   describe "why_not/2" do
     test "reports the chain a rule's conditions form" do
-      steps = Inspect.why_not(session(), :dormant)
+      steps = Inspect.why_not(session(), {Rules, :dormant})
 
       assert ["root_join", "negation", "production"] == Enum.map(steps, & &1.kind)
       assert [:cust, :order, nil] == Enum.map(steps, & &1.type)
@@ -260,7 +271,7 @@ defmodule Rete.ObservabilityTest do
 
     # The diagnostic: the left side matched and the right side found nothing.
     test "shows where the chain broke" do
-      steps = Inspect.why_not(session([{:cust, 7}]), :dormant)
+      steps = Inspect.why_not(session([{:cust, 7}]), {Rules, :dormant})
       negation = Enum.find(steps, &(&1.kind == "negation"))
 
       assert negation.tokens == 1, "the customer condition matched"
@@ -268,19 +279,26 @@ defmodule Rete.ObservabilityTest do
     end
 
     test "a terminal reports how many matches it concluded from" do
-      steps = Inspect.why_not(session(), :flag)
+      steps = Inspect.why_not(session(), {Rules, :flag})
       terminal = List.last(steps)
 
       assert "production" == terminal.kind
       assert terminal.activations == 1
     end
 
-    test "an unknown rule name is an error listing what exists" do
-      error = assert_raise ArgumentError, fn -> Inspect.why_not(session(), :nope) end
+    test "an unknown rule is an error listing what exists" do
+      error = assert_raise ArgumentError, fn -> Inspect.why_not(session(), {Rules, :nope}) end
 
-      assert error.message =~ "no rule or query named :nope"
-      assert error.message =~ "flag"
+      assert error.message =~ "no rule or query Rete.ObservabilityTest.Rules.nope"
+      assert error.message =~ "Rete.ObservabilityTest.Rules.flag"
       refute error.message =~ "__neg_", "generated helpers should not be suggested"
+    end
+
+    test "a bare rule name is an error teaching the qualified form" do
+      error = assert_raise ArgumentError, fn -> Inspect.why_not(session(), :flag) end
+
+      assert error.message =~ "a rule is named by {module, name}"
+      assert error.message =~ "Rete.ObservabilityTest.Rules.flag"
     end
   end
 
@@ -309,7 +327,7 @@ defmodule Rete.ObservabilityTest do
         |> Session.new()
         |> Session.insert(facts)
         |> Session.fire_rules()
-        |> Session.query(:flagged)
+        |> Ordered.flagged()
       end
 
       base = answer.([{:o, 1, 20}, {:o, 2, 30}, {:o, 3, 40}])

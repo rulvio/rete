@@ -340,8 +340,10 @@ defmodule Rete.IR do
 
     ## Fields
 
-      * `:name` - the name given in `defrule`/`defquery`; also the name of the
-        generated RHS function.
+      * `:name` - the name given in `defrule`/`defquery`. The generated RHS
+        function is named `rhs_name/1` of it, not the name itself: a query owns
+        its own name in its module, where it is defined as a function that runs
+        the query against a session.
       * `:type` - `:rule` or `:query`.
       * `:hash` - `:erlang.phash2/1` of the declaration and body AST, stable for
         a given source text, used to identify the production.
@@ -378,6 +380,20 @@ defmodule Rete.IR do
 
     defstruct [:name, :type, :hash, :opts, :bind, :lhs, :rhs, :module, :__ast__]
   end
+
+  @doc """
+  The name of the function a production's right hand side compiles to.
+
+      iex> Rete.IR.rhs_name(:loyalty)
+      :__rhs_loyalty__
+
+  Deliberately not the production's own name. A query is *called* by name —
+  `MyRuleset.loyalty(session, cid: 1)` — so the name has to be free for the
+  arity 2 function that does that, and the body is machinery the caller never
+  invokes directly.
+  """
+  @spec rhs_name(atom()) :: atom()
+  def rhs_name(name), do: :"__rhs_#{name}__"
 
   @typedoc """
   A single LHS condition.
@@ -529,8 +545,8 @@ defmodule Rete.IR do
   expression functions have been defined, because it captures them by name. The
   `:__ast__` fields are dropped, `:fun` fields become
   `Function.capture(__MODULE__, name, arity)`, `:rhs` becomes
-  `Function.capture(__MODULE__, name, 2)` and `:opts` is kept unescaped so that
-  option values are evaluated in the module scope.
+  `Function.capture(__MODULE__, rhs_name(name), 2)` and `:opts` is kept
+  unescaped so that option values are evaluated in the module scope.
   """
   @spec escape(Production.t()) :: Macro.t()
   def escape(%Production{} = production) do
@@ -543,7 +559,7 @@ defmodule Rete.IR do
       opts: opts,
       bind: Macro.escape(bind),
       lhs: Enum.map(lhs, &escape_condition/1),
-      rhs: quote(do: Function.capture(__MODULE__, unquote(name), 2)),
+      rhs: quote(do: Function.capture(__MODULE__, unquote(rhs_name(name)), 2)),
       module: quote(do: __MODULE__)
     )
   end

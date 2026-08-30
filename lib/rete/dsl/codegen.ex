@@ -278,13 +278,19 @@ defmodule Rete.DSL.Codegen do
   @doc """
   The complete quoted body a `defrule`/`defquery` expands to.
 
-  In order: the expression functions, the escaped production appended to
-  `@rule_data`, and the RHS function. The escaped production captures the
-  expression functions by name, so it must come after their definitions.
+  In order: the query function (queries only), the expression functions, the
+  escaped production appended to `@rule_data`, and the RHS function. The escaped
+  production captures the expression functions by name, so it must come after
+  their definitions.
+
+  The query function comes first so that a `@doc` written above the `defquery`
+  attaches to it — the one definition of the four a caller ever names.
   """
   @spec compile(IR.Production.t()) :: Macro.t()
   def compile(%IR.Production{} = production) do
     quote do
+      unquote(query_def(production))
+
       unquote_splicing(expr_defs(production))
 
       @rule_data @rule_data ++ [unquote(IR.escape(production))]
@@ -292,6 +298,31 @@ defmodule Rete.DSL.Codegen do
       unquote(rhs_def(production))
     end
   end
+
+  @doc """
+  The quoted definition of a query's own function, or `nil` for a rule.
+
+  `defquery summary(...)` defines `summary/1` and `summary/2`, so a query is run
+  by calling it:
+
+      MyRuleset.summary(session)
+      MyRuleset.summary(session, cid: 1)
+
+  It delegates to `Rete.Session.query/3` with `{__MODULE__, name}`, which is
+  what makes two rulesets free to use the same query name: the pair is the
+  identity, and the caller writes the module rather than hoping the bare name is
+  unique.
+  """
+  @spec query_def(IR.Production.t()) :: Macro.t() | nil
+  def query_def(%IR.Production{type: :query, name: name}) do
+    quote do
+      Kernel.def unquote(name)(session, filters \\ []) do
+        Rete.Session.query(session, {__MODULE__, unquote(name)}, filters)
+      end
+    end
+  end
+
+  def query_def(%IR.Production{}), do: nil
 
   @doc """
   The quoted definitions of every expression function of a production.
@@ -311,8 +342,8 @@ defmodule Rete.DSL.Codegen do
   @doc """
   The quoted definition of the RHS function, `(hash, bindings_map) -> facts`.
 
-  Its name is the production name, so `defrule loyalty(...)` also defines
-  `loyalty/2`.
+  Named `Rete.IR.rhs_name/1` of the production, so `defrule loyalty(...)`
+  defines `__rhs_loyalty__/2` and leaves `loyalty` itself alone.
 
   The bindings are read in two ways, decided by `Rete.IR.lhs_bindings/1`:
 
@@ -335,7 +366,7 @@ defmodule Rete.DSL.Codegen do
     optional = Enum.filter(optional, fn {name, _ast} -> MapSet.member?(used, name) end)
 
     {arg, body} = rhs_arg(rhs_bind_pattern(guaranteed, body), optional, body)
-    head = {production.name, [], [production.hash, arg]}
+    head = {IR.rhs_name(production.name), [], [production.hash, arg]}
 
     quote do
       Kernel.def(unquote(head), unquote(body))

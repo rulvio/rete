@@ -166,13 +166,13 @@ Nobody is dormant: both customers have orders.
 ### Query
 
 A query has the same left hand side as a rule, but it never fires: it holds the matches that
-reached it, and you read them back by name.
+reached it, and **it is a function in its own module** — so you read it back by calling it.
 
 ```elixir
-Rete.Session.query(session, :large_orders)
+Retail.large_orders(session)
 #=> [{1, 250}]
 
-Rete.Session.query(session, :large_orders, cid: 1)
+Retail.large_orders(session, cid: 1)
 #=> [{1, 250}]
 ```
 
@@ -180,6 +180,10 @@ A query returns **what its body computes**, one result per match — so it answe
 shape suits the caller rather than handing back raw bindings. There is nothing to declare:
 any variable the left hand side binds can be constrained at call time, and naming one it does
 not bind raises rather than quietly answering `[]`.
+
+Because a query is identified by `{module, name}` and never by a bare name, two rulesets that
+each define a `:summary` compose into one session without collision. When the query is chosen
+at runtime, name the pair: `Rete.Session.query(session, {Retail, :large_orders}, cid: 1)`.
 
 ### Retract
 

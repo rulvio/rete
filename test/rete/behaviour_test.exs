@@ -90,7 +90,7 @@ defmodule Rete.BehaviourTest do
         |> Session.retract({:temp, 15, "MCI"})
         |> Session.fire_rules()
 
-      assert [10] == Session.query(session, :cold_q)
+      assert [10] == Lifecycle.cold_q(session)
       assert %{{:temp, 10, "MCI"} => 1, {:cold, 10} => 1} == session.state.memory.facts
     end
 
@@ -149,8 +149,8 @@ defmodule Rete.BehaviourTest do
         |> Session.retract({:temp, 10, "MCI"})
         |> Session.fire_rules()
 
-      assert [10] == Session.query(retract_first, :cold_q)
-      assert [] == Session.query(insert_first, :cold_q)
+      assert [10] == Lifecycle.cold_q(retract_first)
+      assert [] == Lifecycle.cold_q(insert_first)
     end
 
     # The same, with two distinct facts interleaved in one batch: whichever was
@@ -165,7 +165,7 @@ defmodule Rete.BehaviourTest do
         |> Session.retract({:temp, -10, "MCI"})
         |> Session.fire_rules()
 
-      assert [10] == Session.query(session, :cold_q)
+      assert [10] == Lifecycle.cold_q(session)
     end
 
     # clara test_rules/test-multi-insert-retract. A duplicate inserted and then
@@ -201,13 +201,13 @@ defmodule Rete.BehaviourTest do
     test "nil is a join value like any other" do
       session = run(Joins, [{:temp, nil}, {:wind, nil}, {:wind, 1}])
 
-      assert [nil] == Session.query(session, :same)
+      assert [nil] == Joins.same(session)
     end
 
     test "nil does not join to a non-nil value" do
       session = run(Joins, [{:temp, nil}, {:wind, 1}])
 
-      assert [] == Session.query(session, :same)
+      assert [] == Joins.same(session)
     end
 
     defmodule Typed do
@@ -233,7 +233,7 @@ defmodule Rete.BehaviourTest do
           %{__type__: :outer_b, x: inner_b}
         ])
 
-      assert [^inner_a] = Session.query(session, :both)
+      assert [^inner_a] = Typed.both(session)
     end
 
     defmodule WholeFact do
@@ -249,10 +249,10 @@ defmodule Rete.BehaviourTest do
     # the whole fact. This only works if the binding is put in the token under
     # the same key the join reads.
     test "a whole bound fact can be the join key of a later condition" do
-      assert [] == Session.query(run(WholeFact, [{:temp, 10}, {:wind, {:temp, 20}}]), :wrapped)
+      assert [] == WholeFact.wrapped(run(WholeFact, [{:temp, 10}, {:wind, {:temp, 20}}]))
 
       assert [{:temp, 10}] ==
-               Session.query(run(WholeFact, [{:temp, 10}, {:wind, {:temp, 10}}]), :wrapped)
+               WholeFact.wrapped(run(WholeFact, [{:temp, 10}, {:wind, {:temp, 10}}]))
     end
 
     defmodule SelfJoin do
@@ -272,7 +272,7 @@ defmodule Rete.BehaviourTest do
       session = run(SelfJoin, [{:temp, 15}, {:temp, 10}, {:temp, 80}])
 
       assert [{10, 15}, {10, 80}, {15, 80}] ==
-               session |> Session.query(:pairs) |> Enum.sort()
+               session |> SelfJoin.pairs() |> Enum.sort()
     end
 
     defmodule TermOrder do
@@ -292,7 +292,7 @@ defmodule Rete.BehaviourTest do
     test "a guard comparing mixed types follows Elixir's term ordering rather than raising" do
       session = run(TermOrder, [{:wind, 10}, {:temp, nil}])
 
-      assert [nil] == Session.query(session, :over)
+      assert [nil] == TermOrder.over(session)
     end
 
     defmodule Issue433 do
@@ -344,13 +344,13 @@ defmodule Rete.BehaviourTest do
     # network's current state, not onto the last settled one.
     test "a query answers before any rule has fired" do
       session = [QueryRules] |> Session.new()
-      assert [:none] == Session.query(session, :no_cold)
+      assert [:none] == QueryRules.no_cold(session)
 
       session = Session.insert(session, {:cold, 1})
-      assert [] == Session.query(session, :no_cold)
+      assert [] == QueryRules.no_cold(session)
 
       session = Session.retract(session, {:cold, 1})
-      assert [:none] == Session.query(session, :no_cold)
+      assert [:none] == QueryRules.no_cold(session)
     end
 
     # The corollary: a query run before firing does *not* see what the pending
@@ -359,10 +359,10 @@ defmodule Rete.BehaviourTest do
     test "a query before firing does not see conclusions still on the agenda" do
       session = [QueryRules] |> Session.new() |> Session.insert([{:temp, 1}, {:seed, 9}])
 
-      assert [1] == Session.query(session, :temps)
+      assert [1] == QueryRules.temps(session)
 
       assert [1, 9] ==
-               session |> Session.fire_rules() |> Session.query(:temps) |> Enum.sort()
+               session |> Session.fire_rules() |> QueryRules.temps() |> Enum.sort()
     end
 
     # clara test_negation/test-simple-negation, the partial-retraction case.
@@ -375,10 +375,10 @@ defmodule Rete.BehaviourTest do
         |> Session.retract({:cold, 10})
         |> Session.fire_rules()
 
-      assert [] == Session.query(session, :no_cold)
+      assert [] == QueryRules.no_cold(session)
 
       session = session |> Session.retract({:cold, 15}) |> Session.fire_rules()
-      assert [:none] == Session.query(session, :no_cold)
+      assert [:none] == QueryRules.no_cold(session)
     end
   end
 
@@ -494,13 +494,13 @@ defmodule Rete.BehaviourTest do
     # external retract undoes the derivation, which releases the negation again.
     test "a conclusion that blocks another rule's negation retracts it, and gives it back" do
       base = [NegTms] |> Session.new() |> Session.fire_rules()
-      assert [0] == Session.query(base, :colds)
+      assert [0] == NegTms.colds(base)
 
       blocked = base |> Session.insert({:wind, 100}) |> Session.fire_rules()
-      assert [] == Session.query(blocked, :colds)
+      assert [] == NegTms.colds(blocked)
 
       released = blocked |> Session.retract({:wind, 100}) |> Session.fire_rules()
-      assert [0] == Session.query(released, :colds)
+      assert [0] == NegTms.colds(released)
 
       # And the whole round trip is exact, not merely equivalent in its facts.
       assert base.state.memory == released.state.memory
@@ -531,12 +531,12 @@ defmodule Rete.BehaviourTest do
     # conclusion but everything downstream concluded it.
     test "blocking a negation retracts the conclusion and everything derived from it" do
       base = [Cascade] |> Session.new() |> Session.fire_rules()
-      assert [:ok] == Session.query(base, :lousy_q)
-      assert [:ok] == Session.query(base, :first_q)
+      assert [:ok] == Cascade.lousy_q(base)
+      assert [:ok] == Cascade.first_q(base)
 
       blocked = base |> Session.insert({:hot, 100}) |> Session.fire_rules()
-      assert [] == Session.query(blocked, :lousy_q)
-      assert [] == Session.query(blocked, :first_q)
+      assert [] == Cascade.lousy_q(blocked)
+      assert [] == Cascade.first_q(blocked)
       assert %{{:hot, 100} => 1} == blocked.state.memory.facts
     end
 
@@ -561,7 +561,7 @@ defmodule Rete.BehaviourTest do
         |> Session.insert({:temp, 10})
         |> Session.fire_rules()
 
-      assert [10] == Session.query(session, :cold_not_windy)
+      assert [10] == Issue67.cold_not_windy(session)
     end
 
     defmodule NegOrGuard do
@@ -590,7 +590,7 @@ defmodule Rete.BehaviourTest do
           {:retract, fact}, s -> Session.retract(s, fact)
           :fire, s -> Session.fire_rules(s)
         end)
-        |> Session.query(:found)
+        |> NegOrGuard.found()
       end
 
       # No token at all, so nothing to release.
@@ -789,9 +789,9 @@ defmodule Rete.BehaviourTest do
     # blocks.
     test "a negation's filter can read a collection binding from the token" do
       assert [[temp: 5, temp: 7]] ==
-               Session.query(run(CollInNegation, [{:temp, 5}, {:temp, 7}]), :all_small)
+               CollInNegation.all_small(run(CollInNegation, [{:temp, 5}, {:temp, 7}]))
 
-      assert [] == Session.query(run(CollInNegation, [{:temp, 1}, {:temp, 7}]), :all_small)
+      assert [] == CollInNegation.all_small(run(CollInNegation, [{:temp, 1}, {:temp, 7}]))
     end
   end
 
@@ -831,7 +831,7 @@ defmodule Rete.BehaviourTest do
       assert [
                {{:temp, 10, "MCI"}, nil, nil, {:cw, 10, 80}},
                {{:temp, 10, "MCI"}, {:wind, 50, "MCI"}, {:cold, 10}, nil}
-             ] == Enum.sort(Session.query(session, :find))
+             ] == Enum.sort(NestedAnd.find(session))
     end
 
     # Only what every branch binds survives a disjunction. A variable the branch
@@ -841,7 +841,7 @@ defmodule Rete.BehaviourTest do
     test "a branch contributes only its own bindings" do
       session = run(NestedAnd, [{:temp, 10, "MCI"}, {:cw, 10, 80}])
 
-      assert [{{:temp, 10, "MCI"}, nil, nil, {:cw, 10, 80}}] == Session.query(session, :find)
+      assert [{{:temp, 10, "MCI"}, nil, nil, {:cw, 10, 80}}] == NestedAnd.find(session)
     end
   end
 
@@ -874,7 +874,7 @@ defmodule Rete.BehaviourTest do
           |> Session.insert({:temp, 10})
           |> Session.fire_rules()
 
-        assert [[]] == Session.query(session, query),
+        assert [[]] == Session.query(session, {CollJoin, query}),
                "#{query} collected a retracted candidate"
       end
     end
@@ -898,7 +898,7 @@ defmodule Rete.BehaviourTest do
         |> Session.retract({:temp, 10, "MCI"})
         |> Session.fire_rules()
 
-      assert [[{:temp, 10, "LAX"}]] == Session.query(session, :gathered)
+      assert [[{:temp, 10, "LAX"}]] == CollSum.gathered(session)
     end
 
     defmodule CollThreshold do
@@ -929,7 +929,7 @@ defmodule Rete.BehaviourTest do
         |> Session.insert({:temp, 10, "MCI"})
         |> Session.fire_rules()
 
-      assert [10] == Session.query(session, :cold)
+      assert [10] == CollThreshold.cold(session)
       assert 1 == session.state.memory.facts[{:cold, 10}]
     end
 
@@ -960,16 +960,16 @@ defmodule Rete.BehaviourTest do
     test "changing a collection member updates direct and downstream conclusions alike" do
       base = run(CollDownstream, [{:cw, 10}, {:cw, 20}])
 
-      assert [10, 20] == base |> Session.query(:colds) |> Enum.sort()
-      assert [10, 20] == base |> Session.query(:temps) |> Enum.sort()
+      assert [10, 20] == base |> CollDownstream.colds() |> Enum.sort()
+      assert [10, 20] == base |> CollDownstream.temps() |> Enum.sort()
 
       removed = base |> Session.retract({:cw, 10}) |> Session.fire_rules()
-      assert [20] == Session.query(removed, :colds)
-      assert [20] == Session.query(removed, :temps)
+      assert [20] == CollDownstream.colds(removed)
+      assert [20] == CollDownstream.temps(removed)
 
       added = base |> Session.insert({:cw, 15}) |> Session.fire_rules()
-      assert [10, 15, 20] == added |> Session.query(:colds) |> Enum.sort()
-      assert [10, 15, 20] == added |> Session.query(:temps) |> Enum.sort()
+      assert [10, 15, 20] == added |> CollDownstream.colds() |> Enum.sort()
+      assert [10, 15, 20] == added |> CollDownstream.temps() |> Enum.sort()
 
       # Every conclusion rests on exactly one match, so nothing accumulated.
       for {fact, count} <- added.state.memory.facts do
@@ -1025,7 +1025,7 @@ defmodule Rete.BehaviourTest do
     # get it out.
     test "a fact inserted twice appears once in a collection and needs two retractions" do
       gathered = fn s ->
-        [os] = Session.query(s, :gathered)
+        [os] = CollDup.gathered(s)
         Enum.sort(os)
       end
 
@@ -1059,7 +1059,7 @@ defmodule Rete.BehaviourTest do
       session = run(CollAncestor, [{:array_list, 1}, {:linked_list, 2}])
 
       # Sorted, because the order of a gathered list is not part of the contract.
-      assert [gathered] = Session.query(session, :lists)
+      assert [gathered] = CollAncestor.lists(session)
       assert [{:array_list, 1}, {:linked_list, 2}] == Enum.sort(gathered)
     end
 
@@ -1079,10 +1079,10 @@ defmodule Rete.BehaviourTest do
     # issue 357. A rule level guard sorted after a collection still runs, and
     # still gates.
     test "a rule level guard after a collection is evaluated" do
-      assert [] == Session.query(run(TestAfterColl, [{:city, "LGW"}, {:temp, "LGW", 0}]), :cold)
+      assert [] == TestAfterColl.cold(run(TestAfterColl, [{:city, "LGW"}, {:temp, "LGW", 0}]))
 
       assert [1] ==
-               Session.query(run(TestAfterColl, [{:city, "LHR"}, {:temp, "LHR", 0}]), :cold)
+               TestAfterColl.cold(run(TestAfterColl, [{:city, "LHR"}, {:temp, "LHR", 0}]))
     end
   end
 
@@ -1168,7 +1168,7 @@ defmodule Rete.BehaviourTest do
         |> Session.retract({:cw, 10, 10})
         |> Session.fire_rules()
 
-      assert [10] == Session.query(session, :colds)
+      assert [10] == Downstream.colds(session)
       assert %{{:cw, 10, 10} => 1, {:cold, 10} => 1} == session.state.memory.facts
     end
 
@@ -1181,7 +1181,7 @@ defmodule Rete.BehaviourTest do
         |> Session.retract({:cw, 10, 10})
         |> Session.fire_rules()
 
-      assert [10] == Session.query(cycled, :colds)
+      assert [10] == Downstream.colds(cycled)
       assert base.state.memory == cycled.state.memory
     end
 
@@ -1204,10 +1204,10 @@ defmodule Rete.BehaviourTest do
     # and the point of the test is to keep it that way.
     test "one match may support a thousand facts, and give them all back" do
       session = run(Many, [{:temp, 10}])
-      assert 1000 == length(Session.query(session, :colds))
+      assert 1000 == length(Many.colds(session))
 
       session = session |> Session.retract({:temp, 10}) |> Session.fire_rules()
-      assert [] == Session.query(session, :colds)
+      assert [] == Many.colds(session)
       assert Session.new([Many]).state.memory == session.state.memory
     end
 
@@ -1295,10 +1295,10 @@ defmodule Rete.BehaviourTest do
       for mod <- @orders do
         # Control: with nothing to block it, the query matches.
         unblocked = run(mod, [{:fourth}])
-        assert [{:fourth}] == Session.query(unblocked, :double_blocked), inspect(mod)
+        assert [{:fourth}] == Session.query(unblocked, {mod, :double_blocked}), inspect(mod)
 
         session = run(mod, [{:first}, {:fourth}])
-        assert [] == Session.query(session, :double_blocked), inspect(mod)
+        assert [] == Session.query(session, {mod, :double_blocked}), inspect(mod)
 
         assert [{:first}, {:fourth}, {:second}] == session |> Session.facts() |> Enum.sort(),
                inspect(mod)
@@ -1401,7 +1401,7 @@ defmodule Rete.BehaviourTest do
     test "a negation that flips repeatedly inside one fire cycle settles correctly" do
       session = run(NegationChurn, [{:first}, {:second}])
 
-      assert [] == Session.query(session, :hot)
+      assert [] == NegationChurn.hot(session)
 
       assert [{:first}, {:second}, {:cold, 10}, {:cw, 10}, {:cw, 20}] ==
                session |> Session.facts() |> Enum.sort()
@@ -1630,13 +1630,13 @@ defmodule Rete.BehaviourTest do
     test "retracting one descendant type does not retract its sibling" do
       base = run(CommonAncestor, [{:type1}, {:type2}])
 
-      assert [{:type1}, {:type2}] == base |> Session.query(:markers) |> Enum.sort()
+      assert [{:type1}, {:type2}] == base |> CommonAncestor.markers() |> Enum.sort()
 
       once = base |> Session.retract({:type1}) |> Session.fire_rules()
       twice = once |> Session.retract({:type1}) |> Session.fire_rules()
 
-      assert [{:type2}] == Session.query(once, :markers)
-      assert [{:type2}] == Session.query(twice, :markers)
+      assert [{:type2}] == CommonAncestor.markers(once)
+      assert [{:type2}] == CommonAncestor.markers(twice)
       assert once.state.memory == twice.state.memory
     end
   end

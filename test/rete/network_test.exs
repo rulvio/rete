@@ -255,17 +255,17 @@ defmodule Rete.NetworkTest do
   end
 
   describe "queries" do
-    test "a query is reachable by name", %{net: net} do
+    test "a query is reachable by module and name", %{net: net} do
       assert %Node.Query{name: :flagged_for, bind: [:amt, :cid]} =
-               Network.query(net, :flagged_for)
+               Network.query(net, {Demo, :flagged_for})
 
-      assert nil == Network.query(net, :no_such_query)
+      assert nil == Network.query(net, {Demo, :no_such_query})
     end
 
     # A query node carries what its left hand side binds, and nothing else. There
     # is no parameter list: the caller constrains whichever of those it likes.
     test "a query node carries its bindings and no parameter list", %{net: net} do
-      node = Network.query(net, :flagged_for)
+      node = Network.query(net, {Demo, :flagged_for})
 
       assert [:amt, :cid] == node.bind
       refute Map.has_key?(node, :param_keys)
@@ -316,25 +316,58 @@ defmodule Rete.NetworkTest do
   end
 
   describe "validation" do
-    test "duplicate production names are rejected across modules" do
-      defmodule DupA do
-        use Rete.Ruleset
+    defmodule DupA do
+      use Rete.Ruleset
 
-        defrule same({:a, x}) do
-          {:a, x}
-        end
+      defrule same({:a, x}) do
+        {:a, x}
       end
 
-      defmodule DupB do
-        use Rete.Ruleset
+      defquery both({:a, x}) do
+        {:a, x}
+      end
+    end
 
-        defrule same({:b, x}) do
-          {:b, x}
-        end
+    defmodule DupB do
+      use Rete.Ruleset
+
+      defrule same({:b, x}) do
+        {:b, x}
       end
 
-      error = assert_raise ArgumentError, fn -> Compiler.build([DupA, DupB]) end
-      assert error.message =~ "share a name"
+      defquery both({:b, x}) do
+        {:b, x}
+      end
+    end
+
+    # Two rulesets written independently must compose. A name belongs to its
+    # module, so the pair is what identifies a production, and each query
+    # answers for its own rules.
+    test "two modules may use the same production name" do
+      session =
+        [DupA, DupB]
+        |> Rete.Session.new()
+        |> Rete.Session.insert([{:a, 1}, {:b, 2}])
+        |> Rete.Session.fire_rules()
+
+      assert [{:a, 1}] == DupA.both(session)
+      assert [{:b, 2}] == DupB.both(session)
+
+      assert [{:a, 1}] == Rete.Session.query(session, {DupA, :both})
+      assert [{:b, 2}] == Rete.Session.query(session, {DupB, :both})
+    end
+
+    # Within one module it is still a mistake: the second declaration would take
+    # over the query function and the RHS of the first.
+    test "one module may not use the same production name twice" do
+      productions = Rete.get_rule_data([DupA])
+
+      error =
+        assert_raise ArgumentError, fn ->
+          Compiler.build_productions(productions ++ productions)
+        end
+
+      assert error.message =~ "declared 2 times"
       assert error.message =~ "same"
     end
 

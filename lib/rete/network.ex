@@ -12,7 +12,7 @@ defmodule Rete.Network do
       alpha_beta  alpha node id => the beta node ids it feeds
       taxonomy    %Rete.Taxonomy{}, indexed: fact type => alpha node ids
       graph       %Rete.Compiler.BetaGraph{}, the beta nodes and their edges
-      queries     query name => query node id
+      queries     {module, query name} => query node id
       productions the productions compiled in, including generated helpers
 
   ## How a fact travels
@@ -46,7 +46,7 @@ defmodule Rete.Network do
           alpha_beta: %{term() => [BetaGraph.id()]},
           taxonomy: Taxonomy.t(),
           graph: BetaGraph.t(),
-          queries: %{atom() => BetaGraph.id()},
+          queries: %{{module(), atom()} => BetaGraph.id()},
           productions: [IR.Production.t()],
           marker_types: MapSet.t(atom())
         }
@@ -115,15 +115,41 @@ defmodule Rete.Network do
     do: Map.get(alpha_beta, code, [])
 
   @doc """
-  The query node registered under a name, or `nil`.
+  The query node a `{module, name}` pair refers to, or `nil`.
   """
-  @spec query(t(), atom()) :: Node.Query.t() | nil
-  def query(%__MODULE__{graph: graph, queries: queries}, name) do
-    case Map.fetch(queries, name) do
+  @spec query(t(), {module(), atom()}) :: Node.Query.t() | nil
+  def query(%__MODULE__{graph: graph, queries: queries}, {module, name})
+      when is_atom(module) and is_atom(name) do
+    case Map.fetch(queries, {module, name}) do
       {:ok, id} -> BetaGraph.node(graph, id)
       :error -> nil
     end
   end
+
+  @doc """
+  A `{module, name}` pair as it is written in source.
+
+      iex> Rete.Network.ref_string({MyApp.Orders, :summary})
+      "MyApp.Orders.summary"
+  """
+  @spec ref_string({module(), atom()}) :: String.t()
+  def ref_string({module, name}), do: "#{inspect(module)}.#{name}"
+
+  @doc """
+  Every query in the network, as `{module, name}` pairs, sorted.
+  """
+  @spec query_refs(t()) :: [{module(), atom()}]
+  def query_refs(%__MODULE__{queries: queries}), do: queries |> Map.keys() |> Enum.sort()
+
+  @doc """
+  The modules that contributed a production to the network, sorted.
+
+  What a session was *built from*, which is the difference between "you typoed
+  the query name" and "you forgot to pass that ruleset to `Rete.Session.new/2`".
+  """
+  @spec modules(t()) :: [module()]
+  def modules(%__MODULE__{productions: productions}),
+    do: productions |> Enum.map(& &1.module) |> Enum.uniq() |> Enum.sort()
 
   @doc """
   Every production terminal, most salient first.
@@ -233,6 +259,6 @@ defmodule Rete.Network do
   defp query_index(graph) do
     graph
     |> BetaGraph.filter(&match?(%Node.Query{}, &1))
-    |> Map.new(&{&1.name, &1.id})
+    |> Map.new(&{{&1.module, &1.name}, &1.id})
   end
 end

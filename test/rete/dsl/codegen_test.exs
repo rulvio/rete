@@ -124,7 +124,7 @@ defmodule Rete.DSL.CodegenTest do
     test "its rhs is the module function and returns the facts to insert" do
       r = production(ArityCheck, :r)
 
-      assert (&ArityCheck.r/2) == r.rhs
+      assert (&ArityCheck.__rhs_r__/2) == r.rhs
       assert {:seen, 1, "a"} == r.rhs.(r.hash, %{id: 1, name: "a"})
     end
   end
@@ -300,7 +300,7 @@ defmodule Rete.DSL.CodegenTest do
 
       assert %{cid: 1} == order.alpha.fun.({:order, 1, 30})
       assert nil == order.alpha.fun.({:order, 1})
-      assert {:dormant, 1} == Demo.dormant(production(Demo, :dormant).hash, %{cid: 1})
+      assert {:dormant, 1} == Demo.__rhs_dormant__(production(Demo, :dormant).hash, %{cid: 1})
     end
 
     test "flagged_for: a query is a production with a result body" do

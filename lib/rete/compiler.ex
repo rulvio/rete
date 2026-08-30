@@ -93,11 +93,15 @@ defmodule Rete.Compiler do
     helpers ++ [rewritten]
   end
 
+  # A production is identified by module *and* name, so two rulesets are free to
+  # use the same name — composing two libraries that both call something
+  # `:summary` must not be a build error. Within one module a repeat is still a
+  # mistake: the second would silently take over the query function and the RHS.
   defp validate_names!(productions) do
     duplicates =
       productions
-      |> Enum.group_by(& &1.name)
-      |> Enum.filter(fn {_name, group} -> length(group) > 1 end)
+      |> Enum.group_by(&{&1.module, &1.name})
+      |> Enum.filter(fn {_ref, group} -> length(group) > 1 end)
 
     case duplicates do
       [] ->
@@ -105,17 +109,18 @@ defmodule Rete.Compiler do
 
       duplicates ->
         detail =
-          Enum.map_join(duplicates, "\n", fn {name, group} ->
-            "  #{name} in #{Enum.map_join(group, ", ", &inspect(&1.module))}"
+          Enum.map_join(duplicates, "\n", fn {{module, name}, group} ->
+            "  #{name} declared #{length(group)} times in #{inspect(module)}"
           end)
 
         raise ArgumentError, """
-        two or more productions share a name:
+        a module declares the same production name more than once:
 
         #{detail}
 
-        A name identifies a query to look up and a rule to attribute an \
-        activation to, so it has to be unique across every module in a network.
+        A name identifies a query to run and a rule to attribute an activation \
+        to, so it has to be unique within its module. Across modules it need \
+        not be — a production is identified by `{module, name}`.
         """
     end
   end

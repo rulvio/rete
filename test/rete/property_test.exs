@@ -647,7 +647,7 @@ defmodule Rete.PropertyTest do
           end)
           |> Enum.sort()
 
-        assert wanted == facts |> build() |> Session.query(:flagged_q) |> Enum.sort()
+        assert wanted == facts |> build() |> Everything.flagged_q() |> Enum.sort()
       end
     end
   end

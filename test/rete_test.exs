@@ -190,8 +190,8 @@ defmodule ReteTest do
 
       expected_rhs =
         case rule.name do
-          :foo1_rule -> &ReteTest.ExampleFooRuleset.foo1_rule/2
-          :foo2_rule -> &ReteTest.ExampleFooRuleset.foo2_rule/2
+          :foo1_rule -> &ReteTest.ExampleFooRuleset.__rhs_foo1_rule__/2
+          :foo2_rule -> &ReteTest.ExampleFooRuleset.__rhs_foo2_rule__/2
         end
 
       assert expected_rhs == rhs
@@ -285,8 +285,8 @@ defmodule ReteTest do
 
       expected_rhs =
         case rule.name do
-          :bar1_query -> &ReteTest.ExampleBarRuleset.bar1_query/2
-          :bar2_query -> &ReteTest.ExampleBarRuleset.bar2_query/2
+          :bar1_query -> &ReteTest.ExampleBarRuleset.__rhs_bar1_query__/2
+          :bar2_query -> &ReteTest.ExampleBarRuleset.__rhs_bar2_query__/2
         end
 
       assert expected_rhs == rhs

@@ -43,8 +43,12 @@ defmodule Rete.Ruleset do
       alpha expressions, join filters and tests alike, deduplicated by code.
     * `get_taxo_data/0` - the `derive`/`underive` declarations, in order.
     * `get_version/0` - a hash of the module, its rules and its taxonomy.
-    * `<rule_name>/2` - the right hand side of each production,
-      `(hash, bindings_map) -> facts`.
+    * `<query_name>/1` and `<query_name>/2` - **one per query**, running it
+      against a session: `MyRuleset.find_user(session, id: 1)`. This is the
+      public face of a query, and the reason the right hand side is not named
+      after the production.
+    * `__rhs_<name>__/2` - the right hand side of each production,
+      `(hash, bindings_map) -> facts`. Machinery; the engine calls it.
     * `__<expr_code>__/1` and `__<expr_code>__/2` - one function per distinct
       expression.
 
@@ -198,27 +202,34 @@ defmodule Rete.Ruleset do
   Defines a query.
 
   A query has the same left hand side as a rule, but it never fires: it holds
-  the matches that reached it, for `Rete.Session.query/3` to read back by name.
-  Its **body is what the caller gets**, one result per match — so a query is a
-  question with an answer shaped however you like, not a window onto raw
-  bindings.
+  the matches that reached it, and its **body is what the caller gets**, one
+  result per match — so a query is a question with an answer shaped however you
+  like, not a window onto raw bindings.
+
+  **The query is a function.** `defquery find_user(...)` defines `find_user/1`
+  and `find_user/2` in the same module, so it is run by calling it. That is what
+  makes a query addressable: it belongs to its module, and two rulesets are free
+  to define a query of the same name.
+
+      MyRuleset.find_user(session, id: 1)
+      session |> MyRuleset.find_user(id: 1)
+
+  Use `Rete.Session.query/3` with `{MyRuleset, :find_user}` when the query is
+  decided at runtime; the generated function is a delegate to it.
 
   There is nothing to declare about parameters. The caller may constrain any
-  variable the left hand side binds:
-
-      Rete.Session.query(session, :find_orders_of, id: 1)
-
-  Filtering happens on the bindings, before the body runs, which is what makes a
-  filter name a variable rather than a shape of the result. A filter naming
-  something the query does not bind is an error rather than an empty list.
+  variable the left hand side binds. Filtering happens on the bindings, before
+  the body runs, which is what makes a filter name a variable rather than a
+  shape of the result. A filter naming something the query does not bind is an
+  error rather than an empty list.
 
   ## Examples
 
       defquery find_user({:user, id, name}) do
         {id, name}
       end
-      #=> Rete.Session.query(session, :find_user)         [{1, "Ada"}]
-      #=> Rete.Session.query(session, :find_user, id: 1)  [{1, "Ada"}]
+      #=> MyRuleset.find_user(session)         [{1, "Ada"}]
+      #=> MyRuleset.find_user(session, id: 1)  [{1, "Ada"}]
 
       # The body can compute anything, including things no binding holds.
       defquery order_summary({:user, id, name}, orders = [{:order, id, total}]) do
