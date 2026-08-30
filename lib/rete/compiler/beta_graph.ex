@@ -34,7 +34,7 @@ defmodule Rete.Compiler.BetaGraph do
   `b`'s facts. Clara records the same requirement as issue 433.
 
   Equality itself is `Rete.Network.Node.sharing_key/1`, built from expression
-  codes. W1 guarantees a code is deterministic across compilations and equal
+  codes. The front end guarantees a code is deterministic across compilations and equal
   exactly when behaviour is equal, which is what makes sharing reproducible
   between a full build and an incremental one.
 
@@ -391,8 +391,7 @@ defmodule Rete.Compiler.BetaGraph do
       module: production.module,
       hash: production.hash,
       rhs: production.rhs,
-      bind: production.bind || [],
-      param_keys: Keyword.get(production.opts || [], :params, [])
+      bind: production.bind || []
     }
   end
 

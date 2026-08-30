@@ -215,7 +215,11 @@ defmodule Rete.Taxonomy do
   True when the two are the same type, and when `child` derives from `parent`
   directly or transitively.
   """
+  # Named after `Taxo.is_a?/3`, which it wraps, and after Clojure's `isa?`
+  # before that. Renaming it to satisfy the convention would leave the wrapper
+  # and the thing it wraps with different names, which is worse.
   @spec is_a?(t(), fact_type(), fact_type()) :: boolean()
+  # credo:disable-for-next-line Credo.Check.Readability.PredicateFunctionNames
   def is_a?(%__MODULE__{taxo: taxo}, child, parent) do
     child == parent or Taxo.is_a?(taxo, child, parent)
   end

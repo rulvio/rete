@@ -19,7 +19,7 @@ defmodule Rete.Compiler do
 
   ## Cross module expression codes
 
-  An expression code is the sharing key of every node built from it, and W1
+  An expression code is the sharing key of every node built from it, and the front end
   promises that two codes are equal exactly when the two expressions behave the
   same. That promise has one hole, recorded as a known gap in `w1-ir.md`: the
   hash is taken over the meta stripped AST with aliases, `__MODULE__` and module
@@ -46,9 +46,7 @@ defmodule Rete.Compiler do
   Building fails, rather than producing a network that misbehaves later:
 
     * two productions with the same name, even across modules — a query would
-      otherwise be ambiguous and an activation unattributable;
-    * a query whose parameters are not all bound by its left hand side, since it
-      could never be looked up by them.
+      otherwise be ambiguous and an activation unattributable.
   """
 
   alias Rete.Compiler.BetaGraph
@@ -81,7 +79,6 @@ defmodule Rete.Compiler do
   @spec build_productions([IR.Production.t()], [tuple()], keyword()) :: Network.t()
   def build_productions(productions, taxo_data \\ [], opts \\ []) do
     validate_names!(productions)
-    Enum.each(productions, &validate_query!/1)
 
     productions
     |> Enum.flat_map(&extract/1)
@@ -122,27 +119,6 @@ defmodule Rete.Compiler do
         """
     end
   end
-
-  defp validate_query!(%IR.Production{type: :query, opts: opts} = query) do
-    params = Keyword.get(opts || [], :params, [])
-    {guaranteed, _optional} = IR.lhs_bindings(query.lhs)
-    missing = params -- guaranteed
-
-    if missing != [] do
-      raise ArgumentError, """
-      the query #{query.name} takes #{inspect(params)}, but its left hand side \
-      does not bind #{inspect(missing)} on every path.
-
-      A query is looked up by its parameters, so every one of them has to be \
-      bound however the left hand side matched. A variable that only some \
-      branches of a disjunction bind cannot be a parameter.
-      """
-    end
-
-    :ok
-  end
-
-  defp validate_query!(_production), do: :ok
 
   # --- cross module expression codes -------------------------------------------
 

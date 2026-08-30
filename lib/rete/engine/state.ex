@@ -7,8 +7,12 @@ defmodule Rete.Engine.State do
   Here a node is a function of state and returns the state plus the work it
   produced, and the loop does the walking. That is what removes the need for a
   transport abstraction and four activation protocols, keeps propagation flat
-  rather than deeply recursive, and leaves one place — the loop — where W5 can
-  emit listener events.
+  rather than deeply recursive, and leaves one place — the loop — where listener
+  events are emitted.
+
+  `:listeners` is `[{module, state}]` rather than a map, so that the order they
+  were attached in is the order they see events in, and so that one module can be
+  attached twice with different state.
   """
 
   alias Rete.Agenda
@@ -19,10 +23,16 @@ defmodule Rete.Engine.State do
   A unit of pending propagation.
 
   `:left` carries tokens from a parent, `:right` carries elements from an alpha.
+
+  The last two are work a node produces but cannot carry out where it happens,
+  so it hands it back for the loop to do: a retraction has to re-enter the alpha
+  network, and telling a listener is not a node's business.
   """
   @type op ::
           {:left | :left_retract, term(), [Rete.Token.t()]}
           | {:right | :right_retract, term(), [Rete.Element.t()]}
+          | {:retract_facts, term(), [term()]}
+          | {:event, Rete.Listener.event()}
 
   @type t :: %__MODULE__{
           network: Network.t(),
@@ -30,10 +40,11 @@ defmodule Rete.Engine.State do
           agenda: Agenda.t(),
           queue: :queue.queue(op()),
           order: %{term() => non_neg_integer()},
-          fired: non_neg_integer()
+          fired: non_neg_integer(),
+          listeners: [{module(), term()}]
         }
 
-  defstruct [:network, :memory, :agenda, :queue, order: %{}, fired: 0]
+  defstruct [:network, :memory, :agenda, :queue, order: %{}, fired: 0, listeners: []]
 
   @doc """
   A state over a network, with empty memory and nothing pending.

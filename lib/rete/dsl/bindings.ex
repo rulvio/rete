@@ -526,7 +526,9 @@ defmodule Rete.DSL.Bindings do
     :ok
   end
 
-  defp inert(%IR.Coll{inert: inert}), do: inert || []
+  # `:inert` defaults to `[]` and `mark_inert/1` only ever sets a list, so there
+  # is no nil case to defend against here.
+  defp inert(%IR.Coll{inert: inert}), do: inert
   defp inert(_condition), do: []
 
   # What a condition's *own guard* may read, which is not the same question as

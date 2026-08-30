@@ -53,6 +53,10 @@ defmodule Rete.DSL.Vars do
   @spec pattern_vars(Macro.t()) :: %{name() => Macro.t()}
   def pattern_vars(ast), do: pattern_vars(ast, %{})
 
+  # One clause per quoted form. The branch count is the number of shapes an
+  # Elixir pattern can take, which no amount of restructuring reduces; splitting
+  # it up would only scatter the dispatch across several functions.
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   defp pattern_vars(ast, acc) do
     case ast do
       # A pinned value matches against something that already exists.
@@ -137,6 +141,10 @@ defmodule Rete.DSL.Vars do
 
   # `bound` is the set of names a construct inside the expression has already
   # introduced; a read of one of those is not a read of the rule's scope.
+  #
+  # As with `pattern_vars/2`, the branch count is the number of quoted forms
+  # that scope a variable, not accidental complexity.
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   defp free(ast, bound) do
     case ast do
       {:^, _, _} ->

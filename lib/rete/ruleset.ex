@@ -51,11 +51,11 @@ defmodule Rete.Ruleset do
   `Rete` aggregates the first four across modules.
   """
 
+  alias Rete.Compiler.Sort
   alias Rete.DSL.Bindings
   alias Rete.DSL.Codegen
   alias Rete.DSL.Normalize
   alias Rete.DSL.Parser
-  alias Rete.Compiler.Sort
   alias Rete.IR
 
   @doc false
@@ -129,6 +129,7 @@ defmodule Rete.Ruleset do
   # bodiless function head, and the module would fail to compile with
   # "implementation not provided for predefined def", naming the generated
   # function rather than the rule.
+  @spec no_body!(Macro.t(), :rule | :query) :: no_return()
   defp no_body!(decl, type) do
     raise ArgumentError,
           "`def#{type} #{decl_name(decl)}` has no body. The body of a rule is its right " <>
@@ -196,22 +197,32 @@ defmodule Rete.Ruleset do
   @doc """
   Defines a query.
 
-  A query has the same left hand side as a rule, but its body computes a result
-  for the caller instead of facts to insert.
+  A query has the same left hand side as a rule, but it never fires: it holds
+  the matches that reached it, for `Rete.Session.query/3` to read back by name.
+  Its **body is what the caller gets**, one result per match — so a query is a
+  question with an answer shaped however you like, not a window onto raw
+  bindings.
+
+  There is nothing to declare about parameters. The caller may constrain any
+  variable the left hand side binds:
+
+      Rete.Session.query(session, :find_orders_of, id: 1)
+
+  Filtering happens on the bindings, before the body runs, which is what makes a
+  filter name a variable rather than a shape of the result. A filter naming
+  something the query does not bind is an error rather than an empty list.
 
   ## Examples
 
-      # Simple query
       defquery find_user({:user, id, name}) do
         {id, name}
       end
+      #=> Rete.Session.query(session, :find_user)         [{1, "Ada"}]
+      #=> Rete.Session.query(session, :find_user, id: 1)  [{1, "Ada"}]
 
-      # Query with multiple conditions
-      defquery find_high_value_customers(
-                 {:user, id, name},
-                 orders = [{:order, id, total} when total > 1000]
-               ) do
-        {id, name, length(orders)}
+      # The body can compute anything, including things no binding holds.
+      defquery order_summary({:user, id, name}, orders = [{:order, id, total}]) do
+        %{customer: name, orders: length(orders), total: Enum.sum(Enum.map(orders, &elem(&1, 2)))}
       end
   """
   defmacro defquery(decl, body) do

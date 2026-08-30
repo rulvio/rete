@@ -2,6 +2,7 @@ defmodule Rete.NetworkTest do
   use ExUnit.Case, async: true
 
   alias Rete.Compiler
+  alias Rete.Compiler.BetaGraph
   alias Rete.IR
   alias Rete.Network
   alias Rete.Network.Node
@@ -95,7 +96,7 @@ defmodule Rete.NetworkTest do
         assert MapSet.member?(ids, child), "dangling child #{child} of node #{node.id}"
       end
 
-      reachable = reachable(net, Rete.Compiler.BetaGraph.root_id(), MapSet.new())
+      reachable = reachable(net, BetaGraph.root_id(), MapSet.new())
       assert MapSet.subset?(ids, reachable)
     end
 
@@ -261,37 +262,33 @@ defmodule Rete.NetworkTest do
       assert nil == Network.query(net, :no_such_query)
     end
 
-    defmodule Parameterised do
-      use Rete.Ruleset
+    # A query node carries what its left hand side binds, and nothing else. There
+    # is no parameter list: the caller constrains whichever of those it likes.
+    test "a query node carries its bindings and no parameter list", %{net: net} do
+      node = Network.query(net, :flagged_for)
 
-      defquery by_cid(%{params: [:cid]}, {:flagged, cid, amt}) do
-        {cid, amt}
-      end
+      assert [:amt, :cid] == node.bind
+      refute Map.has_key?(node, :param_keys)
     end
 
-    test "parameters declared in the options map reach the query node" do
-      net = Compiler.build([Parameterised])
-
-      assert %Node.Query{param_keys: [:cid], bind: [:amt, :cid]} = Network.query(net, :by_cid)
-    end
-
-    # A query is looked up by its parameters, so one the left hand side never
-    # binds could never match anything.
-    test "a parameter the left hand side does not bind is rejected" do
+    # `params:` used to declare which bindings a caller could supply. Silently
+    # ignoring a leftover one would be the worst outcome for something that used
+    # to change behaviour.
+    test "the obsolete params option is rejected where it is written" do
       source = """
-      defmodule Rete.NetworkTest.BadQuery do
+      defmodule Rete.NetworkTest.OldParams do
         use Rete.Ruleset
 
-        defquery bad(%{params: [:nope]}, {:flagged, cid, amt}) do
+        defquery bad(%{params: [:cid]}, {:flagged, cid, amt}) do
           {cid, amt}
         end
       end
       """
 
-      [{mod, _} | _] = Code.compile_string(source)
+      error = assert_raise ArgumentError, fn -> Code.compile_string(source) end
 
-      error = assert_raise ArgumentError, fn -> Compiler.build([mod]) end
-      assert error.message =~ "does not bind [:nope]"
+      assert error.message =~ "no longer a thing"
+      assert error.message =~ "query(session, :bad, cid: value)"
     end
   end
 

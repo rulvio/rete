@@ -4,7 +4,7 @@ defmodule Rete.DSL.Normalize do
   @max_branches 256
 
   @moduledoc """
-  Gate normalization, compile phase **W2a**.
+  Gate normalization: the phase between parsing and binding classification.
 
   Turns the `Rete.IR.Gate` placeholders left behind by `Rete.DSL.Parser` into
   the normalized per-condition form of `t:Rete.IR.lhs/0`: either a single
@@ -70,8 +70,9 @@ defmodule Rete.DSL.Normalize do
   branches are absorbed. That matters for more than tidiness: only the variables
   bound by **every** branch survive a disjunction, and an empty branch binds
   nothing, so the other branches could not have contributed a binding anyway.
-  `simplify/1` therefore collapses `{:or, [[], [a]]}` to `{:or, [[]]}`, and W4
-  never sees a disjunction with an empty branch next to a non-empty one.
+  `simplify/1` therefore collapses `{:or, [[], [a]]}` to `{:or, [[]]}`, and the
+  network builder never sees a disjunction with an empty branch next to a
+  non-empty one.
 
   ## Negation
 
@@ -103,8 +104,8 @@ defmodule Rete.DSL.Normalize do
   conjunction into a generated subrule that inserts a marker fact, and negates
   the marker instead. It runs at `add-production` time, *before* `to-dnf`, which
   is why Clara's own de-Morgan-over-`and` branch is unreachable. Here the
-  extraction is left to W4, and W2a hands it a `Rete.IR.CompoundNegation` to
-  extract.
+  extraction is left to `Rete.Compiler.Negation`, and this phase hands it a
+  `Rete.IR.CompoundNegation` to extract.
 
   Double negation still collapses, including through a compound:
   `not(not(and(a, b)))` is `and(a, b)`.
@@ -232,6 +233,12 @@ defmodule Rete.DSL.Normalize do
   condition becomes an opaque `{:lit, condition}` leaf. Lifting an already
   normalized element back into a tree is what makes `normalize/1` idempotent.
   """
+  # A conjunction at LHS level is a list of elements rather than an element, so
+  # a top-level `{:and, _}` is one shape of `tree()` this function cannot
+  # return - `:and` only ever appears nested inside a `:not` or an `:or`. The
+  # declared type stays `tree()`, which is what the rest of the phase consumes;
+  # narrowing it here would only make the reader wonder what is missing.
+  @dialyzer {:no_extra_return, to_tree: 1}
   @spec to_tree(IR.condition() | element()) :: tree()
   def to_tree(%IR.Gate{gate: gate, args: args}), do: {:gate, gate, Enum.map(args, &to_tree/1)}
   def to_tree(%IR.Negation{condition: condition}), do: {:not, to_tree(condition)}

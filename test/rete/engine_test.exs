@@ -458,11 +458,11 @@ defmodule Rete.EngineTest do
       end
     end
 
-    # `ref` is bound by the pattern and nothing upstream binds it, so by the
-    # locked rule this collection groups by `ref` — one singleton group per
-    # order. See "known gaps" in docs/design/w3-engine.md: a guard that reads
-    # its own field currently forces grouping, which is rarely what the author
-    # meant. This test pins the behaviour that ships, not the one we would want.
+    # `ref` and `amt` are bound by the collection's pattern and by nothing
+    # else's, so both are *inert*: local to the collection, grouping nothing.
+    # The node's `:new_bind` is therefore `[]` and it gathers one list per
+    # `cid`, filtered by the join guard — not one singleton group per `ref`.
+    # See the `Rete.IR.Coll` section of docs/design/w1-ir.md.
     test "the filter decides membership per token" do
       session =
         run([GuardedColl], [
@@ -632,7 +632,7 @@ defmodule Rete.EngineTest do
       session = run([LeadColl], [{:o, 1}, {:o, 2}])
 
       assert [{:count, 2}] == derived(session, :count)
-      assert [%{os: [{:o, 1}, {:o, 2}]}] == Session.query(session, :all)
+      assert [[{:o, 1}, {:o, 2}]] == Session.query(session, :all)
     end
 
     # The case that forces the root token to be planted when the state is built
@@ -642,7 +642,7 @@ defmodule Rete.EngineTest do
       session = [LeadColl] |> Session.new() |> Session.fire_rules()
 
       assert [{:count, 0}] == Session.facts(session)
-      assert [%{os: []}] == Session.query(session, :all)
+      assert [[]] == Session.query(session, :all)
     end
 
     # The collection binds no new variable, so by the locked rule it has one
@@ -1219,22 +1219,44 @@ defmodule Rete.EngineTest do
         {cid, amt}
       end
 
-      defquery by_cid(%{params: [:cid]}, {:flagged, cid, amt}) do
-        {cid, amt}
+      # The body decides the shape, so a query can return something that is in
+      # no binding at all.
+      defquery summary({:flagged, cid, amt}) do
+        %{customer: cid, doubled: amt * 2}
       end
     end
 
-    test "a query returns the bindings that reached it" do
+    # The body is the point of a query. Returning the raw bindings instead would
+    # make it dead code.
+    test "a query returns what its body computes, not the bindings" do
       session = run([Queries], [{:order, 1, 250}, {:order, 2, 50}])
 
-      assert [%{cid: 1, amt: 250}] == Session.query(session, :flagged_for)
+      assert [{1, 250}] == Session.query(session, :flagged_for)
+      assert [%{customer: 1, doubled: 500}] == Session.query(session, :summary)
     end
 
-    test "a query filters by its parameters" do
+    test "one result per match" do
+      session = run([Queries], [{:order, 1, 250}, {:order, 1, 900}, {:order, 2, 300}])
+
+      assert [{1, 250}, {1, 900}, {2, 300}] == Session.query(session, :flagged_for)
+    end
+
+    # No declaration: anything the left hand side binds can be constrained.
+    test "any binding can be filtered on, as a keyword list or a map" do
+      session = run([Queries], [{:order, 1, 250}, {:order, 1, 900}, {:order, 2, 300}])
+
+      assert [{1, 250}, {1, 900}] == Session.query(session, :flagged_for, cid: 1)
+      assert [{1, 250}] == Session.query(session, :flagged_for, cid: 1, amt: 250)
+      assert [{2, 300}] == Session.query(session, :flagged_for, %{cid: 2})
+      assert [] == Session.query(session, :flagged_for, cid: 99)
+    end
+
+    # Filtering happens on the bindings, before the body runs, which is what
+    # makes a filter name a variable rather than a shape of the result.
+    test "a filter names a binding even when the body hides it" do
       session = run([Queries], [{:order, 1, 250}, {:order, 2, 300}])
 
-      assert [%{cid: 1, amt: 250}] == Session.query(session, :by_cid, %{cid: 1})
-      assert [] == Session.query(session, :by_cid, %{cid: 99})
+      assert [%{customer: 1, doubled: 500}] == Session.query(session, :summary, amt: 250)
     end
 
     test "a query reflects retraction" do
@@ -1253,12 +1275,16 @@ defmodule Rete.EngineTest do
       assert error.message =~ "flagged_for"
     end
 
-    test "an unknown parameter is an error" do
+    # A filter naming something the query does not bind would silently match
+    # nothing, which reads as "no results" rather than "you typoed".
+    test "filtering on something the query does not bind is an error" do
       session = run([Queries], [])
 
-      assert_raise ArgumentError, ~r/was given \[:bogus\]/, fn ->
-        Session.query(session, :by_cid, %{bogus: 1})
-      end
+      error =
+        assert_raise ArgumentError, fn -> Session.query(session, :flagged_for, bogus: 1) end
+
+      assert error.message =~ "binds [:amt, :cid]"
+      assert error.message =~ "was given [:bogus]"
     end
   end
 

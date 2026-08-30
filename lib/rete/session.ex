@@ -107,13 +107,29 @@ defmodule Rete.Session do
   def fire_rules(session, opts \\ []), do: update(session, &Engine.fire_rules(&1, opts))
 
   @doc """
-  Runs a query, returning the binding maps that reached it.
+  Runs a query: one result per match, computed by the query's body.
 
       Rete.Session.query(session, :flagged_for)
-      Rete.Session.query(session, :by_cid, %{cid: 1})
+      #=> [{1, 250}]
+
+      Rete.Session.query(session, :flagged_for, cid: 1)
+      #=> [{1, 250}]
+
+  `filters` narrows the matches by equality on the *bindings*, before the body
+  runs, and may name any variable the left hand side binds — there is no
+  separate parameter declaration. A keyword list or a map both work. Naming
+  something the query does not bind raises, rather than quietly answering `[]`.
+
+  Reads the session as it stands: a query answered while activations are still
+  pending reports what was true before they fired.
+
+  Row order is **unspecified**. It does not vary with the order the facts were
+  inserted in, so a given set of facts always answers the same way, but sort the
+  result if you need a particular order.
   """
-  @spec query(t(), atom(), %{atom() => term()}) :: [%{atom() => term()}]
-  def query(%__MODULE__{state: state}, name, params \\ %{}), do: Engine.query(state, name, params)
+  @spec query(t(), atom(), keyword() | %{atom() => term()}) :: [term()]
+  def query(%__MODULE__{state: state}, name, filters \\ []),
+    do: Engine.query(state, name, filters)
 
   @doc """
   Every fact the session holds, inserted or concluded.
@@ -131,6 +147,30 @@ defmodule Rete.Session do
   """
   @spec pending(t()) :: [Rete.Activation.t()]
   def pending(%__MODULE__{state: state}), do: Rete.Agenda.to_list(state.agenda)
+
+  @doc """
+  Attaches a listener, returning a new session.
+
+  The listener sees every event from now on, and its accumulated state is read
+  back with `listener_state/2`. Attaching several is fine; they see events in
+  the order they were attached.
+
+      session
+      |> Rete.Session.with_listener(Rete.Listener.Collect, [])
+      |> Rete.Session.insert(facts)
+      |> Rete.Session.fire_rules()
+      |> Rete.Listener.Collect.events()
+  """
+  @spec with_listener(t(), module(), term()) :: t()
+  def with_listener(session, module, init \\ nil),
+    do: update(session, &Engine.with_listener(&1, module, init))
+
+  @doc """
+  What a listener has accumulated, or `nil` if it is not attached.
+  """
+  @spec listener_state(t(), module()) :: term()
+  def listener_state(%__MODULE__{state: state}, module),
+    do: Engine.listener_state(state, module)
 
   @doc """
   The compiled network behind a session.

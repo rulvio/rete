@@ -3,7 +3,8 @@ defmodule Rete.DSL.Parser do
   Turns the quoted arguments of `Rete.Ruleset.defrule/2` and
   `Rete.Ruleset.defquery/2` into `Rete.IR` structs.
 
-  This is compile phase **W1**. It does parsing and nothing else:
+  This is the first phase of the DSL front end. It does parsing and nothing
+  else:
 
     * it recognises every LHS element form and records its type, bindings,
       fact/collection binding, and guard,
@@ -36,7 +37,7 @@ defmodule Rete.DSL.Parser do
   ## Expression naming
 
   Expression codes are stable across compilations of the same source, which is
-  what lets W4 share nodes between rules:
+  what lets the network builder share nodes between rules:
 
       fact_<type>_bind_<vars ...>_expr_<hash>          alpha, no guard
       test_fact_<type>_bind_<vars ...>_expr_<hash>     alpha, with guard
@@ -92,6 +93,7 @@ defmodule Rete.DSL.Parser do
 
   defp parse_rule(env, hash, type, {name, _, args}, body) when is_atom(name) do
     {opts, elements} = parse_args(args)
+    check_opts!(name, opts)
     bind = parse_bind(elements)
 
     %IR.Production{
@@ -111,6 +113,27 @@ defmodule Rete.DSL.Parser do
     raise ArgumentError,
           "invalid rule declaration, expected a call such as `my_rule(<conditions>)`, got: " <>
             Macro.to_string(decl)
+  end
+
+  # `:params` used to declare which bindings a query's caller could supply.
+  # There is no such declaration any more - `Rete.Session.query/3` accepts any
+  # variable the left hand side binds - so a leftover one would be silently
+  # ignored, which is the worst outcome for something that used to change
+  # behaviour.
+  defp check_opts!(name, opts) do
+    case Keyword.get(opts, :params) do
+      nil ->
+        :ok
+
+      params ->
+        first = params |> List.wrap() |> List.first()
+
+        raise ArgumentError,
+              "#{name} declares `params: #{inspect(params)}`, which is no longer a thing. " <>
+                "A query is its conditions and its body, and the caller may constrain any " <>
+                "variable the left hand side binds, with no declaration: " <>
+                "Rete.Session.query(session, :#{name}, #{first}: value)"
+    end
   end
 
   # Splits the optional leading options map off the declaration arguments.
@@ -345,7 +368,7 @@ defmodule Rete.DSL.Parser do
       two modules with different attribute values does not share an expression.
 
       The value itself cannot be resolved here. `@attr` expands to a
-      `Module.__get_attribute__/4` call that only runs when the module body is
+      hidden `Module.__get_attribute__` call that only runs when the module body is
       evaluated, which is after every macro in it has expanded; at this point
       `Module.get_attribute/3` still reports the default. What distinguishes two
       uses of one attribute is therefore their *line*, which

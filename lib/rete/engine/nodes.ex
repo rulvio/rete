@@ -6,6 +6,15 @@ defmodule Rete.Engine.Nodes do
   state and the propagation work produced. The loop in `Rete.Engine` does the
   walking, so nothing here calls a child directly.
 
+  ## Nodes do not know listeners exist
+
+  Two things a node produces cannot be carried out where they happen: retracting
+  the facts an activation inserted has to go back through the alpha network, and
+  telling a listener something happened is not a node's business. Both are
+  returned as ops — `{:retract_facts, node_id, facts}` and `{:event, event}` —
+  for `Rete.Engine` to act on. That is what keeps event emission in one place
+  rather than scattered through every clause here.
+
   ## The retraction rule
 
   Every node must retract exactly what it propagated. Not "something equivalent"
@@ -284,7 +293,9 @@ defmodule Rete.Engine.Nodes do
 
   defp dispatch(%Node.Production{} = node, :left, tokens, %State{} = state) do
     agenda = Enum.reduce(tokens, state.agenda, &Agenda.add(&2, activation(state, node, &1)))
-    {%State{state | agenda: agenda}, []}
+    events = for token <- tokens, do: {:event, {:activation_added, node.id, token}}
+
+    {%State{state | agenda: agenda}, events}
   end
 
   # Either the match is still waiting to fire, in which case it simply never
@@ -298,11 +309,11 @@ defmodule Rete.Engine.Nodes do
 
       case outcome do
         :removed ->
-          {state, ops}
+          {state, ops ++ [{:event, {:activation_removed, node.id, token}}]}
 
         :missing ->
           {memory, facts} = Memory.take_insertion(state.memory, node.id, token)
-          {%State{state | memory: memory}, ops ++ [{:retract_facts, facts}]}
+          {%State{state | memory: memory}, ops ++ [{:retract_facts, node.id, facts}]}
       end
     end)
   end
@@ -397,7 +408,7 @@ defmodule Rete.Engine.Nodes do
   # no new variables every variable it uses is already fixed by the token, so
   # there is exactly one group and it exists whether or not a fact ever landed in
   # it — that is the locked empty-collection rule, precomputed as
-  # :propagates_empty? in W2.
+  # :propagates_empty? at build time.
   defp groups_for(%State{} = state, node, key) do
     case Memory.groups(state.memory, node.id, key) do
       empty when empty == %{} -> if node.propagates_empty?, do: %{key => []}, else: %{}

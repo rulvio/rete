@@ -3,8 +3,8 @@ defmodule Rete.Network.Node do
   The node descriptions the engine runs.
 
   A node is **data**, not behaviour: it holds the join keys and captured
-  expression functions W3 needs and nothing else. Activation is implemented in
-  W3 against these structs.
+  expression functions the engine needs and nothing else. Activation is
+  implemented in `Rete.Engine.Nodes`, against these structs.
 
   ## Children are edges, not fields
 
@@ -18,12 +18,20 @@ defmodule Rete.Network.Node do
 
   `sharing_key/1` is what decides whether two conditions collapse onto one node.
   It is built from expression **codes**, never from the captured functions —
-  W1 guarantees a code is deterministic across compilations and equal exactly
+  The front end guarantees a code is deterministic across compilations and equal exactly
   when behaviour is equal, whereas two closures are never equal and a struct
   holding `:__ast__` would compare quoted AST that is not part of identity.
 
   Note that an equal key is necessary but *not sufficient*: the graph also
   requires an identical parent set. See `Rete.Compiler.BetaGraph`.
+
+  ## `:id` is `nil` until the node is in a graph
+
+  A node is described first and inserted second: `Rete.Compiler.BetaGraph`
+  builds the struct, asks `sharing_key/1` whether an equal node already sits
+  under the same parents, and assigns an id only when it has to create one. So
+  `:id` is `non_neg_integer() | nil`, where `nil` means "a description, not yet
+  a node". Every node reachable from a built `Rete.Network` has an id.
   """
 
   defmodule Alpha do
@@ -35,7 +43,7 @@ defmodule Rete.Network.Node do
     `Rete.Taxonomy`'s type index, so that `derive(:premium, :customer)` lets a
     `:premium` fact reach a condition written against `:customer`.
     """
-    @type t :: %__MODULE__{id: non_neg_integer(), type: atom(), code: atom(), fun: fun()}
+    @type t :: %__MODULE__{id: non_neg_integer() | nil, type: atom(), code: atom(), fun: fun()}
     defstruct [:id, :type, :code, :fun]
   end
 
@@ -45,7 +53,7 @@ defmodule Rete.Network.Node do
     each matching element straight into a token.
     """
     @type t :: %__MODULE__{
-            id: non_neg_integer(),
+            id: non_neg_integer() | nil,
             type: atom(),
             alpha_code: atom(),
             fact_binding: atom() | nil,
@@ -60,7 +68,7 @@ defmodule Rete.Network.Node do
     guard reaches across conditions, so the join is a hash lookup.
     """
     @type t :: %__MODULE__{
-            id: non_neg_integer(),
+            id: non_neg_integer() | nil,
             type: atom(),
             alpha_code: atom(),
             fact_binding: atom() | nil,
@@ -80,7 +88,7 @@ defmodule Rete.Network.Node do
     that already agree on `:join_bind`.
     """
     @type t :: %__MODULE__{
-            id: non_neg_integer(),
+            id: non_neg_integer() | nil,
             type: atom(),
             alpha_code: atom(),
             fact_binding: atom() | nil,
@@ -106,7 +114,7 @@ defmodule Rete.Network.Node do
     Propagates a token only while **no** element matches it on `:join_bind`.
     """
     @type t :: %__MODULE__{
-            id: non_neg_integer(),
+            id: non_neg_integer() | nil,
             type: atom(),
             alpha_code: atom(),
             join_bind: [atom()]
@@ -119,7 +127,7 @@ defmodule Rete.Network.Node do
     A negation whose match also depends on a cross-condition guard.
     """
     @type t :: %__MODULE__{
-            id: non_neg_integer(),
+            id: non_neg_integer() | nil,
             type: atom(),
             alpha_code: atom(),
             join_bind: [atom()],
@@ -141,7 +149,7 @@ defmodule Rete.Network.Node do
     where a fact created it, so there is no empty group to propagate.
     """
     @type t :: %__MODULE__{
-            id: non_neg_integer(),
+            id: non_neg_integer() | nil,
             type: atom(),
             alpha_code: atom(),
             coll_binding: atom() | nil,
@@ -166,7 +174,7 @@ defmodule Rete.Network.Node do
     guard, so the candidates cannot be reduced until a token is known.
     """
     @type t :: %__MODULE__{
-            id: non_neg_integer(),
+            id: non_neg_integer() | nil,
             type: atom(),
             alpha_code: atom(),
             coll_binding: atom() | nil,
@@ -194,7 +202,7 @@ defmodule Rete.Network.Node do
     A predicate over the token's bindings, with no fact input. Produced by a
     rule level `when` guard.
     """
-    @type t :: %__MODULE__{id: non_neg_integer(), code: atom(), fun: fun()}
+    @type t :: %__MODULE__{id: non_neg_integer() | nil, code: atom(), fun: fun()}
     defstruct [:id, :code, :fun]
   end
 
@@ -209,7 +217,7 @@ defmodule Rete.Network.Node do
     against an absence that was merely not computed yet.
     """
     @type t :: %__MODULE__{
-            id: non_neg_integer(),
+            id: non_neg_integer() | nil,
             name: atom(),
             module: module(),
             hash: integer(),
@@ -235,18 +243,20 @@ defmodule Rete.Network.Node do
   defmodule Query do
     @moduledoc """
     A terminal node for a query. Holds the tokens that reached it, to be read
-    back by name with `:param_keys` as the lookup.
+    back by name.
+
+    There is no parameter list: a query is its conditions and its body, and
+    `Rete.Engine.query/3` lets the caller constrain any variable in `:bind`.
     """
     @type t :: %__MODULE__{
-            id: non_neg_integer(),
+            id: non_neg_integer() | nil,
             name: atom(),
             module: module(),
             hash: integer(),
             rhs: fun(),
-            bind: [atom()],
-            param_keys: [atom()]
+            bind: [atom()]
           }
-    defstruct [:id, :name, :module, :hash, :rhs, :bind, param_keys: []]
+    defstruct [:id, :name, :module, :hash, :rhs, bind: []]
   end
 
   @type t ::

@@ -1,6 +1,7 @@
 defmodule Rete.DSL.Codegen do
   @moduledoc """
-  Expression construction and code generation, compile phase **W3**.
+  Expression construction and code generation: the last phase of the DSL front
+  end.
 
   Codegen is the last phase before `Rete.IR.escape/1`. It owns two things:
 
@@ -248,7 +249,7 @@ defmodule Rete.DSL.Codegen do
       one alpha node.
 
   A module attribute hashes as its *name*, because its value cannot be known
-  here: `@limit` expands to a `Module.__get_attribute__/4` call that only runs
+  here: `@limit` expands to a hidden `Module.__get_attribute__` call that only runs
   once the module body is evaluated, which is after every macro in the body has
   expanded. Two conditions over the same pattern therefore share a code whatever
   the attribute is currently worth, which is what keeps them sharing an alpha
@@ -424,7 +425,10 @@ defmodule Rete.DSL.Codegen do
       names ->
         pairs = Enum.map(names, fn name -> {name, {:@, [], [{name, [], nil}]}} end)
 
+        # Fully qualified on purpose: this is spliced into the *user's* module,
+        # which has no alias for this one.
         quote do
+          # credo:disable-for-next-line Credo.Check.Design.AliasUsage
           Rete.DSL.Codegen.check_attr_values!(__MODULE__, unquote(code), unquote(pairs))
         end
     end

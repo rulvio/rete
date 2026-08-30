@@ -205,7 +205,7 @@ defmodule Rete.Compiler.Negation do
 
   # Extraction runs at build time, long after `Rete.IR.escape/1` dropped the
   # filter's AST, so the only record of what it reads is its `:code` — whose
-  # shape W1 fixes as `join_<type>_bind_<v1>_<v2>_..._expr_<hash>`, with the
+  # shape the front end fixes as `join_<type>_bind_<v1>_<v2>_..._expr_<hash>`, with the
   # variables of *both* sides sorted (docs/design/w1-ir.md section 5). We ask
   # which of the ancestor bindings that code mentions.
   #

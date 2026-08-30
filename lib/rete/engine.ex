@@ -92,16 +92,19 @@ defmodule Rete.Engine do
   that two rules independently concluding the same thing does not make one of
   them retracting it remove the fact.
   """
-  @spec insert(State.t(), [term()]) :: State.t()
-  def insert(%State{} = state, facts) do
+  @spec insert(State.t(), [term()], Rete.Listener.origin()) :: State.t()
+  def insert(state, facts, origin \\ :asserted)
+
+  def insert(%State{} = state, facts, origin) do
     {state, ops} =
       Enum.reduce(facts, {state, []}, fn fact, {%State{} = state, ops} ->
         case Memory.add_fact(state.memory, fact) do
           {memory, :new} ->
-            {%State{state | memory: memory}, ops ++ alpha_ops(state, fact, :right)}
+            state = emit(%State{state | memory: memory}, fn -> {:fact_inserted, fact, origin} end)
+            {state, ops ++ alpha_ops(state, fact, :right)}
 
           {memory, :duplicate} ->
-            {%State{state | memory: memory}, ops}
+            {emit(%State{state | memory: memory}, fn -> {:fact_duplicated, fact} end), ops}
         end
       end)
 
@@ -114,13 +117,18 @@ defmodule Rete.Engine do
   Only the last occurrence of a fact propagates. Anything that was concluded from
   it is retracted in turn, and so on until the network settles.
   """
-  @spec retract(State.t(), [term()]) :: State.t()
-  def retract(%State{} = state, facts) do
+  @spec retract(State.t(), [term()], Rete.Listener.origin()) :: State.t()
+  def retract(state, facts, origin \\ :asserted)
+
+  def retract(%State{} = state, facts, origin) do
     {state, ops} =
       Enum.reduce(facts, {state, []}, fn fact, {%State{} = state, ops} ->
         case Memory.remove_fact(state.memory, fact) do
           {memory, :gone} ->
-            {%State{state | memory: memory}, ops ++ alpha_ops(state, fact, :right_retract)}
+            state =
+              emit(%State{state | memory: memory}, fn -> {:fact_retracted, fact, origin} end)
+
+            {state, ops ++ alpha_ops(state, fact, :right_retract)}
 
           {memory, _} ->
             {%State{state | memory: memory}, ops}
@@ -142,35 +150,72 @@ defmodule Rete.Engine do
   @spec fire_rules(State.t(), keyword()) :: State.t()
   def fire_rules(%State{} = state, opts \\ []) do
     max_cycles = Keyword.get(opts, :max_cycles, @default_max_cycles)
-    fire_loop(drain(state), max_cycles, 0)
+
+    state
+    |> emit(fn -> {:fire_started, opts} end)
+    |> drain()
+    |> fire_loop(max_cycles, 0, %{})
   end
 
   @doc """
-  The tokens that reached a query node, as binding maps filtered by `params`.
+  Runs a query: one result per match, computed by the query's body.
+
+  `filters` narrows the matches by equality on the *bindings*, before the body
+  runs, and may name any variable the query's left hand side binds. There is no
+  separate parameter declaration — a query is its conditions and its body, and
+  anything it binds can be constrained at call time.
+
+  Row order is **unspecified** — sort by whatever you need. It is deterministic
+  for a given set of facts, so the same session always answers the same way, but
+  nothing about the order is a guarantee to build on.
   """
-  @spec query(State.t(), atom(), %{atom() => term()}) :: [%{atom() => term()}]
-  def query(%State{} = state, name, params \\ %{}) do
+  @spec query(State.t(), atom(), keyword() | %{atom() => term()}) :: [term()]
+  def query(%State{} = state, name, filters \\ []) do
+    node = query_node!(state, name)
+    filters = normalize_filters(filters)
+    check_filters!(node, filters)
+
+    state.memory
+    |> Memory.all_tokens(node.id)
+    |> Enum.filter(fn %{bindings: bindings} ->
+      Enum.all?(filters, fn {key, value} -> Map.get(bindings, key) == value end)
+    end)
+    # The body is what the caller asked for. Filtering happens on the bindings
+    # first, because that is what a filter names.
+    |> Enum.map(&node.rhs.(node.hash, &1.bindings))
+    # Beta memory is arrival ordered, so without this the same facts inserted in
+    # a different order would answer the same query in a different order. The
+    # order itself is not a contract - see above - but varying with insertion
+    # order is a trap.
+    |> Enum.sort()
+  end
+
+  defp query_node!(state, name) do
     case Network.query(state.network, name) do
       nil ->
         raise ArgumentError,
               "no query named #{inspect(name)} in this network. Defined: " <>
-                inspect(Map.keys(state.network.queries))
+                inspect(Enum.sort(Map.keys(state.network.queries)))
 
       node ->
-        unknown = Map.keys(params) -- node.param_keys
+        node
+    end
+  end
 
-        if unknown != [] do
-          raise ArgumentError,
-                "the query #{name} takes #{inspect(node.param_keys)}, " <>
-                  "and was given #{inspect(unknown)}"
-        end
+  defp normalize_filters(filters) when is_list(filters), do: Map.new(filters)
+  defp normalize_filters(filters) when is_map(filters), do: filters
 
-        state.memory
-        |> Memory.all_tokens(node.id)
-        |> Enum.map(& &1.bindings)
-        |> Enum.filter(fn bindings ->
-          Enum.all?(params, fn {key, value} -> Map.get(bindings, key) == value end)
-        end)
+  # A filter naming something the query does not bind would silently match
+  # nothing, which reads as "no results" rather than "you typoed".
+  defp check_filters!(node, filters) do
+    case Map.keys(filters) -- node.bind do
+      [] ->
+        :ok
+
+      unknown ->
+        raise ArgumentError,
+              "the query #{node.name} binds #{inspect(node.bind)}, and was given " <>
+                "#{inspect(Enum.sort(unknown))}"
     end
   end
 
@@ -194,32 +239,55 @@ defmodule Rete.Engine do
   # count alone. A ruleset that fires exactly `max_cycles` activations and then
   # settles has not run away, and refusing it would raise an error naming no
   # pending rule — because there is none.
-  defp fire_loop(%State{} = state, max_cycles, fired) do
+  defp fire_loop(%State{} = state, max_cycles, fired, tally) do
     case Agenda.pop(state.agenda) do
       :empty ->
-        %State{state | fired: state.fired + fired}
+        emit(%State{state | fired: state.fired + fired}, fn -> {:fire_finished, fired} end)
 
       {:ok, _activation, _agenda} when fired >= max_cycles ->
-        raise RuntimeError, runaway(state, fired)
+        raise RuntimeError, runaway(state, fired, tally)
 
       {:ok, activation, agenda} ->
         %State{state | agenda: agenda}
         |> fire(activation)
         |> drain()
-        |> fire_loop(max_cycles, fired + 1)
+        |> fire_loop(max_cycles, fired + 1, Map.update(tally, activation.node_id, 1, &(&1 + 1)))
     end
   end
 
-  defp runaway(%State{} = state, fired) do
+  # The pending activations say what is queued *now*, which for a loop is
+  # whichever rule happened to be next. What identifies the loop is which rules
+  # kept firing, so lead with that.
+  defp runaway(%State{} = state, fired, tally) do
+    worst =
+      tally
+      |> Enum.sort_by(fn {_node_id, count} -> -count end)
+      |> Enum.take(5)
+      |> Enum.map_join("\n", fn {node_id, count} ->
+        "  #{count}x  #{rule_name(state, node_id)}"
+      end)
+
     """
     fired #{fired} activations without the agenda emptying, which suggests rules \
     that keep re-triggering each other.
 
+    Fired most:
+    #{worst}
+
     Still pending:
     #{state.agenda |> Agenda.to_list() |> Enum.take(5) |> Enum.map_join("\n", &"  #{describe(state, &1)}")}
 
-    Raise :max_cycles if the ruleset genuinely needs more.
+    A rule that concludes something its own left hand side matches on will do \
+    this. If the ruleset genuinely needs more activations than this to settle, \
+    raise :max_cycles.
     """
+  end
+
+  defp rule_name(%State{} = state, node_id) do
+    case Network.node(state.network, node_id) do
+      %{name: name} -> name
+      _ -> inspect(node_id)
+    end
   end
 
   # The right hand side is a pure function of the bindings; the facts it returns
@@ -236,11 +304,14 @@ defmodule Rete.Engine do
 
     case facts do
       [] ->
-        state
+        emit(state, fn -> {:activation_fired, node.id, activation.token, []} end)
 
       facts ->
         memory = Memory.add_insertion(state.memory, node.id, activation.token, facts)
-        insert(%State{state | memory: memory}, facts)
+
+        %State{state | memory: memory}
+        |> emit(fn -> {:activation_fired, node.id, activation.token, facts} end)
+        |> insert(facts, {:derived, node.id})
     end
   end
 
@@ -260,7 +331,7 @@ defmodule Rete.Engine do
   # then does is over the insertion records rather than over the network. It
   # costs one pass over those records, so a rule that keeps re-concluding a fact
   # some other rule concluded pays for the check on every activation. Indexing
-  # that away is W5's problem, not this one's.
+  # that away is a performance question, and is deferred.
   #
   # The limit of doing this at insertion time rather than by re-deriving on every
   # retraction: the dropped support is not reconsidered later. If the grounded
@@ -282,6 +353,7 @@ defmodule Rete.Engine do
     walk(MapSet.new(), matched_facts(token), inserted_by(memory))
   end
 
+  @spec walk(MapSet.t(), [term()], %{optional(term()) => [Token.t()]}) :: MapSet.t()
   defp walk(seen, [], _inserters), do: seen
 
   defp walk(seen, [fact | rest], inserters) do
@@ -292,6 +364,12 @@ defmodule Rete.Engine do
       walk(MapSet.put(seen, fact), supports ++ rest, inserters)
     end
   end
+
+  # `MapSet.t()` is opaque and has two internal representations, and dialyzer
+  # loses track of which one a set threaded through a local recursion holds. The
+  # set here never leaves these two functions and is only ever built by
+  # `MapSet.new/0` and `MapSet.put/2`.
+  @dialyzer {:no_opaque, walk: 3, well_founded: 3}
 
   # fact => the tokens whose activation inserted it, built from the truth
   # maintenance records. Built on demand rather than kept, because it is only
@@ -327,6 +405,44 @@ defmodule Rete.Engine do
     end
   end
 
+  # --- listeners ----------------------------------------------------------------------
+
+  @doc """
+  Attaches a listener with its initial state.
+  """
+  @spec with_listener(State.t(), module(), term()) :: State.t()
+  def with_listener(%State{listeners: listeners} = state, module, init) do
+    %State{state | listeners: listeners ++ [{module, init}]}
+  end
+
+  @doc """
+  The state a listener has accumulated, or `nil` if it is not attached.
+  """
+  @spec listener_state(State.t(), module()) :: term()
+  def listener_state(%State{listeners: listeners}, module) do
+    Enum.find_value(listeners, fn
+      {^module, listener_state} -> listener_state
+      _ -> nil
+    end)
+  end
+
+  # The single point every event passes through. `build` is a function rather
+  # than a term so that an unobserved session - the overwhelmingly common case -
+  # allocates nothing and calls nothing.
+  defp emit(%State{listeners: []} = state, _build), do: state
+
+  defp emit(%State{listeners: listeners} = state, build) do
+    event = build.()
+
+    %State{
+      state
+      | listeners:
+          Enum.map(listeners, fn {module, listener_state} ->
+            {module, module.handle_event(event, listener_state)}
+          end)
+    }
+  end
+
   # --- propagation ------------------------------------------------------------------
 
   # Drains the queue. `{:retract_facts, facts}` is the one op a node cannot carry
@@ -337,12 +453,19 @@ defmodule Rete.Engine do
       :empty ->
         state
 
-      {:ok, {:retract_facts, facts}, state} ->
-        state |> retract(facts) |> drain()
+      {:ok, {:retract_facts, node_id, facts}, state} ->
+        state |> retract(facts, {:derived, node_id}) |> drain()
 
-      {:ok, op, state} ->
+      {:ok, {:event, event}, state} ->
+        state |> emit(fn -> event end) |> drain()
+
+      {:ok, {kind, node_id, items} = op, state} ->
         {state, ops} = Nodes.handle(state, op)
-        state |> State.enqueue(ops) |> drain()
+
+        state
+        |> emit(fn -> {:propagated, kind, node_id, length(items)} end)
+        |> State.enqueue(ops)
+        |> drain()
     end
   end
 

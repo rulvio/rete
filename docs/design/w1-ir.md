@@ -14,7 +14,7 @@ Modules:
 | `Rete.Ruleset` | `lib/rete/ruleset.ex` | the macros that drive all of it |
 
 This document is the contract between the compile phases, and between the front
-end and the network builder (W4), which has not been written yet.
+end and the network builder, which is `docs/design/w2-network.md`.
 
 ---
 
@@ -27,7 +27,7 @@ quoted DSL
   |> Rete.DSL.Bindings.classify/2         # W2b join_bind / new_bind / join_filter
   |> Rete.IR.lhs_bindings/1               # W2c recompute the production's :bind
   |> Rete.DSL.Codegen.compile/1           # W3  emit functions, escape into the module
-  |> W4: beta network construction
+  |> Rete.Compiler.build/2                # build time, see w2-network.md
 ```
 
 The first three steps take a `%Rete.IR.Production{}` and return a
@@ -172,12 +172,75 @@ collected **list** binds to, `nil` for an anonymous `[{:order, id}]`.
 `:alpha` has the same per-fact shape as a `Fact` alpha - it is applied to each
 candidate element, never to the list.
 
-Empty-collection semantics, decided by `:new_bind`:
+#### `:inert` — collection-local variables
+
+Elixir fuses binding and constraining. Writing `amt` in a pattern binds it, where
+Clara would have written `(> amount ?lim)` and bound nothing. Taken literally that
+makes a guarded collection impossible to write:
+
+```elixir
+os = [{:order, cid, amt} when amt > lim]
+```
+
+`amt` is a new variable, and a collection introducing a new variable groups by it,
+so this would gather one singleton group per distinct amount rather than every
+order over the limit.
+
+The rule that resolves it: **a collection's pattern variable participates only if
+another condition also matches on it — a real join. Otherwise it is inert.**
+
+Inert means local to the collection. The variable constrains which facts are
+gathered, groups nothing, and binds nothing downstream. It stays in `:bind`,
+because the alpha must still return it for a join filter to test against, but it
+is excluded from `:new_bind` and from `Rete.IR.bound_vars/1`.
+
+Only another condition's **pattern** counts:
+
+| mentions the variable | counts as a join? |
+|---|---|
+| another condition's pattern | **yes** |
+| another collection's pattern | **yes** |
+| another condition's guard | no |
+| the collection's own guard | no |
+| the rule level `when` | no |
+| the right hand side | no |
+| a negation's pattern | no — a negation binds nothing, so it is not a join |
+
+Reading an inert variable outside its collection is a compile error naming the
+variable and the collection, because every gathered fact has its own value and
+there is no one value to bind.
+
+Note the interaction with `Rete.Compiler.Sort`, which defers collections: a plain
+condition matching the variable therefore sorts *before* the collection and makes
+it an ordinary **join key**, not a grouping variable. So in practice grouping
+arises between **two collections**, where the sort defers both and the first
+groups by what the second joins on.
+
+To recover per-group firing, either add a second collection that matches on the
+variable, or collect everything and use `Enum.group_by/2` in the right hand side —
+the same answer this engine already gives for `min`, `max` and `sum`.
+
+This deliberately differs from Clara, where an accumulator's source condition
+binds whatever it names. Making the two the same would mean reintroducing explicit
+binding syntax and giving up what Elixir pattern matching buys.
+
+#### Order
+
+The order of the list a rule receives is **unspecified**; sort in the right hand
+side if it matters. The engine keeps collections deterministically ordered so
+that order independence holds even for a rule that returns its collection, but
+that is an implementation guarantee rather than a contract. See
+`docs/design/w2-network.md`.
+
+#### Empty-collection semantics, decided by `:new_bind`
 
 * no new variable → the condition propagates `[]` and the rule fires with zero
   matches;
 * at least one new variable → group by those variables, so only non-empty groups
   exist.
+
+Because an inert variable is not in `:new_bind`, a guarded collection over
+otherwise-local variables propagates `[]` like any other ungrouped collection.
 
 ### `Rete.IR.Test`
 
@@ -234,6 +297,14 @@ negation; `:not` with several arguments negates their conjunction. See the
 `Rete.DSL.Normalize` moduledoc for the degenerate-arity table (a 0-argument
 `and` is *true*, a 0-argument `or` is *false*, and so on).
 
+**Why "exactly one" rather than odd parity.** For two arguments the two readings
+agree, and Clara has no `xor` to inherit a convention from. They diverge from
+three arguments up: with all three true, exactly-one says false and odd-parity
+says true. "Exactly one" is the reading that matches how the word is used about
+rule conditions — "exactly one of these applies" — whereas odd parity is a
+circuit-design notion that no rule author is likely to reach for. The choice is
+deliberate; a rule needing parity should say so with nested two-argument `xor`s.
+
 Normalization rewrites a negation by exactly three rules:
 
 | written | becomes | why |
@@ -283,14 +354,15 @@ inner conditions *do* bind each other: `Bindings.classify/2` classifies them as
 a little LHS of their own, starting from the outer bound set, so the `refund`
 above gets `join_bind: [:x]`.
 
-**What W4 has to do with it.** Extract it, exactly as Clara's
+**What the compiler does with it.** `Rete.Compiler.Negation.extract/1` does
+exactly what Clara's
 `get-complex-negation` does (`compiler.clj:971`, called from `add-production`
 at line 1261, i.e. *before* `to-dnf` - which is why Clara's own
-de-Morgan-over-`and` branch is unreachable). Generate a helper production whose
-LHS is `:conditions` and whose RHS inserts a marker fact carrying the variables
-the negation joins on, then replace the `CompoundNegation` with a plain
-`Negation` of that marker. Nothing else in the pipeline can evaluate one, and
-nothing else should try.
+de-Morgan-over-`and` branch is unreachable): it generates a helper production
+whose LHS is `:conditions` and whose RHS inserts a marker fact carrying the
+variables the negation joins on, then replaces the `CompoundNegation` with a
+plain `Negation` of that marker. Nothing else in the pipeline can evaluate one,
+and nothing else tries.
 
 ### `Rete.IR.Expr`
 
@@ -338,10 +410,11 @@ into branches that classify them differently (see §2, `Rete.IR.Production`, and
 the `Rete.DSL.Bindings` moduledoc). `Rete.IR.exprs/1`, `Rete.IR.escape/1` and
 `Rete.IR.lhs_bindings/1` all recurse through it.
 
-Two edge values W4 has to handle, both produced by degenerate gates:
+Two edge values the network builder has to handle, both produced by degenerate
+gates:
 
 * `{:or, [[]]}` is *true* - one branch adding no condition. `normalize_lhs/1`
-  splices it away, so it should not reach W4 through the normal path.
+  splices it away, so it does not reach the builder through the normal path.
 * `{:or, []}` is *false* - **no** branch, the production can never fire. It is
   kept, because dropping it would change the meaning of the production. Do not
   assume a disjunction has at least one branch.
@@ -352,8 +425,8 @@ unconditionally": the empty branch is *true* and `true or x` is `true`. Nothing
 is lost by collapsing it, because only the variables bound by every branch
 survive a disjunction and an empty branch binds none. `Normalize.simplify/1`
 therefore absorbs such a disjunction to `{:or, [[]]}`, which `normalize_lhs/1`
-then splices away, so the element disappears from the LHS entirely. W4 sees
-either `{:or, []}` or a disjunction whose every branch has at least one
+then splices away, so the element disappears from the LHS entirely. The builder
+sees either `{:or, []}` or a disjunction whose every branch has at least one
 condition.
 
 Across a disjunction, only the variables bound by *every* branch are bound
@@ -365,7 +438,7 @@ key that one branch never produces.
 Distribution is the one step that can explode: a conjunction of `k`
 disjunctions of `m` branches each yields `m^k` branches, and every branch is a
 separate join path in the beta network. `Normalize.to_dnf/1` refuses to build
-more than `Normalize.max_branches/0` (1024) branches for a single gate and
+more than `Normalize.max_branches/0` (256) branches for a single gate and
 raises an `ArgumentError` naming the gate, its arity and the branch count.
 
 Negation is not a source of growth. `not` of a DNF of `n` branches is exactly
@@ -507,7 +580,7 @@ that the hash is a function of what the code *means*:
 ### Module attribute values
 
 An attribute's value is **not** part of its code, and cannot be. `@limit`
-expands to a `Module.__get_attribute__/4` call that only runs once the module
+expands to a hidden `Module.__get_attribute__` call that only runs once the module
 body is evaluated, which is after every macro in that body has expanded;
 `Module.get_attribute/3` still reports the default at expansion time.
 
@@ -612,12 +685,14 @@ user wrote.
 A guard variable that is neither local nor bound upstream is a compile-time
 `ArgumentError` (`Bindings.check_guard_vars!/3`), naming the variable and the
 condition. Left alone it would compile into a join filter reading the token
-side for a key that is never there, so the production could never fire. Two
-shapes hit it:
+side for a key that is never there, so the production could never fire.
 
-* a **forward reference**, `defrule r({:order, amt} when amt > t, {:threshold, t})`.
-  This is the single call site W2's topological condition sort has to relax
-  once it reorders binders to the front.
+A **forward reference** does *not* hit it. `Rete.Compiler.Sort` runs before
+classification and reorders binders to the front, so
+`defrule r({:order, amt} when amt > t, {:threshold, t})` is sorted into
+`{:threshold, t}, {:order, amt} when amt > t` and is indistinguishable from the
+same rule written that way round. What is left is:
+
 * a **`_`-prefixed variable**, `{:order, _amt} when _amt > 0`. The pattern
   discards it, so it is in no bindings map and in no token; the error says to
   rename it to `amt`. Inlining it into the alpha instead - where the argument
@@ -625,7 +700,7 @@ shapes hit it:
   underscored variable is used after being set" warning, which is fatal under
   `--warnings-as-errors`.
 
-The second of those is why `Codegen.join_filter_expr/3` may keep deriving the
+That is why `Codegen.join_filter_expr/3` may keep deriving the
 guard's variables with `Parser.parse_bind/1`, which drops `_`-prefixed names: a
 join filter can never contain one.
 
@@ -648,18 +723,28 @@ branch and so cannot read a variable only some branches bind.
   `amt > t and div(100, amt) > 1` raised `ArithmeticError` on `amt = 0` when
   split by value. Recovering the lost early filtering needs a purity analysis of
   the conjunct being hoisted.
-* **An unqualified local or imported call in a guard still collides across
-  modules.** `valid?(amt)` is byte identical in two modules that define
-  `valid?/1` differently, so both hash the same and `Rete.get_expr_data/1` keeps
-  one. Aliases and `__MODULE__` are resolved; bare local calls are not.
-* **A `CompoundNegation` is not executable yet.** W2a produces it and
-  `Bindings.classify/2` classifies its inner conjunction, but nobody extracts it
-  into a helper production, so W4 must do that before it can build a network for
-  a rule that uses `not`/`nand` over more than one condition. See
-  `Rete.IR.CompoundNegation`.
+* **An unqualified local or imported call in a guard still hashes the same
+  across modules.** `valid?(amt)` is byte identical in two modules that define
+  `valid?/1` differently, so both produce one code and `Rete.get_expr_data/1`
+  keeps one of the two functions. Aliases and `__MODULE__` are resolved; bare
+  local calls are not. Building a network is safe — `Rete.Compiler` qualifies
+  any code more than one module contributed as `<code>@<module>` before
+  anything is built from it, so the collision costs sharing rather than
+  correctness — but `Rete.get_expr_data/1` itself still reports one function.
+* **Per-group firing is hard to reach.** Because a collection variable
+  participates only when another condition's *pattern* matches on it, and
+  `Rete.Compiler.Sort` defers collections, a plain condition matching the
+  variable sorts before the collection and becomes an ordinary join key. So
+  grouping in practice needs **two collections**. The alternative is to collect
+  everything and `Enum.group_by/2` in the right hand side, which yields one fact
+  holding a map rather than one activation per group. An explicit grouping form
+  was considered and deferred; see `Rete.DSL.Bindings.mark_inert/1`.
 * **No subsumption in normalization.** `a ∨ (a∧b)` is not reduced to `a`, on
   purpose: branches carry bindings and dropping the longer branch would drop the
   bindings `b` introduces. Repeated literals and contradictory conjunctions
   *are* pruned, and a disjunction with an empty branch is absorbed to *true*.
-* **Nothing about the network.** Firing, retraction, truth maintenance, taxonomy
-  application and node construction are all W4.
+* **Guard splitting and inertness use different notions of "own".** A guard may
+  read the collection's inert variables — that is what makes them inert — so
+  guard scope is every variable the pattern binds, while `Rete.IR.bound_vars/1`
+  reports only what escapes. Conflating the two makes a guarded collection fail
+  to compile; see `own_scope/1` in `Rete.DSL.Bindings`.

@@ -10,11 +10,12 @@ defmodule Rete.IR do
   ## Pipeline
 
       quoted DSL
-        |> Rete.DSL.Parser.parse_production/4      # W1 - this phase
-        |> normalize gates / classify bindings     # W2
-        |> split guards into alpha + join filters  # W3
+        |> Rete.DSL.Parser.parse_production/4      # AST -> IR
+        |> Rete.DSL.Normalize.normalize_lhs/1      # gates -> conditions
+        |> Rete.Compiler.Sort.sort/1               # topological condition order
+        |> Rete.DSL.Bindings.classify/2            # join keys, guard splitting
         |> Rete.IR.escape/1                        # emitted into the ruleset module
-        |> beta network construction               # W4
+        |> Rete.Compiler.build/2                   # the network, at build time
 
   Every phase consumes and produces `%Rete.IR.Production{}` values, so a struct
   carries fields that a later phase fills in. Fields that are `nil` after
@@ -110,13 +111,14 @@ defmodule Rete.IR do
         and module attribute (`@x`) values.
       * `:alpha` - `%Rete.IR.Expr{arity: 1}`, `(fact) -> bindings_map | nil`.
       * `:join_filter` - `%Rete.IR.Expr{arity: 2} | nil`,
-        `(token_bindings, fact_bindings) -> boolean`. `nil` after parsing; W3
-        fills it in when a per-condition guard refers to variables bound by an
-        earlier condition.
+        `(token_bindings, fact_bindings) -> boolean`. `nil` after parsing;
+        `Rete.DSL.Bindings` fills it in when a per-condition guard refers to
+        variables bound by an earlier condition.
       * `:join_bind` - `[atom] | nil`, variables shared with upstream conditions,
-        used as hash join keys. `nil` after parsing, filled in by W2.
+        used as hash join keys. `nil` after parsing, filled in by
+        `Rete.DSL.Bindings`.
       * `:new_bind` - `[atom] | nil`, variables first introduced by this
-        condition. `nil` after parsing, filled in by W2.
+        condition. `nil` after parsing, filled in by `Rete.DSL.Bindings`.
       * `:__ast__` - see `t:ast/0`. Compile-time only.
     """
 
@@ -174,8 +176,8 @@ defmodule Rete.IR do
     If the condition introduces no new variable (all of its pattern variables
     are bound upstream or pinned) it propagates `[]` and the rule still fires
     with zero matches. If it does introduce a new variable it groups by that
-    variable, so only non-empty groups exist. `:new_bind` (computed in W2) is
-    what decides between the two.
+    variable, so only non-empty groups exist. `:new_bind`, computed by
+    `Rete.DSL.Bindings`, is what decides between the two.
 
     ## Fields
 
@@ -219,9 +221,9 @@ defmodule Rete.IR do
     @moduledoc """
     A guard over bindings only, with no fact input.
 
-    Produced by the rule level guard, `defrule r(...) when <guard> do`, and (from
-    W3 on) by guards that were lifted out of a condition because they only
-    reference variables bound upstream.
+    Produced by the rule level guard, `defrule r(...) when <guard> do`, and by
+    guards that were lifted out of a condition because they only reference
+    variables bound upstream.
 
     ## Fields
 
@@ -244,8 +246,9 @@ defmodule Rete.IR do
     @moduledoc """
     An unnormalized logical gate, `{gate, [condition, ...]}`.
 
-    This is a **W1 placeholder**. The parser recognises the gate and parses its
-    arguments, but performs no normalization: W2 rewrites gates into de Morgan
+    This is a **parser placeholder**. The parser recognises the gate and parses
+    its arguments, but performs no normalization: `Rete.DSL.Normalize` rewrites
+    gates into de Morgan
     normal form and replaces them with plain conditions, `Rete.IR.Negation`
     nodes and `{:or, [[condition, ...], ...]}` disjunctions.
 
@@ -304,13 +307,14 @@ defmodule Rete.IR do
     statement, false whenever one `x` has an order and a *different* `x` has a
     refund.
 
-    ## What W4 has to do with it
+    ## What the compiler does with it
 
-    Extract it, exactly as Clara's `get-complex-negation` does: generate a
-    helper production whose LHS is `:conditions` and whose RHS inserts a marker
-    fact carrying the variables the negation joins on, then replace the
-    `CompoundNegation` with a plain `Rete.IR.Negation` of that marker. Nothing
-    else in the pipeline can evaluate one.
+    `Rete.Compiler.Negation` extracts it, exactly as Clara's
+    `get-complex-negation` does: it generates a helper production whose LHS is
+    `:conditions` and whose RHS inserts a marker fact carrying the variables the
+    negation joins on, then replaces the `CompoundNegation` with a plain
+    `Rete.IR.Negation` of that marker. Nothing else in the pipeline can evaluate
+    one.
 
     ## Fields
 
@@ -399,7 +403,7 @@ defmodule Rete.IR do
   a disjunction of conjunctions, `{:or, [[condition, ...], ...]}`, that fans out
   from the current parents and re-converges before the next element. The parser
   only ever emits plain conditions and `Rete.IR.Gate` placeholders; the `{:or,
-  ...}` form appears from W2 on.
+  ...}` form appears once `Rete.DSL.Normalize` has run.
   """
   @type lhs :: [element()]
 

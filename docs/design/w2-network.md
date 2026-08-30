@@ -1,7 +1,10 @@
 # The compiled network
 
-What W2 produces and W3 has to run. The companion to `w1-ir.md`, which covers
-everything up to a classified `Rete.IR.Production`.
+What the build phase produces and the engine runs. The companion to `w1-ir.md`,
+which covers everything up to a classified `Rete.IR.Production`, and to
+`w3-engine.md`, which covers what happens to a network once it exists.
+
+Status: implemented, end to end.
 
 ---
 
@@ -53,12 +56,12 @@ the network's.
 
 ## 3. Node kinds
 
-Nodes are **data**. Activation is W3's to implement. No node carries its
+Nodes are **data**; activation lives in `Rete.Engine.Nodes`. No node carries its
 children: they are the graph's forward edges, because a node is shared precisely
 when it is *equal*, and equality must not depend on how many rules happen to have
 hung children off it.
 
-| Node | Produced by | What W3 must do |
+| Node | Produced by | What the engine does with it |
 |---|---|---|
 | `Alpha` | any condition with a pattern | run `:fun` on a fact, `(fact) -> bindings \| nil` |
 | `RootJoin` | first condition of a rule | turn each element straight into a token |
@@ -74,13 +77,34 @@ hung children off it.
 
 ### `:propagates_empty?` on the accumulate nodes
 
-The locked empty-collection rule, precomputed:
+The locked empty-collection rule, precomputed. Note that `:new_bind` for a
+collection counts only *participating* variables: one that no other condition's
+pattern matches on is local to the collection and excluded, so a guarded
+collection over otherwise-local variables is ungrouped and does propagate `[]`.
+See the `Rete.IR.Coll` section of `w1-ir.md`.
 
 * `true` when the pattern introduces **no** new variables. Every variable it uses
   is already fixed by the token, so there is exactly one group and the node
   propagates `[]` when nothing matches — the rule fires with an empty list.
 * `false` when it introduces one. It groups by that variable, and a group only
   exists where a fact created it, so there is no empty group to invent.
+
+### Collection element order is unspecified
+
+**A rule may not depend on the order of the list it receives.** Sort in the right
+hand side if order matters.
+
+The engine does in fact keep collections in a deterministic order — elements are
+inserted by term order rather than appended on arrival, so the same fact set
+always produces the same list whatever order the facts arrived in, and a
+retract-and-reinsert round trip restores it exactly. That is deliberate: without
+it a rule that returns its collection would produce a different fact depending on
+insertion order, and the engine's order-independence property would hold for
+every rule except that one.
+
+But it is an implementation guarantee, not a contract. Term order is arbitrary
+from the author's point of view, and nothing about it is a useful thing to build
+on.
 
 ---
 
@@ -171,7 +195,7 @@ closures wrapped in `Rete.IR.Expr` rather than functions generated into a module
 
 ---
 
-## 7. What W3 must honour
+## 7. What the engine must honour
 
 * **Activation order** is `{salience, internal_salience}` descending, then node
   id. `Rete.Network.production_nodes/1` already returns them in that order.
@@ -187,14 +211,6 @@ closures wrapped in `Rete.IR.Expr` rather than functions generated into a module
 
 ## 8. Known gaps
 
-* **Nothing executes yet.** Propagation, working memory, the agenda, truth
-  maintenance and queries are W3.
-* **Query parameters have no dedicated syntax.** They work, through the options
-  map — `defquery by_cid(%{params: [:cid]}, {:flagged, cid, amt})` sets
-  `Node.Query.param_keys`, and `Rete.Compiler` rejects a parameter the left hand
-  side does not bind on every path. What is missing is a first-class spelling;
-  the options map is a placeholder, and W3 should decide whether a query's
-  parameters ought to be part of its signature instead.
 * **No subsumption between rules.** Two rules whose left hand sides differ only
   in a redundant condition build separate chains.
 * **Sharing is prefix-only.** Two rules that share a *suffix* but not a prefix do
