@@ -60,13 +60,30 @@ defmodule Rete.Listener do
   | `{:fact_retracted, fact, origin}` | a fact leaves working memory |
   | `{:fact_duplicated, fact}` | an equal fact was already present, so nothing propagated |
   | `{:propagated, op, node_id, count}` | a node consumed `count` items |
-  | `{:activation_added, node_id, token}` | a production's LHS became satisfied |
-  | `{:activation_removed, node_id, token}` | a pending activation was cancelled before firing |
-  | `{:activation_fired, node_id, token, facts}` | a rule ran and returned `facts` |
+  | `{:activation_added, source, token}` | a production's LHS became satisfied |
+  | `{:activation_removed, source, token}` | a pending activation was cancelled before firing |
+  | `{:activation_fired, source, token, facts}` | a rule ran and returned `facts` |
 
-  `origin` is `:asserted` for a fact the caller inserted, or `{:derived, node_id}`
-  for one a rule concluded. That distinction is what lets a listener reconstruct
-  provenance without reading memory.
+  ## Naming the rule
+
+  `source` is `%{node: node_id, rule: {module, name}}`. A listener is handed an
+  event and its own state and has no way to reach the network, so a bare node id
+  would be an integer it could not resolve — and `{module, name}` is the
+  identity the rest of the engine uses, the same pair `Rete.Session.query/3` and
+  `Rete.Inspect.why_not/2` take.
+
+      def handle_event({:activation_fired, %{rule: {_mod, :flag}}, _token, facts}, state)
+
+  A map rather than a wider tuple, so a field can be added without changing the
+  shape every listener matches on.
+
+  `{:propagated, ...}` is the exception: it fires for every node, and a join or
+  a negation has no user-facing name to give, so it carries the bare id.
+
+  `origin` is `:asserted` for a fact the caller inserted, or `{:derived, source}`
+  for one a rule concluded — the same map, so a listener can attribute a
+  concluded fact to the rule that concluded it. That distinction is what lets a
+  listener reconstruct provenance without reading memory.
 
   `op` is `:left`, `:left_retract`, `:right` or `:right_retract`.
   """
@@ -74,8 +91,14 @@ defmodule Rete.Listener do
   @typedoc "Anything a listener chooses to carry between events."
   @type state :: term()
 
+  @typedoc """
+  Which terminal an event came from: its node id, and the `{module, name}` it
+  was declared under.
+  """
+  @type source :: %{node: term(), rule: {module(), atom()}}
+
   @typedoc "Where a fact came from."
-  @type origin :: :asserted | {:derived, term()}
+  @type origin :: :asserted | {:derived, source()}
 
   @typedoc "An engine event. Match the ones you care about and ignore the rest."
   @type event ::
@@ -85,9 +108,9 @@ defmodule Rete.Listener do
           | {:fact_retracted, term(), origin()}
           | {:fact_duplicated, term()}
           | {:propagated, atom(), term(), non_neg_integer()}
-          | {:activation_added, term(), Rete.Token.t()}
-          | {:activation_removed, term(), Rete.Token.t()}
-          | {:activation_fired, term(), Rete.Token.t(), [term()]}
+          | {:activation_added, source(), Rete.Token.t()}
+          | {:activation_removed, source(), Rete.Token.t()}
+          | {:activation_fired, source(), Rete.Token.t(), [term()]}
 
   @doc """
   Handles one event, returning the listener's next state.
@@ -162,27 +185,30 @@ defmodule Rete.Listener.Trace do
   defp describe({:fire_finished, fired}), do: "settled after #{fired} activations"
   defp describe({:fact_inserted, fact, :asserted}), do: "  + #{inspect(fact)}"
 
-  defp describe({:fact_inserted, fact, {:derived, node}}),
-    do: "  + #{inspect(fact)} (from node #{inspect(node)})"
+  defp describe({:fact_inserted, fact, {:derived, source}}),
+    do: "  + #{inspect(fact)} (from #{rule(source)})"
 
   defp describe({:fact_retracted, fact, :asserted}), do: "  - #{inspect(fact)}"
 
-  defp describe({:fact_retracted, fact, {:derived, node}}),
-    do: "  - #{inspect(fact)} (support at node #{inspect(node)} gone)"
+  defp describe({:fact_retracted, fact, {:derived, source}}),
+    do: "  - #{inspect(fact)} (support from #{rule(source)} gone)"
 
   defp describe({:fact_duplicated, fact}), do: "  = #{inspect(fact)} (already present)"
 
-  defp describe({:activation_added, node, token}),
-    do: "  ready  node #{inspect(node)} #{inspect(token.bindings)}"
+  defp describe({:activation_added, source, token}),
+    do: "  ready  #{rule(source)} #{inspect(token.bindings)}"
 
-  defp describe({:activation_removed, node, token}),
-    do: "  cancel node #{inspect(node)} #{inspect(token.bindings)}"
+  defp describe({:activation_removed, source, token}),
+    do: "  cancel #{rule(source)} #{inspect(token.bindings)}"
 
-  defp describe({:activation_fired, node, token, facts}),
-    do: "  fire   node #{inspect(node)} #{inspect(token.bindings)} -> #{inspect(facts)}"
+  defp describe({:activation_fired, source, token, facts}),
+    do: "  fire   #{rule(source)} #{inspect(token.bindings)} -> #{inspect(facts)}"
 
   defp describe({:propagated, op, node, count}),
     do: "    #{op} #{inspect(node)} x#{count}"
 
   defp describe(other), do: inspect(other)
+
+  # credo:disable-for-next-line Credo.Check.Design.AliasUsage
+  defp rule(%{rule: ref}), do: Rete.Network.ref_string(ref)
 end

@@ -82,6 +82,30 @@ in `docs/design/`.
 
 * A production is identified by **`{module, name}`**, not by name alone, so two rulesets
   that each define a `:summary` compose into one session. A repeat within one module is
-  still rejected.
+  rejected where it is written, naming both declarations.
 * Queries are run by calling them; `Rete.Session.query/3` takes `{module, name}` for the
   runtime-chosen case. A bare name raises, naming the module that defines it.
+* Listener events name the rule too. The three activation events and the `:derived`
+  origin carry `%{node: node_id, rule: {module, name}}` in place of a bare node id, which
+  a listener had no way to resolve. `{:propagated, ...}` still carries the id alone — a
+  join node has no name to give.
+
+### The public API
+
+Only `Rete`, `Rete.Ruleset`, `Rete.Session`, `Rete.Inspect` and `Rete.Listener` (with
+`Collect` and `Trace`) are covered by semantic versioning. Everything else is documented
+but internal and may change in a patch release. See "What is public" in the README.
+
+### Performance
+
+Three quadratics in the size of one join key's bucket, all measured, all now linear or
+flat. Inserting 4,000 facts under one key went from 250 ms to under 10 ms, and retracting
+200 of them from a bucket of 8,000 from 108 ms to under 1 ms.
+
+* `Rete.Agenda` is bucketed by sort key rather than one sorted list. Every activation of
+  a production shares a key, so inserting walked past every match already queued for that
+  rule; there are at most as many buckets as there are production nodes.
+* `Rete.Memory.Bucket` replaces the list behind each join key with an ordered multiset:
+  adding and retracting are O(1), reading is unchanged.
+* `Rete.Engine.insert/3` and `retract/3` collect their propagation ops without appending
+  to the accumulator once per fact.

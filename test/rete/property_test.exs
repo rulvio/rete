@@ -155,14 +155,21 @@ defmodule Rete.PropertyTest do
 
   # Deep-sorts every leaf list of the memory. Order of arrival is not part of
   # what a session means, but multiplicity is: nothing here dedups.
+  #
+  # Goes through `Rete.Memory.dump/1` rather than the struct: a bucket keeps
+  # retracted items as tombstones until it compacts, so two memories holding
+  # exactly the same matches can hold different bucket internals. The dump is
+  # the view that means something.
   defp canon(%Session{state: %{memory: memory}}) do
+    dump = Rete.Memory.dump(memory)
+
     %{
-      elements: sort_leaves(memory.elements),
-      tokens: sort_leaves(memory.tokens),
-      accum: Map.new(memory.accum, fn {id, by_key} -> {id, sort_leaves(by_key)} end),
-      insertions: Map.new(memory.insertions, fn {id, by_token} -> {id, batches(by_token)} end),
-      facts: memory.facts,
-      root_seeded?: memory.root_seeded?
+      elements: sort_leaves(dump.elements),
+      tokens: sort_leaves(dump.tokens),
+      accum: Map.new(dump.accum, fn {id, by_key} -> {id, sort_leaves(by_key)} end),
+      insertions: Map.new(dump.insertions, fn {id, by_token} -> {id, batches(by_token)} end),
+      facts: dump.facts,
+      root_seeded?: dump.root_seeded?
     }
   end
 
@@ -278,9 +285,12 @@ defmodule Rete.PropertyTest do
           |> Session.retract(extra)
           |> Session.fire_rules()
 
-        # Exact, not canonical: the element the extra fact created was appended
-        # and then removed, so even arrival order has to come back.
-        assert base.state.memory == cycled.state.memory
+        # Exact, not canonical: the element the extra fact created was stored
+        # and then removed, so even arrival order has to come back. Compared as
+        # a dump, because a bucket that has taken a retraction carries a
+        # tombstone until it compacts — invisible in what the session holds, and
+        # pinned separately by the bucket invariant below.
+        assert Rete.Memory.dump(base.state.memory) == Rete.Memory.dump(cycled.state.memory)
       end
     end
 
@@ -311,7 +321,7 @@ defmodule Rete.PropertyTest do
         base = build(facts)
         poked = base |> Session.retract(absent) |> Session.fire_rules()
 
-        assert base.state.memory == poked.state.memory
+        assert Rete.Memory.dump(base.state.memory) == Rete.Memory.dump(poked.state.memory)
       end
     end
   end
@@ -438,7 +448,8 @@ defmodule Rete.PropertyTest do
       # batches under one token is the support imbalance itself, before it has
       # had time to disguise itself as a count.
       check all(facts <- multiset(), max_runs: 60) do
-        memory = build(facts).state.memory
+        memory =
+          facts |> build() |> Map.fetch!(:state) |> Map.fetch!(:memory) |> Rete.Memory.dump()
 
         for {node_id, by_token} <- memory.insertions, {token, batches} <- by_token do
           assert length(batches) == 1,
@@ -699,6 +710,61 @@ defmodule Rete.PropertyTest do
                Rete.Memory.remove_elements(memory, :node, %{}, [el(:a), el(:b)])
 
       assert {_, []} = Rete.Memory.remove_elements(memory, :node, %{}, [el(:b)])
+    end
+  end
+
+  # A bucket does not remove anything when it is asked to: it marks the
+  # occurrence dead and leaves it in the stack, which is what makes retraction
+  # O(1) whatever the bucket holds. The debt is only bounded because compaction
+  # clears it once the dead outnumber the living — so that bound is the contract,
+  # and without it a long-lived session would grow a stack of tombstones that
+  # nothing above `to_list/1` could see.
+  describe "a bucket's tombstones" do
+    alias Rete.Memory.Bucket
+
+    property "never outnumber the living by more than one" do
+      check all(ops <- list_of(one_of([{:push, element()}, {:take, element()}]), max_length: 60)) do
+        bucket =
+          Enum.reduce(ops, Bucket.new(), fn
+            {:push, item}, bucket ->
+              Bucket.push(bucket, [item])
+
+            {:take, item}, bucket ->
+              case Bucket.take(bucket, item) do
+                {:ok, bucket} -> bucket
+                :error -> bucket
+              end
+          end)
+
+        live = length(Bucket.to_list(bucket))
+
+        assert length(bucket.stack) <= 2 * live + 1,
+               "stack of #{length(bucket.stack)} holding #{live} live items has not compacted"
+      end
+    end
+
+    test "are cleared entirely once everything is retracted" do
+      bucket = Bucket.new([el(:a), el(:b), el(:c)])
+
+      emptied =
+        Enum.reduce([el(:a), el(:b), el(:c)], bucket, fn item, bucket ->
+          {:ok, bucket} = Bucket.take(bucket, item)
+          bucket
+        end)
+
+      assert Bucket.empty?(emptied)
+      assert [] == Bucket.to_list(emptied)
+      assert [] == emptied.stack, "a fully drained bucket still holds tombstones"
+    end
+
+    # The subtle one. Equal items are interchangeable in a set and are not in a
+    # list: dropping the first `c` of `[c, b, c]` leaves `[b, c]` and dropping
+    # the last leaves `[c, b]`. Arrival order retracts the oldest, so this does.
+    test "the oldest occurrence is the one that goes" do
+      bucket = Bucket.new([el(:c), el(:b), el(:c)])
+      {:ok, bucket} = Bucket.take(bucket, el(:c))
+
+      assert [el(:b), el(:c)] == Bucket.to_list(bucket)
     end
   end
 

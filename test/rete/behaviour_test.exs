@@ -42,6 +42,12 @@ defmodule Rete.BehaviourTest do
     [mod] |> Session.new() |> Session.insert(facts) |> Session.fire_rules()
   end
 
+  defp sorted_leaves(by_node) do
+    Map.new(by_node, fn {node, by_key} ->
+      {node, Map.new(by_key, fn {key, items} -> {key, Enum.sort(items)} end)}
+    end)
+  end
+
   defp tagged(session, tag) do
     session
     |> Session.facts()
@@ -54,7 +60,7 @@ defmodule Rete.BehaviourTest do
   defp fired(session) do
     session
     |> Collect.by_tag(:activation_fired)
-    |> Enum.map(fn {:activation_fired, _node, _token, facts} -> facts end)
+    |> Enum.map(fn {:activation_fired, _source, _token, facts} -> facts end)
   end
 
   # Retract everything one fact at a time, the way a caller would.
@@ -1717,16 +1723,13 @@ defmodule Rete.BehaviourTest do
         # which also makes the order of `Session.query/3` results depend on
         # insertion history. See the note reported alongside this suite; the
         # sets agree, only their order does not.
-        assert base.state.memory.facts == session.state.memory.facts
-        assert base.state.memory.accum == session.state.memory.accum
-        assert base.state.memory.insertions == session.state.memory.insertions
+        expected = Rete.Memory.dump(base.state.memory)
+        actual = Rete.Memory.dump(session.state.memory)
 
-        assert Map.new(base.state.memory.tokens, fn {node, groups} ->
-                 {node, Map.new(groups, fn {key, tokens} -> {key, Enum.sort(tokens)} end)}
-               end) ==
-                 Map.new(session.state.memory.tokens, fn {node, groups} ->
-                   {node, Map.new(groups, fn {key, tokens} -> {key, Enum.sort(tokens)} end)}
-                 end)
+        assert expected.facts == actual.facts
+        assert expected.accum == actual.accum
+        assert expected.insertions == actual.insertions
+        assert sorted_leaves(expected.tokens) == sorted_leaves(actual.tokens)
       end
     end
 
@@ -1789,7 +1792,7 @@ defmodule Rete.BehaviourTest do
         assert expected == cycled |> Session.facts() |> Enum.sort(),
                "round trip changed the session for #{inspect(extra)}"
 
-        assert base.state.memory == cycled.state.memory,
+        assert Rete.Memory.dump(base.state.memory) == Rete.Memory.dump(cycled.state.memory),
                "memory changed for #{inspect(extra)}"
       end
     end

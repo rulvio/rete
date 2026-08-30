@@ -293,7 +293,8 @@ defmodule Rete.Engine.Nodes do
 
   defp dispatch(%Node.Production{} = node, :left, tokens, %State{} = state) do
     agenda = Enum.reduce(tokens, state.agenda, &Agenda.add(&2, activation(state, node, &1)))
-    events = for token <- tokens, do: {:event, {:activation_added, node.id, token}}
+    source = Node.source(node)
+    events = for token <- tokens, do: {:event, {:activation_added, source, token}}
 
     {%State{state | agenda: agenda}, events}
   end
@@ -309,7 +310,7 @@ defmodule Rete.Engine.Nodes do
 
       case outcome do
         :removed ->
-          {state, ops ++ [{:event, {:activation_removed, node.id, token}}]}
+          {state, ops ++ [{:event, {:activation_removed, Node.source(node), token}}]}
 
         :missing ->
           {memory, facts} = Memory.take_insertion(state.memory, node.id, token)

@@ -63,6 +63,7 @@ defmodule Rete.Engine do
   alias Rete.Engine.State
   alias Rete.Memory
   alias Rete.Network
+  alias Rete.Network.Node
   alias Rete.Taxonomy
   alias Rete.Token
 
@@ -96,19 +97,19 @@ defmodule Rete.Engine do
   def insert(state, facts, origin \\ :asserted)
 
   def insert(%State{} = state, facts, origin) do
-    {state, ops} =
-      Enum.reduce(facts, {state, []}, fn fact, {%State{} = state, ops} ->
+    {state, batches} =
+      Enum.reduce(facts, {state, []}, fn fact, {%State{} = state, batches} ->
         case Memory.add_fact(state.memory, fact) do
           {memory, :new} ->
             state = emit(%State{state | memory: memory}, fn -> {:fact_inserted, fact, origin} end)
-            {state, ops ++ alpha_ops(state, fact, :right)}
+            {state, [alpha_ops(state, fact, :right) | batches]}
 
           {memory, :duplicate} ->
-            {emit(%State{state | memory: memory}, fn -> {:fact_duplicated, fact} end), ops}
+            {emit(%State{state | memory: memory}, fn -> {:fact_duplicated, fact} end), batches}
         end
       end)
 
-    state |> State.enqueue(ops) |> drain()
+    state |> State.enqueue(ordered_ops(batches)) |> drain()
   end
 
   @doc """
@@ -121,22 +122,28 @@ defmodule Rete.Engine do
   def retract(state, facts, origin \\ :asserted)
 
   def retract(%State{} = state, facts, origin) do
-    {state, ops} =
-      Enum.reduce(facts, {state, []}, fn fact, {%State{} = state, ops} ->
+    {state, batches} =
+      Enum.reduce(facts, {state, []}, fn fact, {%State{} = state, batches} ->
         case Memory.remove_fact(state.memory, fact) do
           {memory, :gone} ->
             state =
               emit(%State{state | memory: memory}, fn -> {:fact_retracted, fact, origin} end)
 
-            {state, ops ++ alpha_ops(state, fact, :right_retract)}
+            {state, [alpha_ops(state, fact, :right_retract) | batches]}
 
           {memory, _} ->
-            {%State{state | memory: memory}, ops}
+            {%State{state | memory: memory}, batches}
         end
       end)
 
-    state |> State.enqueue(ops) |> drain()
+    state |> State.enqueue(ordered_ops(batches)) |> drain()
   end
+
+  # One batch of ops per fact, collected newest first because appending to the
+  # accumulator would copy it once per fact — quadratic in the size of a single
+  # insert. Order is part of the contract, so it is restored here rather than
+  # given up: propagation order decides the order matches reach the agenda.
+  defp ordered_ops(batches), do: batches |> Enum.reverse() |> Enum.concat()
 
   @doc """
   Fires until the agenda is empty.
@@ -360,18 +367,19 @@ defmodule Rete.Engine do
       node.rhs
       |> apply([node.hash, activation.token.bindings])
       |> normalize_facts()
+      |> check_facts!(state, node, activation.token)
       |> well_founded(state, activation.token)
 
     case facts do
       [] ->
-        emit(state, fn -> {:activation_fired, node.id, activation.token, []} end)
+        emit(state, fn -> {:activation_fired, Node.source(node), activation.token, []} end)
 
       facts ->
         memory = Memory.add_insertion(state.memory, node.id, activation.token, facts)
 
         %State{state | memory: memory}
-        |> emit(fn -> {:activation_fired, node.id, activation.token, facts} end)
-        |> insert(facts, {:derived, node.id})
+        |> emit(fn -> {:activation_fired, Node.source(node), activation.token, facts} end)
+        |> insert(facts, {:derived, Node.source(node)})
     end
   end
 
@@ -458,6 +466,47 @@ defmodule Rete.Engine do
   defp normalize_facts(facts) when is_list(facts), do: Enum.reject(facts, &is_nil/1)
   defp normalize_facts(fact), do: [fact]
 
+  # A body that returns something that is not a fact — an `Enum.each` result, a
+  # bare `:ok` — is a mistake, and it would otherwise surface as
+  # `Rete.Taxonomy.default_fact_type/1` complaining about a value, several
+  # frames inside the engine, with nothing to say which of a hundred rules
+  # produced it. The engine knows: it is holding the node.
+  #
+  # The `try` wraps the type call for **one fact** and nothing else. Wrapping
+  # the insertion instead would catch whatever the resulting cascade raises —
+  # another rule firing, deeper — and blame it on this one.
+  #
+  # Going through `Rete.Taxonomy.fact_type/2` rather than re-testing the shape
+  # here means a custom `:fact_type_fn` decides what a fact is, and whatever it
+  # raises is attributed too.
+  defp check_facts!(facts, %State{} = state, node, token) do
+    Enum.each(facts, fn fact ->
+      try do
+        Taxonomy.fact_type(state.network.taxonomy, fact)
+      rescue
+        error ->
+          reraise ArgumentError,
+                  [message: not_a_fact(node, token, fact, error)],
+                  __STACKTRACE__
+      end
+    end)
+
+    facts
+  end
+
+  defp not_a_fact(node, token, fact, error) do
+    """
+    #{Network.ref_string({node.module, node.name})} returned #{inspect(fact)}, \
+    which is not a fact.
+
+    It fired on #{inspect(token.bindings)}. The body of a rule is the facts to \
+    insert: return a struct, a tagged tuple `{:type, ...}`, a tagged map \
+    `%{__type__: ...}`, a list of those, or `nil`/`[]` to insert nothing.
+
+    #{Exception.message(error)}\
+    """
+  end
+
   defp describe(state, %Activation{node_id: id, token: token}) do
     case Network.node(state.network, id) do
       %{name: _} -> "#{rule_name(state, id)} #{inspect(token.bindings)}"
@@ -514,7 +563,11 @@ defmodule Rete.Engine do
         state
 
       {:ok, {:retract_facts, node_id, facts}, state} ->
-        state |> retract(facts, {:derived, node_id}) |> drain()
+        # The op carries the node id; the origin carries the rule as well, so
+        # only the node has to be looked up again here.
+        source = state.network |> Network.node(node_id) |> Node.source()
+
+        state |> retract(facts, {:derived, source}) |> drain()
 
       {:ok, {:event, event}, state} ->
         state |> emit(fn -> event end) |> drain()

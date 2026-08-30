@@ -267,6 +267,29 @@ The compiled network is shared rather than copied, so a session is cheap to hold
 and safe to pass between processes. Compiling is the expensive part: do it once with
 `Rete.Compiler.build/2` and start sessions from it with `Rete.Session.from_network/1`.
 
+## What is public
+
+Seven modules, and they are the ones the examples above use:
+
+| module | for |
+|---|---|
+| `Rete` | aggregating rule, expression and taxonomy data across ruleset modules |
+| `Rete.Ruleset` | `defrule`, `defquery`, `derive`, `underive` |
+| `Rete.Session` | building a session, inserting, retracting, firing, querying |
+| `Rete.Inspect` | `explain/2`, `fired/2`, `why_not/2`, `collection/3` |
+| `Rete.Listener` (+ `.Collect`, `.Trace`) | watching what a session does |
+
+**Everything else is internal** — the DSL front end, the IR, the compiler, the network,
+the engine, working memory, the agenda, and the value structs. It is documented, and
+generously, because the design is meant to be readable and because durability,
+checkpointing and tooling will eventually need to reach in. But it is not covered by
+semantic versioning and it may change in a patch release. The generated docs group it
+under `Internals:` headings for exactly this reason.
+
+Two internals do reach you through the public API: `Rete.Session.pending/1` returns
+`Rete.Activation` structs, and every listener event carries a `Rete.Token`. **Read their
+fields freely; do not depend on their functions**, and expect the field sets to change.
+
 ## Limitations
 
 Correctness and DSL clarity came first; several things were left out on purpose, and the

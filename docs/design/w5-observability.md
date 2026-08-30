@@ -56,12 +56,20 @@ is still an immutable value: no processes, no ETS, no side channel.
 | `{:fact_retracted, fact, origin}` | a fact leaves it |
 | `{:fact_duplicated, fact}` | an equal fact was present, so nothing propagated |
 | `{:propagated, op, node_id, count}` | a node consumed `count` items |
-| `{:activation_added, node_id, token}` | a production's LHS became satisfied |
-| `{:activation_removed, node_id, token}` | a pending activation was cancelled |
-| `{:activation_fired, node_id, token, facts}` | a rule ran |
+| `{:activation_added, source, token}` | a production's LHS became satisfied |
+| `{:activation_removed, source, token}` | a pending activation was cancelled |
+| `{:activation_fired, source, token, facts}` | a rule ran |
 
-`origin` is `:asserted` or `{:derived, node_id}`. That single distinction is what
-lets a listener reconstruct provenance from events alone, without reading memory.
+`source` is `%{node: node_id, rule: {module, name}}`. A listener is handed an event and
+its own state and cannot reach the network, so a bare node id would be an integer it had
+no way to resolve — and `{module, name}` is the identity `Rete.Session.query/3` and
+`Rete.Inspect.why_not/2` already use. A map rather than a wider tuple, so a field can be
+added later without changing the shape every listener matches on. `{:propagated, ...}` is
+the exception and keeps the bare id: it fires for every node, and a join has no name.
+
+`origin` is `:asserted` or `{:derived, source}` — the same map, so a concluded fact can be
+attributed to the rule that concluded it. That single distinction is what lets a listener
+reconstruct provenance from events alone, without reading memory.
 
 A listener **must** have a catch-all clause; new events are added as the engine
 grows, and one that crashed on an unfamiliar event would make upgrading a

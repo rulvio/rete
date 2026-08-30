@@ -279,8 +279,22 @@ to remove**.
   the cycle cap.
 * **Nothing is durable.** A session is an in-memory value; there is no serialization,
   checkpointing or distribution.
-* **Performance is untuned.** The structure is right — alpha and beta sharing, hash
-  joins, incremental retraction, sorted insertion into collections — but no profiling
-  pass has been done and there is no benchmark suite. The fact-to-token index behind
-  well-founded support is rebuilt on demand, and `Rete.Agenda` is a sorted list; both
-  are choices that would want measuring before a busy session relies on them.
+* **Performance has been measured in one dimension only.** A profiling pass found three
+  quadratics in the size of a single join key's bucket and fixed them: `Rete.Agenda` is
+  bucketed by sort key rather than held as one sorted list, `Rete.Memory.Bucket` replaced
+  the list behind each key with an ordered multiset, and `insert/3` and `retract/3` no
+  longer append to their op accumulator once per fact. Inserting 4,000 facts under one
+  key went from 250 ms to under 10 ms; retracting 200 of them from a bucket of 8,000,
+  from 108 ms to under 1 ms.
+
+  That is one shape of workload. There is still no benchmark suite, nothing has been
+  measured against many join keys, deep cascades or wide disjunctions, and two known
+  costs are untouched: the fact-to-token index behind well-founded support is rebuilt on
+  demand, and `Rete.Engine.Nodes.insert_ordered/2` is O(k) per collection member, so
+  filling a collection of n facts costs O(n²).
+
+  A method note worth keeping. The first attempt fixed the **wrong** quadratic. Beta
+  memory's append was real and had to go, but it was not what dominated — the agenda was,
+  and an earlier version of this list had already named it. The tell was that a query
+  terminal, which has no agenda, was near-linear while a production terminal was not.
+  Split the measurement before believing an attribution.

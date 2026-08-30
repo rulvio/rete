@@ -321,6 +321,24 @@ defmodule Rete.Network.Node do
   def terminal?(_), do: false
 
   @doc """
+  How a terminal names itself in a listener event.
+
+      %{node: 12, rule: {MyRuleset, :flag}}
+
+  The node id alone is unresolvable from inside `c:Rete.Listener.handle_event/2`,
+  which is handed an event and its own state and has no way to reach the
+  network. `{module, name}` is the identity everything else uses — a query is
+  run by it, `Rete.Inspect.why_not/2` takes it — and the id is kept alongside
+  because it is what `Rete.Inspect` reports and what a propagation event
+  carries.
+
+  A map rather than a wider tuple, so that a field can be added later without
+  changing the shape of every event a listener matches on.
+  """
+  @spec source(Production.t() | Query.t()) :: %{node: term(), rule: {module(), atom()}}
+  def source(%{id: id, module: module, name: name}), do: %{node: id, rule: {module, name}}
+
+  @doc """
   Puts an id on a node.
   """
   @spec put_id(t(), non_neg_integer()) :: t()

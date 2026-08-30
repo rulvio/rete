@@ -1333,6 +1333,82 @@ defmodule Rete.EngineTest do
     end
   end
 
+  # --- what a right hand side may return ------------------------------------------------------------
+
+  describe "a right hand side that does not return facts" do
+    defmodule Returns do
+      use Rete.Ruleset
+
+      # The classic: a body ending in Enum.each returns :ok.
+      defrule oops({:go, x}) do
+        Enum.each([x], fn _ -> :noop end)
+      end
+
+      defrule nothing({:quiet, _x}) do
+        nil
+      end
+
+      defrule empty({:hush, _x}) do
+        []
+      end
+
+      # A conditional that only sometimes concludes: the nil is dropped, the
+      # rest is inserted.
+      defrule some({:mixed, x}) do
+        [{:kept, x}, if(x > 100, do: {:big, x})]
+      end
+    end
+
+    # Without this the error comes from Rete.Taxonomy several frames down, names
+    # the value and not the rule, and leaves you searching a ruleset for it.
+    test "the error names the rule, its module and the match" do
+      error =
+        assert_raise ArgumentError, fn ->
+          [Returns] |> Session.new() |> Session.insert({:go, 1}) |> Session.fire_rules()
+        end
+
+      assert error.message =~ "Rete.EngineTest.Returns.oops returned :ok, which is not a fact"
+      assert error.message =~ "It fired on %{x: 1}"
+      assert error.message =~ "tagged tuple"
+
+      assert error.message =~ "cannot determine the fact type of :ok",
+             "the original error should survive"
+    end
+
+    # Concluding nothing is ordinary, not an error: a rule may hold only under
+    # conditions its body checks.
+    test "nil and an empty list conclude nothing without raising" do
+      session = run([Returns], [{:quiet, 1}, {:hush, 2}])
+
+      assert [{:hush, 2}, {:quiet, 1}] == session |> Session.facts() |> Enum.sort()
+    end
+
+    test "a nil inside a returned list is dropped and the rest inserted" do
+      session = run([Returns], [{:mixed, 5}, {:mixed, 500}])
+
+      assert [{:big, 500}, {:kept, 5}, {:kept, 500}] ==
+               derived(session, :big) ++ derived(session, :kept)
+    end
+
+    # The check runs per fact, so an offender among good facts is still caught.
+    test "one bad fact among good ones is caught and named" do
+      defmodule Mixed do
+        use Rete.Ruleset
+
+        defrule half({:go, x}) do
+          [{:fine, x}, :not_a_fact]
+        end
+      end
+
+      error =
+        assert_raise ArgumentError, fn ->
+          [Mixed] |> Session.new() |> Session.insert({:go, 1}) |> Session.fire_rules()
+        end
+
+      assert error.message =~ "half returned :not_a_fact"
+    end
+  end
+
   # --- the loop guard ------------------------------------------------------------------------------
 
   describe "runaway rules" do

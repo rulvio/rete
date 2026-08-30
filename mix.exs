@@ -79,8 +79,13 @@ defmodule Rete.MixProject do
         Design: ~r"docs/design/",
         About: ["CHANGELOG.md", "LICENSE"]
       ],
+      # The first group is the public API; the rest are internals. See "What is
+      # public" in the README. They are documented rather than hidden because
+      # the design is meant to be readable and because durability and tooling
+      # work will need them, but only the first group is covered by semantic
+      # versioning.
       groups_for_modules: [
-        Rete: [
+        "Public API": [
           Rete,
           Rete.Ruleset,
           Rete.Session,
@@ -89,31 +94,32 @@ defmodule Rete.MixProject do
           Rete.Listener.Collect,
           Rete.Listener.Trace
         ],
-        "Facts and memory": [
+        "Internals: facts and memory": [
           Rete.Token,
           Rete.Element,
           Rete.Activation,
           Rete.Memory,
+          Rete.Memory.Bucket,
           Rete.Agenda,
           Rete.Taxonomy
         ],
-        "The DSL front end": [
+        "Internals: the DSL front end": [
           Rete.DSL.Parser,
           Rete.DSL.Normalize,
           Rete.DSL.Bindings,
           Rete.DSL.Codegen,
           Rete.DSL.Vars
         ],
-        "The IR": [Rete.IR, ~r/^Rete\.IR\./],
-        Compiler: [
+        "Internals: the IR": [Rete.IR, ~r/^Rete\.IR\./],
+        "Internals: the compiler": [
           Rete.Compiler,
           Rete.Compiler.Sort,
           Rete.Compiler.Negation,
           Rete.Compiler.BetaGraph,
           Rete.Network
         ],
-        "Network nodes": [Rete.Network.Node, ~r/^Rete\.Network\.Node\./],
-        Engine: [
+        "Internals: network nodes": [Rete.Network.Node, ~r/^Rete\.Network\.Node\./],
+        "Internals: the engine": [
           Rete.Engine,
           Rete.Engine.State,
           Rete.Engine.Nodes

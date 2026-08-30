@@ -73,8 +73,8 @@ defmodule Rete.ObservabilityTest do
         |> Map.new(fn {:fact_inserted, fact, origin} -> {fact, origin} end)
 
       assert :asserted == inserted[{:order, 1, 250}]
-      assert {:derived, _} = inserted[{:flagged, 1}]
-      assert {:derived, _} = inserted[{:escalated, 1}]
+      assert {:derived, %{rule: {Rules, :flag}}} = inserted[{:flagged, 1}]
+      assert {:derived, %{rule: {Rules, :escalate}}} = inserted[{:escalated, 1}]
     end
 
     test "a retraction cascade is visible as derived retractions" do
@@ -86,8 +86,8 @@ defmodule Rete.ObservabilityTest do
         |> Map.new(fn {:fact_retracted, fact, origin} -> {fact, origin} end)
 
       assert :asserted == retracted[{:order, 1, 250}]
-      assert {:derived, _} = retracted[{:flagged, 1}]
-      assert {:derived, _} = retracted[{:escalated, 1}]
+      assert {:derived, %{rule: {Rules, :flag}}} = retracted[{:flagged, 1}]
+      assert {:derived, %{rule: {Rules, :escalate}}} = retracted[{:escalated, 1}]
     end
 
     test "a duplicate insert is reported and propagates nothing" do
@@ -104,7 +104,7 @@ defmodule Rete.ObservabilityTest do
       assert 1 == session |> Listener.Collect.by_tag(:activation_fired) |> Enum.count(&flagged?/1)
     end
 
-    defp flagged?({:activation_fired, _node, _token, facts}), do: {:flagged, 1} in facts
+    defp flagged?({:activation_fired, _source, _token, facts}), do: {:flagged, 1} in facts
 
     # A pending activation cancelled before it fires never runs, and that is
     # observable rather than merely invisible.
@@ -140,6 +140,30 @@ defmodule Rete.ObservabilityTest do
       fired = length(Listener.Collect.by_tag(session, :activation_fired))
       assert fired == Session.listener_state(session, CountFires)
       assert fired > 0
+    end
+
+    # A listener is handed an event and its own state, with no way to reach the
+    # network, so a bare node id would be an integer it could not resolve.
+    test "every activation event names the rule, not just the node" do
+      session =
+        [Rules]
+        |> Session.new()
+        |> Session.with_listener(Listener.Collect, [])
+        |> Session.insert({:order, 1, 250})
+        |> Session.retract({:order, 1, 250})
+        |> Session.insert({:order, 2, 900})
+        |> Session.fire_rules()
+
+      for tag <- [:activation_added, :activation_removed, :activation_fired] do
+        events = Listener.Collect.by_tag(session, tag)
+        assert events != [], "no #{tag} event to check"
+
+        for event <- events do
+          assert %{node: node, rule: {Rules, name}} = elem(event, 1)
+          assert is_integer(node), "the node id is kept alongside the rule"
+          assert name in [:flag, :escalate, :vip_gold, :vip_spend, :dormant, :clean]
+        end
+      end
     end
 
     test "an unattached listener has no state" do
