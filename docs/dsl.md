@@ -640,6 +640,38 @@ outside it. ...
 Either add a condition whose pattern matches on `amt`, so the collection groups by it, or
 take it from the gathered facts: `for {_, _, amt} <- os, do: amt`.
 
+### Expecting two productions of one name to be clauses
+
+```elixir
+defrule flag({:order, cid, amt} when amt > 100), do: {:flagged, cid, amt}
+defrule flag({:ticket, cid}), do: {:flagged, cid, :ticket}
+```
+
+```
+** (ArgumentError) lib/rules.ex:4: defrule flag repeats a name already declared in
+MyApp.Rules — defrule flag, lib/rules.ex:3. ...
+```
+
+Elixir function clauses are ordered alternatives: the first one that matches wins and
+the rest never run. Productions are not. **Every** rule whose left hand side holds fires,
+and a query answers from every match, so two of one name would both apply — which is
+almost never what the clause syntax leads you to expect. Rules and queries share one
+namespace, so a `defrule thing` and a `defquery thing` collide too.
+
+Within a module a name must be unique; across modules it need not be, since a production
+is identified by `{module, name}`. If you wanted alternatives, write one production over
+a disjunction — the branches may bind different variables, and one that only some
+branches bind is `nil` in the body:
+
+```elixir
+defrule flag({:or, [{:order, cid, amt}, {:ticket, cid}]}) do
+  {:flagged, cid, amt || :from_ticket}
+end
+```
+
+If you wanted them scheduled separately or told apart in `Rete.Inspect.fired/2`, give
+them different names — that is what a name is for.
+
 ### Others worth knowing
 
 | mistake | what you get |
@@ -647,6 +679,5 @@ take it from the gathered facts: `for {_, _, amt} <- os, do: amt`.
 | `defrule r({:order, cid})` with no `do` block | an error naming the rule; the body is the point of a rule |
 | `{:order, _amt} when _amt > 0` | an error saying to rename it to `amt`; `_`-prefixed names are discarded |
 | `[f = {:order, cid}]` | an error: bind the whole collection, not an element of it |
-| two rules with the same name, in any module | an error at `Rete.Session.new/1`; a name identifies a query and attributes an activation |
 | `defquery q(%{params: [:cid]}, {:a, cid})` | an error: `params` no longer exists, any binding can be filtered on |
 | `@limit 5` … rule … `@limit 100` … same condition | an error: two conditions that read the same attribute at different values cannot share one compiled function |

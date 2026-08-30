@@ -288,7 +288,71 @@ defmodule Rete.NetworkTest do
       error = assert_raise ArgumentError, fn -> Code.compile_string(source) end
 
       assert error.message =~ "no longer a thing"
-      assert error.message =~ "query(session, :bad, cid: value)"
+      assert error.message =~ "bad(session, cid: value)"
+    end
+  end
+
+  # A repeated name is caught where it is written, not when a session is built
+  # from the module. Two queries of one name would otherwise collide as two
+  # definitions of one function, and a rule and a query of one name would reach
+  # the compiler, which knows the module but not the line.
+  describe "a repeated production name" do
+    defp compile_dup(body) do
+      source = """
+      defmodule Rete.NetworkTest.Dup#{System.unique_integer([:positive])} do
+        use Rete.Ruleset
+      #{body}
+      end
+      """
+
+      assert_raise ArgumentError, fn -> Code.compile_string(source, "lib/rules.ex") end
+    end
+
+    test "two rules of one name are rejected at the second declaration" do
+      error =
+        compile_dup("""
+          defrule flag({:order, cid}), do: {:flagged, cid}
+          defrule flag({:ticket, cid}), do: {:flagged, cid}
+        """)
+
+      assert error.message =~ "lib/rules.ex:4: defrule flag repeats a name"
+      assert error.message =~ "defrule flag, lib/rules.ex:3"
+    end
+
+    test "two queries of one name are rejected before the function collides" do
+      error =
+        compile_dup("""
+          defquery thing({:a, x}), do: x
+          defquery thing({:b, x}), do: x
+        """)
+
+      assert error.message =~ "defquery thing repeats a name"
+      refute error.message =~ "defined", "Elixir's duplicate-def error should not get there first"
+    end
+
+    # Rules and queries share one namespace: a name identifies a rule to
+    # attribute an activation to and a query to run, and neither tells two apart.
+    test "a rule and a query may not share a name" do
+      error =
+        compile_dup("""
+          defrule thing({:a, x}), do: {:b, x}
+          defquery thing({:b, x}), do: x
+        """)
+
+      assert error.message =~ "defquery thing repeats a name"
+      assert error.message =~ "defrule thing"
+    end
+
+    # The mistake behind it is usually reaching for function-clause semantics.
+    test "the error says why rules are not clauses, and what to write instead" do
+      error =
+        compile_dup("""
+          defrule flag({:order, cid}), do: {:flagged, cid}
+          defrule flag({:ticket, cid}), do: {:flagged, cid}
+        """)
+
+      assert error.message =~ "not a function clause"
+      assert error.message =~ "{:or, [...]}"
     end
   end
 

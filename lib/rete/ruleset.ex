@@ -70,6 +70,11 @@ defmodule Rete.Ruleset do
       @rule_data []
       @taxo_data []
 
+      # name => {:rule | :query, line}, for the duplicate name check. Kept
+      # separately from @rule_data because that one holds escaped IR, which has
+      # dropped the compile-time AST a line number would come from.
+      @rete_productions %{}
+
       # The module attribute values behind each generated expression, so that
       # two identically written conditions reading different values are
       # rejected instead of silently sharing one compiled function. See
@@ -123,10 +128,72 @@ defmodule Rete.Ruleset do
 
   # Runs the pipeline, then emits the expression functions, records the IR in
   # @rule_data and defines the right hand side function.
+  #
+  # The name check is spliced in *ahead* of all of that, so that the first thing
+  # to fail on a repeated name is the check that can explain it. Two queries of
+  # one name would otherwise collide as two definitions of the same function,
+  # and a rule and a query of one name would get all the way to
+  # `Rete.Compiler.build/2`, which knows the module but not the line.
   defp defproduction(env, decl, body, type) do
-    env
-    |> build(decl, body, type)
-    |> Codegen.compile()
+    production = build(env, decl, body, type)
+
+    quote do
+      unquote(name_check(env, production.name, type))
+      unquote(Codegen.compile(production))
+    end
+  end
+
+  defp name_check(env, name, type) do
+    quote do
+      # Fully qualified on purpose: this is spliced into the *user's* module,
+      # which has no alias for this one.
+      # credo:disable-for-next-line Credo.Check.Design.AliasUsage
+      Rete.Ruleset.check_name!(
+        __MODULE__,
+        unquote(name),
+        unquote(type),
+        unquote(Path.relative_to_cwd(env.file)),
+        unquote(env.line)
+      )
+    end
+  end
+
+  @doc """
+  Rejects a production name the module has already used, and records it.
+
+  Called from the module body rather than at macro expansion, because a module
+  body is expanded in full *before* any of it is evaluated — at expansion time
+  the attribute recording earlier declarations is still empty, and every
+  declaration would look like the first.
+
+  Rules and queries share one namespace. A name identifies a rule to attribute
+  an activation to and a query to run, and neither can tell two things apart.
+  """
+  @spec check_name!(module(), atom(), :rule | :query, String.t(), pos_integer()) :: :ok
+  def check_name!(module, name, type, file, line) do
+    declared = Module.get_attribute(module, :rete_productions) || %{}
+
+    case Map.fetch(declared, name) do
+      {:ok, {first_type, first_line}} ->
+        raise ArgumentError, """
+        #{file}:#{line}: def#{type} #{name} repeats a name already declared in \
+        #{inspect(module)} — def#{first_type} #{name}, #{file}:#{first_line}.
+
+        A production name identifies a rule to attribute an activation to and a \
+        query to run, so it has to be unique within its module, and rules and \
+        queries share one namespace. Across modules it need not be unique: a \
+        production is identified by `{module, name}`.
+
+        A production is not a function clause. Every rule whose left hand side \
+        holds fires, and a query answers from every match, so two of one name \
+        would both apply rather than the first winning. Write one production \
+        over a disjunction, `{:or, [...]}`, if that is what you meant.
+        """
+
+      :error ->
+        Module.put_attribute(module, :rete_productions, Map.put(declared, name, {type, line}))
+        :ok
+    end
   end
 
   # A production written without a `do` block. Emitting its RHS would define a

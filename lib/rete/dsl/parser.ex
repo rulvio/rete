@@ -131,8 +131,9 @@ defmodule Rete.DSL.Parser do
         raise ArgumentError,
               "#{name} declares `params: #{inspect(params)}`, which is no longer a thing. " <>
                 "A query is its conditions and its body, and the caller may constrain any " <>
-                "variable the left hand side binds, with no declaration: " <>
-                "Rete.Session.query(session, :#{name}, #{first}: value)"
+                "variable the left hand side binds, with no declaration. A query is also a " <>
+                "function in its own module, so it is run by calling it: " <>
+                "#{name}(session, #{first}: value)"
     end
   end
 
