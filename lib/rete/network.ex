@@ -47,7 +47,8 @@ defmodule Rete.Network do
           taxonomy: Taxonomy.t(),
           graph: BetaGraph.t(),
           queries: %{atom() => BetaGraph.id()},
-          productions: [IR.Production.t()]
+          productions: [IR.Production.t()],
+          marker_types: MapSet.t(atom())
         }
 
   defstruct alphas: %{},
@@ -55,7 +56,8 @@ defmodule Rete.Network do
             taxonomy: nil,
             graph: nil,
             queries: %{},
-            productions: []
+            productions: [],
+            marker_types: MapSet.new()
 
   @doc """
   Assembles a network from productions that are already sorted, classified and
@@ -80,7 +82,8 @@ defmodule Rete.Network do
       taxonomy: taxonomy,
       graph: graph,
       queries: query_index(graph),
-      productions: productions
+      productions: productions,
+      marker_types: marker_types(productions)
     }
   end
 
@@ -204,6 +207,28 @@ defmodule Rete.Network do
     do: Enum.flat_map(branches, &Enum.flat_map(&1, fn c -> conditions(c) end))
 
   defp conditions(_), do: []
+
+  # The marker facts extracted compound negations insert are engine machinery,
+  # not conclusions the user wrote a rule to reach. They have to be real facts —
+  # the negation node matches on them like anything else — but they have no
+  # business in `Rete.Session.facts/1`, where they would show up as a tuple
+  # named after a generated rule.
+  defp marker_types(productions) do
+    for production <- productions,
+        Rete.Compiler.Negation.generated?(production),
+        into: MapSet.new(),
+        do: production.name
+  end
+
+  @doc """
+  Whether a fact is an internal marker rather than something the user's rules
+  concluded.
+  """
+  @spec marker?(t(), term()) :: boolean()
+  def marker?(%__MODULE__{marker_types: markers} = network, fact) do
+    MapSet.size(markers) > 0 and
+      MapSet.member?(markers, Taxonomy.fact_type(network.taxonomy, fact))
+  end
 
   defp query_index(graph) do
     graph
