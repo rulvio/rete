@@ -146,7 +146,7 @@ defmodule ReteTest do
       lhs_expr =
         rule
         |> Map.get(:lhs)
-        |> Enum.map(& &1.expr)
+        |> Enum.map(&(Rete.IR.exprs(&1) |> hd() |> Map.get(:fun)))
 
       [bind1 | [bind2 | [bind3 | [bind4 | [bind5 | [bind6 | [bind7 | [test1]]]]]]]] = lhs_expr
 
@@ -192,7 +192,7 @@ defmodule ReteTest do
       assert expected_rhs == rhs
 
       assert [salience: 100] == Map.get(rule, :opts)
-      assert [:id, :name, :foo, :bar, :bars] == Map.get(rule, :bind)
+      assert [:bar, :bars, :foo, :id, :name] == Map.get(rule, :bind)
       assert is_integer(Map.get(rule, :hash))
       assert :rule == Map.get(rule, :type)
 
@@ -202,15 +202,26 @@ defmodule ReteTest do
 
       [bind1 | [bind2 | [bind3 | [bind4 | [bind5 | [bind6 | [bind7 | [test1]]]]]]]] = lhs
 
-      assert %{fact: :_, type: :foo, bind: [:id]} == Map.take(bind1, [:type, :fact, :bind])
-      assert %{fact: :bar, type: :bar, bind: [:id]} == Map.take(bind2, [:type, :fact, :bind])
-      assert %{fact: :_, type: :foo, bind: [:id]} == Map.take(bind3, [:type, :fact, :bind])
-      assert %{coll: :_, type: :bar, bind: [:id]} == Map.take(bind4, [:type, :bind, :coll])
-      assert %{fact: :foo, type: :foo, bind: [:id]} == Map.take(bind5, [:type, :fact, :bind])
-      assert %{coll: :bars, type: :bar, bind: [:id]} == Map.take(bind6, [:type, :bind, :coll])
+      assert %{fact_binding: nil, type: :foo, bind: [:id]} ==
+               Map.take(bind1, [:type, :fact_binding, :bind])
 
-      assert %{fact: :_, type: :living_thing, bind: [:name]} ==
-               Map.take(bind7, [:type, :fact, :bind])
+      assert %{fact_binding: :bar, type: :bar, bind: [:id]} ==
+               Map.take(bind2, [:type, :fact_binding, :bind])
+
+      assert %{fact_binding: nil, type: :foo, bind: [:id]} ==
+               Map.take(bind3, [:type, :fact_binding, :bind])
+
+      assert %{coll_binding: nil, type: :bar, bind: [:id]} ==
+               Map.take(bind4, [:type, :bind, :coll_binding])
+
+      assert %{fact_binding: :foo, type: :foo, bind: [:id]} ==
+               Map.take(bind5, [:type, :fact_binding, :bind])
+
+      assert %{coll_binding: :bars, type: :bar, bind: [:id]} ==
+               Map.take(bind6, [:type, :bind, :coll_binding])
+
+      assert %{fact_binding: nil, type: :living_thing, bind: [:name]} ==
+               Map.take(bind7, [:type, :fact_binding, :bind])
 
       assert %{bind: [:id]} == Map.take(test1, [:bind])
     end
@@ -233,7 +244,7 @@ defmodule ReteTest do
       lhs_expr =
         rule
         |> Map.get(:lhs)
-        |> Enum.map(& &1.expr)
+        |> Enum.map(&(Rete.IR.exprs(&1) |> hd() |> Map.get(:fun)))
 
       [bind1 | [bind2 | [bind3 | [bind4 | [bind5 | [bind6 | [bind7 | [test1]]]]]]]] = lhs_expr
 
@@ -272,7 +283,7 @@ defmodule ReteTest do
       assert expected_rhs == rhs
 
       assert [] == Map.get(rule, :opts)
-      assert [:id, :name, :foo, :bar, :bars] == Map.get(rule, :bind)
+      assert [:bar, :bars, :foo, :id, :name] == Map.get(rule, :bind)
       assert is_integer(Map.get(rule, :hash))
       assert :query == Map.get(rule, :type)
 
@@ -282,13 +293,27 @@ defmodule ReteTest do
 
       [bind1 | [bind2 | [bind3 | [bind4 | [bind5 | [bind6 | [bind7 | [test1]]]]]]]] = lhs
 
-      assert %{fact: :_, type: :foo, bind: [:id]} == Map.take(bind1, [:type, :fact, :bind])
-      assert %{fact: :bar, type: :bar, bind: [:id]} == Map.take(bind2, [:type, :fact, :bind])
-      assert %{fact: :_, type: :foo, bind: [:id]} == Map.take(bind3, [:type, :fact, :bind])
-      assert %{coll: :_, type: :bar, bind: [:id]} == Map.take(bind4, [:type, :bind, :coll])
-      assert %{type: :foo, fact: :foo, bind: [:id]} == Map.take(bind5, [:type, :fact, :bind])
-      assert %{coll: :bars, type: :bar, bind: [:id]} == Map.take(bind6, [:type, :bind, :coll])
-      assert %{fact: :_, type: :mammal, bind: [:name]} == Map.take(bind7, [:type, :fact, :bind])
+      assert %{fact_binding: nil, type: :foo, bind: [:id]} ==
+               Map.take(bind1, [:type, :fact_binding, :bind])
+
+      assert %{fact_binding: :bar, type: :bar, bind: [:id]} ==
+               Map.take(bind2, [:type, :fact_binding, :bind])
+
+      assert %{fact_binding: nil, type: :foo, bind: [:id]} ==
+               Map.take(bind3, [:type, :fact_binding, :bind])
+
+      assert %{coll_binding: nil, type: :bar, bind: [:id]} ==
+               Map.take(bind4, [:type, :bind, :coll_binding])
+
+      assert %{type: :foo, fact_binding: :foo, bind: [:id]} ==
+               Map.take(bind5, [:type, :fact_binding, :bind])
+
+      assert %{coll_binding: :bars, type: :bar, bind: [:id]} ==
+               Map.take(bind6, [:type, :bind, :coll_binding])
+
+      assert %{fact_binding: nil, type: :mammal, bind: [:name]} ==
+               Map.take(bind7, [:type, :fact_binding, :bind])
+
       assert %{bind: [:id]} == Map.take(test1, [:bind])
     end
   end
@@ -349,16 +374,18 @@ defmodule ReteTest do
              |> Enum.map(&Map.get(&1, :name))
   end
 
+  # The modules are merged in the order they are given, and an expression the
+  # second module shares with the first is deduplicated onto the first.
   test "get expr data from combined modules" do
     assert [
-             :fact_foo_bind_id_expr_59925075,
+             :fact_foo_bind_id_expr_51194764,
              :test_fact_bar_bind_id_expr_32016514,
              :fact_foo_bind_id_expr_25092275,
              :fact_bar_bind_id_expr_44631555,
-             :fact_mammal_bind_name_expr_41148079,
+             :fact_living_thing_bind_name_expr_122732082,
              :test_bind_id_expr_72899215,
-             :fact_foo_bind_id_expr_51194764,
-             :fact_living_thing_bind_name_expr_122732082
+             :fact_foo_bind_id_expr_59925075,
+             :fact_mammal_bind_name_expr_41148079
            ] ==
              [ExampleFooRuleset, ExampleBarRuleset]
              |> Rete.get_expr_data()

@@ -17,15 +17,24 @@ defmodule Rete do
   """
 
   @doc """
-  Retrieves expression data from the given modules.
-  Combines and deduplicates the data based on the expression id.
+  Retrieves expression data from the given modules, in module order.
 
   Returns a list of `{expr_id, expr_function}` tuples where `expr_id` is an atom
   and `expr_function` is a captured function reference.
+
+  Deduplicated by `expr_id`, keeping the first module that defines it. That is
+  sound because an expression id is the hash of the meta-stripped argument and
+  body AST, with module attributes qualified by the defining module and aliases
+  resolved to the module they name (see `Rete.DSL.Parser.expand_aliases/2`): two
+  expressions with the same id are the same expression, so the network can share
+  one node for them. The one thing the id cannot see through is an *unqualified*
+  call - a local or imported function of the ruleset module - so a guard calling
+  `helper(x)` in two modules that define `helper/1` differently deduplicates to
+  whichever module comes first. Qualify the call.
   """
   def get_expr_data(modules) do
-    Enum.map(modules, & &1.get_expr_data())
-    |> Enum.reduce([], &Enum.concat/2)
+    modules
+    |> Enum.flat_map(& &1.get_expr_data())
     |> Enum.uniq_by(fn {expr_id, _} -> expr_id end)
   end
 
@@ -33,7 +42,7 @@ defmodule Rete do
   Retrieves rule data from the given modules.
   Combines all the rule data into a single list.
 
-  Returns a list of `Rete.Ruleset.ProductionNode` structs, one for each
+  Returns a list of `Rete.IR.Production` structs, one for each
   rule or query defined across all provided modules.
   """
   def get_rule_data(modules) do
