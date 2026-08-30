@@ -111,7 +111,8 @@ defmodule Rete.AgendaTest do
 
       twin = activation(node_id: :n, bindings: %{x: 1})
       assert {agenda, :removed} = Agenda.remove(agenda, twin)
-      assert Agenda.empty?(agenda)
+      assert [] == Agenda.to_list(agenda)
+      assert 0 == Agenda.size(agenda), "the count has to come back down with the list"
     end
 
     test "removing one that already fired reports it as missing" do

@@ -191,12 +191,34 @@ rule that negates its marker. Without it the negating rule observes an absence t
 merely not been computed yet, fires, and is retracted — a visible spurious activation.
 It is reserved; a rule that sets it raises.
 
-The agenda is a **sorted list**, not a heap, because removal by value is the common
-operation rather than an afterthought: an activation is a *pending* match, and the facts
-behind it can be retracted before it fires. `Rete.Agenda.remove/2` reports whether it
-found one, which is exactly the distinction a production needs on retraction — either the
-match never fired and simply never will, or it fired and its conclusions have to be taken
-back.
+The agenda is **bucketed by sort key**, not a heap, because removal by value is the
+common operation rather than an afterthought: an activation is a *pending* match, and the
+facts behind it can be retracted before it fires. `Rete.Agenda.remove/2` reports whether
+it found one, which is exactly the distinction a production needs on retraction — either
+the match never fired and simply never will, or it fired and its conclusions have to be
+taken back.
+
+Every activation of one production shares a key — salience, internal salience and compile
+order all come from the node, none from the match — so there are at most as many buckets
+as there are production nodes, however many facts a session holds. One sorted list
+instead would walk past every match already queued for the same rule on each insertion.
+
+### Two matches of one rule
+
+They fire in **arrival order**, and that runs deeper than the agenda. It holds because
+each of these is arrival ordered, in turn:
+
+* a bucket hands its items back in the order they were pushed (`Rete.Memory.Bucket`);
+* a batch of items arriving at a node is split into join groups in the order each key
+  first appeared, not in map order — `Enum.group_by/2` returns a map, and Elixir iterates
+  one of up to 32 keys in term order and a larger one in an internal hash order, so
+  taking that order would change a rule's firing sequence the moment a node saw its 33rd
+  join key;
+* the agenda appends within a bucket rather than inserting.
+
+None of it changes what a session *concludes* — that is order independent, and the
+property suite says so. It decides the order `:activation_fired` events arrive in, which
+is what anyone reading a trace is relying on.
 
 ## 8. Truth maintenance
 

@@ -496,13 +496,44 @@ defmodule Rete.Engine.Nodes do
 
   # Items arriving together can belong to different join groups, so they are
   # split before anything touches memory: a group is the unit a join works on.
+  # A negation compares what matched before the batch with what matches after
+  # it, and a collection re-sends its result once rather than once per member,
+  # so the batch really is the unit — splitting further would be correct but
+  # would churn.
   defp reduce_groups(%State{} = state, items, key_fun, fun) do
     items
-    |> Enum.group_by(key_fun)
-    |> Enum.sort_by(fn {key, _} -> :erlang.phash2(key) end)
+    |> group_in_arrival_order(key_fun)
     |> Enum.reduce({state, []}, fn {key, group}, {%State{} = state, ops} ->
       {state, more} = fun.(state, key, group)
       {state, ops ++ more}
     end)
+  end
+
+  # Groups keyed the way `Enum.group_by/2` does, but handed back in the order
+  # each key first appeared rather than in map order.
+  #
+  # The order matters: groups are processed in turn and each appends its
+  # propagation work, so it decides the order matches reach the agenda. Map
+  # iteration order is unspecified, and Elixir's differs above and below
+  # thirty-two keys, so taking it would mean a rule's firing order changing
+  # character the moment a node saw its thirty-third join key.
+  #
+  # Arrival order rather than a sort. It costs one pass instead of O(g log g)
+  # comparisons of binding maps, and it is the convention everywhere else here —
+  # beta memory hands items back in arrival order and `Rete.Agenda` breaks ties
+  # on it. Sorting would have imposed a total order on binding maps that means
+  # nothing to anyone reading a trace.
+  defp group_in_arrival_order(items, key_fun) do
+    {groups, keys} =
+      Enum.reduce(items, {%{}, []}, fn item, {groups, keys} ->
+        key = key_fun.(item)
+
+        case groups do
+          %{^key => group} -> {%{groups | key => [item | group]}, keys}
+          _ -> {Map.put(groups, key, [item]), [key | keys]}
+        end
+      end)
+
+    for key <- Enum.reverse(keys), do: {key, groups |> Map.fetch!(key) |> Enum.reverse()}
   end
 end

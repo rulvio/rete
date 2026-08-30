@@ -109,3 +109,15 @@ flat. Inserting 4,000 facts under one key went from 250 ms to under 10 ms, and r
   adding and retracting are O(1), reading is unchanged.
 * `Rete.Engine.insert/3` and `retract/3` collect their propagation ops without appending
   to the accumulator once per fact.
+
+### Ordering
+
+* Two matches of one rule fire in **arrival order**, at any scale. A batch arriving at a
+  node is split into join groups in the order each key first appeared rather than in map
+  order; Elixir iterates a map of up to 32 keys in term order and a larger one in an
+  internal hash order, so the previous behaviour changed a rule's firing sequence the
+  moment a node saw its 33rd join key.
+* The runaway error says how much it left out. Both of its lists are cut to five, and a
+  cut that says nothing reads as the whole story: it now reports
+  `Still pending (5 of 412 activations)` when there is more, and stays quiet when there
+  is not.

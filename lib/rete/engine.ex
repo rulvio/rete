@@ -319,6 +319,8 @@ defmodule Rete.Engine do
     end
   end
 
+  @runaway_shown 5
+
   # The pending activations say what is queued *now*, which for a loop is
   # whichever rule happened to be next. What identifies the loop is which rules
   # kept firing, so lead with that.
@@ -326,26 +328,41 @@ defmodule Rete.Engine do
     worst =
       tally
       |> Enum.sort_by(fn {_node_id, count} -> -count end)
-      |> Enum.take(5)
+      |> Enum.take(@runaway_shown)
       |> Enum.map_join("\n", fn {node_id, count} ->
         "  #{count}x  #{rule_name(state, node_id)}"
       end)
+
+    pending =
+      state.agenda
+      |> Agenda.to_list()
+      |> Enum.take(@runaway_shown)
+      |> Enum.map_join("\n", &"  #{describe(state, &1)}")
 
     """
     fired #{fired} activations without the agenda emptying, which suggests rules \
     that keep re-triggering each other.
 
-    Fired most:
+    Fired most#{of_total(map_size(tally), "rules")}:
     #{worst}
 
-    Still pending:
-    #{state.agenda |> Agenda.to_list() |> Enum.take(5) |> Enum.map_join("\n", &"  #{describe(state, &1)}")}
+    Still pending#{of_total(Agenda.size(state.agenda), "activations")}:
+    #{pending}
 
     A rule that concludes something its own left hand side matches on will do \
     this. If the ruleset genuinely needs more activations than this to settle, \
     raise :max_cycles.
     """
   end
+
+  # Both lists above are cut to a readable length, and a cut that says nothing
+  # reads as the whole story — "still pending: 5" is a very different problem
+  # from half a million. So it says what it left out, and only when it left
+  # something out.
+  defp of_total(total, noun) when total > @runaway_shown,
+    do: " (#{@runaway_shown} of #{total} #{noun})"
+
+  defp of_total(_total, _noun), do: ""
 
   # Qualified, because a loop between two rules of the same name in different
   # rulesets is exactly the case where the bare name explains nothing.

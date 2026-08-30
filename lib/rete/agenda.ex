@@ -60,11 +60,12 @@ defmodule Rete.Agenda do
   @spec new() :: t()
   def new, do: %__MODULE__{}
 
-  @doc "Whether anything is waiting."
-  @spec empty?(t()) :: boolean()
-  def empty?(%__MODULE__{keys: keys}), do: keys == []
+  @doc """
+  How many activations are waiting.
 
-  @doc "How many activations are waiting."
+  Counted as they arrive rather than by walking, so that reporting the size of a
+  runaway agenda is not itself expensive — which is what it is for.
+  """
   @spec size(t()) :: non_neg_integer()
   def size(%__MODULE__{size: size}), do: size
 

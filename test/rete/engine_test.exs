@@ -1,6 +1,7 @@
 defmodule Rete.EngineTest do
   use ExUnit.Case, async: true
 
+  alias Rete.Listener.Collect
   alias Rete.Session
 
   defp run(mod, facts) do
@@ -120,6 +121,50 @@ defmodule Rete.EngineTest do
 
       order = session |> Session.pending() |> Enum.map(& &1.salience)
       assert [100, 50, 1] == order
+    end
+  end
+
+  # --- propagation order ------------------------------------------------------------
+
+  describe "join groups" do
+    defmodule Groups do
+      use Rete.Ruleset
+
+      # `{:tick}` binds nothing, so every seed token sits under one join key
+      # there and the tick joins all of them in a single propagation. Those
+      # tokens then reach the `:sink` join with a *different* key each, which is
+      # what makes one batch split into many groups.
+      defrule pair({:seed, x}, {:tick}, {:sink, x}) do
+        {:paired, x}
+      end
+    end
+
+    defp fired_order(n) do
+      seeds = for i <- 1..n, do: {:seed, i}
+      sinks = for i <- 1..n, do: {:sink, i}
+
+      [Groups]
+      |> Session.new()
+      |> Session.with_listener(Collect, [])
+      |> Session.insert(seeds ++ sinks)
+      |> Session.insert({:tick})
+      |> Session.fire_rules()
+      |> Collect.by_tag(:activation_fired)
+      |> Enum.map(fn {:activation_fired, _source, token, _facts} -> token.bindings[:x] end)
+    end
+
+    # Groups come out of a map, and Elixir iterates a map of up to 32 keys in
+    # term order and a larger one in an internal hash order. Taking that order
+    # would mean a rule firing its matches in a different sequence as soon as a
+    # node saw its 33rd join key — a behaviour change triggered by data volume,
+    # on a session that is otherwise deterministic.
+    test "matches fire in arrival order however many join keys there are" do
+      assert Enum.to_list(1..5) == fired_order(5)
+      assert Enum.to_list(1..40) == fired_order(40), "order changed past the 32 key boundary"
+    end
+
+    test "the same facts always fire in the same order" do
+      assert fired_order(40) == fired_order(40)
     end
   end
 
@@ -1431,6 +1476,55 @@ defmodule Rete.EngineTest do
 
       assert error.message =~ "without the agenda emptying"
       assert error.message =~ "grow"
+    end
+
+    # Both lists in the message are cut to five. A cut that says nothing reads as
+    # the whole story, and "still pending: 5 activations" is a very different
+    # problem from five hundred.
+    test "a truncated list says how much it left out" do
+      defmodule Fanout do
+        use Rete.Ruleset
+
+        defrule grow({:counter, n}) do
+          {:counter, n + 1}
+        end
+
+        # Piles up activations that never get a turn, so the agenda is long.
+        defrule note({:counter, n}) do
+          {:noted, n}
+        end
+      end
+
+      error =
+        assert_raise RuntimeError, fn ->
+          [Fanout]
+          |> Session.new()
+          |> Session.insert({:counter, 0})
+          |> Session.fire_rules(max_cycles: 30)
+        end
+
+      assert error.message =~ ~r/Still pending \(5 of \d+ activations\)/
+      assert 5 == error.message |> String.split("Still pending") |> List.last() |> pending_lines()
+    end
+
+    defp pending_lines(tail) do
+      tail
+      |> String.split("\n")
+      |> Enum.count(&String.starts_with?(&1, "  Rete.EngineTest.Fanout."))
+    end
+
+    # And says nothing when there is nothing to say.
+    test "a short list is reported without a count" do
+      error =
+        assert_raise RuntimeError, fn ->
+          [Oscillate]
+          |> Session.new()
+          |> Session.insert({:counter, 0})
+          |> Session.fire_rules(max_cycles: 2)
+        end
+
+      assert error.message =~ "Still pending:"
+      refute error.message =~ "of 1 activations"
     end
 
     # The message is only useful if it names something. A cap checked against the
