@@ -150,23 +150,28 @@ defmodule ReteTest do
 
       [bind1 | [bind2 | [bind3 | [bind4 | [bind5 | [bind6 | [bind7 | [test1]]]]]]]] = lhs_expr
 
+      # the two collections are written fourth and sixth and end up last:
+      # `Rete.Compiler.Sort` takes a collection only once no plain condition is
+      # left to take, and the rule level test after that
       assert %{id: 1} == bind1.({:foo, 1})
       assert nil == bind1.({:foo, 0})
       assert %{id: 1} == bind2.({:bar, 1})
       assert nil == bind2.({:bar, 0})
       assert %{id: 1} == bind3.({:foo, 1})
-      assert %{id: 1} == bind4.({:bar, 1})
-      assert %{id: 1} == bind5.({:foo, 1})
-      assert %{id: 1} == bind6.({:bar, 1})
-      # bind7 tests that the fact matches any fact type, because the expr do not validate taxonomy
+      assert %{id: 1} == bind4.({:foo, 1})
+      # bind5 tests that the fact matches any fact type, because the expr do not validate taxonomy
       # as it would not be efficient to do so in the rete network, instead the taxonomy is validated
       # not when evaluating the lhs conditions but when deciding if a fact should be propagated to a node
-      assert %{name: "Foo"} == bind7.({:living_thing, "Foo"})
-      assert %{name: "Fido"} == bind7.({:dog, "Fido"})
-      assert %{name: "Whiskers"} == bind7.({:cat, "Whiskers"})
-      assert %{name: "Oregano"} == bind7.({:plant, "Oregano"})
-      assert %{name: "Thing"} == bind7.({:any, "Thing"})
-      assert nil == bind6.({:bar, 0})
+      assert %{name: "Foo"} == bind5.({:living_thing, "Foo"})
+      assert %{name: "Fido"} == bind5.({:dog, "Fido"})
+      assert %{name: "Whiskers"} == bind5.({:cat, "Whiskers"})
+      assert %{name: "Oregano"} == bind5.({:plant, "Oregano"})
+      assert %{name: "Thing"} == bind5.({:any, "Thing"})
+      # the anonymous collection is unguarded, the bound one keeps its id > 0
+      assert %{id: 1} == bind6.({:bar, 1})
+      assert %{id: 0} == bind6.({:bar, 0})
+      assert %{id: 1} == bind7.({:bar, 1})
+      assert nil == bind7.({:bar, 0})
       assert true == test1.(%{id: 1})
       assert false == test1.(%{id: 0})
     end
@@ -211,17 +216,19 @@ defmodule ReteTest do
       assert %{fact_binding: nil, type: :foo, bind: [:id]} ==
                Map.take(bind3, [:type, :fact_binding, :bind])
 
-      assert %{coll_binding: nil, type: :bar, bind: [:id]} ==
-               Map.take(bind4, [:type, :bind, :coll_binding])
-
       assert %{fact_binding: :foo, type: :foo, bind: [:id]} ==
-               Map.take(bind5, [:type, :fact_binding, :bind])
-
-      assert %{coll_binding: :bars, type: :bar, bind: [:id]} ==
-               Map.take(bind6, [:type, :bind, :coll_binding])
+               Map.take(bind4, [:type, :fact_binding, :bind])
 
       assert %{fact_binding: nil, type: :living_thing, bind: [:name]} ==
-               Map.take(bind7, [:type, :fact_binding, :bind])
+               Map.take(bind5, [:type, :fact_binding, :bind])
+
+      # both collections are deferred behind every plain condition, keeping the
+      # order they were written in
+      assert %{coll_binding: nil, type: :bar, bind: [:id]} ==
+               Map.take(bind6, [:type, :bind, :coll_binding])
+
+      assert %{coll_binding: :bars, type: :bar, bind: [:id]} ==
+               Map.take(bind7, [:type, :bind, :coll_binding])
 
       assert %{bind: [:id]} == Map.take(test1, [:bind])
     end
@@ -253,11 +260,13 @@ defmodule ReteTest do
       assert %{id: 1} == bind2.({:bar, 1})
       assert nil == bind2.({:bar, 0})
       assert %{id: 1} == bind3.({:foo, 1})
-      assert %{id: 1} == bind4.({:bar, 1})
-      assert %{id: 1} == bind5.({:foo, 1})
+      assert %{id: 1} == bind4.({:foo, 1})
+      assert %{name: "Bar"} == bind5.({:mammal, "Bar"})
+      # the anonymous collection is unguarded, the bound one keeps its id > 0
       assert %{id: 1} == bind6.({:bar, 1})
-      assert %{name: "Bar"} == bind7.({:mammal, "Bar"})
-      assert nil == bind6.({:bar, 0})
+      assert %{id: 0} == bind6.({:bar, 0})
+      assert %{id: 1} == bind7.({:bar, 1})
+      assert nil == bind7.({:bar, 0})
       assert true == test1.(%{id: 1})
       assert false == test1.(%{id: 0})
     end
@@ -302,17 +311,19 @@ defmodule ReteTest do
       assert %{fact_binding: nil, type: :foo, bind: [:id]} ==
                Map.take(bind3, [:type, :fact_binding, :bind])
 
-      assert %{coll_binding: nil, type: :bar, bind: [:id]} ==
-               Map.take(bind4, [:type, :bind, :coll_binding])
-
       assert %{type: :foo, fact_binding: :foo, bind: [:id]} ==
-               Map.take(bind5, [:type, :fact_binding, :bind])
-
-      assert %{coll_binding: :bars, type: :bar, bind: [:id]} ==
-               Map.take(bind6, [:type, :bind, :coll_binding])
+               Map.take(bind4, [:type, :fact_binding, :bind])
 
       assert %{fact_binding: nil, type: :mammal, bind: [:name]} ==
-               Map.take(bind7, [:type, :fact_binding, :bind])
+               Map.take(bind5, [:type, :fact_binding, :bind])
+
+      # both collections are deferred behind every plain condition, keeping the
+      # order they were written in
+      assert %{coll_binding: nil, type: :bar, bind: [:id]} ==
+               Map.take(bind6, [:type, :bind, :coll_binding])
+
+      assert %{coll_binding: :bars, type: :bar, bind: [:id]} ==
+               Map.take(bind7, [:type, :bind, :coll_binding])
 
       assert %{bind: [:id]} == Map.take(test1, [:bind])
     end
@@ -341,8 +352,8 @@ defmodule ReteTest do
              :fact_foo_bind_id_expr_51194764,
              :test_fact_bar_bind_id_expr_32016514,
              :fact_foo_bind_id_expr_25092275,
-             :fact_bar_bind_id_expr_44631555,
              :fact_living_thing_bind_name_expr_122732082,
+             :fact_bar_bind_id_expr_44631555,
              :test_bind_id_expr_72899215
            ] ==
              [ExampleFooRuleset]
@@ -381,8 +392,8 @@ defmodule ReteTest do
              :fact_foo_bind_id_expr_51194764,
              :test_fact_bar_bind_id_expr_32016514,
              :fact_foo_bind_id_expr_25092275,
-             :fact_bar_bind_id_expr_44631555,
              :fact_living_thing_bind_name_expr_122732082,
+             :fact_bar_bind_id_expr_44631555,
              :test_bind_id_expr_72899215,
              :fact_foo_bind_id_expr_59925075,
              :fact_mammal_bind_name_expr_41148079

@@ -340,20 +340,23 @@ defmodule Rete.DSL.CodegenTest do
 
   describe "the whole LHS surface" do
     test "gates are normalized before binding classification" do
-      # {:or, [vip, staff]} fans out; {:not, [banned]} becomes a negation
+      # {:or, [vip, staff]} fans out; {:not, [banned]} becomes a negation. The
+      # collection is written fourth and lands second to last: `Rete.Compiler.Sort`
+      # takes a collection only once no plain condition is left to take, and the
+      # rule level test after that.
       assert [
                %IR.Fact{type: :tick, bind: []},
                %IR.Fact{type: :customer, fact_binding: :c, bind: [:cid, :name]},
                %IR.Fact{type: :order, bind: [:amt, :cid]},
-               %IR.Coll{type: :item, coll_binding: :items, bind: [:cid]},
                {:or, [[%IR.Fact{type: :vip}], [%IR.Fact{type: :staff}]]},
                %IR.Negation{condition: %IR.Fact{type: :banned}},
+               %IR.Coll{type: :item, coll_binding: :items, bind: [:cid]},
                %IR.Test{bind: [:name]}
              ] = lhs(Wide, :everything)
     end
 
     test "a disjunction's branches are classified against the upstream bindings" do
-      {:or, [[vip], [staff]]} = cond_at(Wide, :everything, 4)
+      {:or, [[vip], [staff]]} = cond_at(Wide, :everything, 3)
 
       assert [:cid] == vip.join_bind
       assert [] == vip.new_bind
@@ -373,7 +376,7 @@ defmodule Rete.DSL.CodegenTest do
     end
 
     test "a guarded collection filters per element" do
-      items = cond_at(Wide, :everything, 3)
+      items = cond_at(Wide, :everything, 5)
 
       assert %IR.Coll{coll_binding: :items, join_bind: [:cid], new_bind: []} = items
       assert %{cid: 1} == items.alpha.fun.({:item, 1, "sku"})

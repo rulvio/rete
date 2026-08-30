@@ -22,15 +22,21 @@ defmodule Rete do
   Returns a list of `{expr_id, expr_function}` tuples where `expr_id` is an atom
   and `expr_function` is a captured function reference.
 
-  Deduplicated by `expr_id`, keeping the first module that defines it. That is
-  sound because an expression id is the hash of the meta-stripped argument and
-  body AST, with module attributes qualified by the defining module and aliases
-  resolved to the module they name (see `Rete.DSL.Parser.expand_aliases/2`): two
-  expressions with the same id are the same expression, so the network can share
-  one node for them. The one thing the id cannot see through is an *unqualified*
-  call - a local or imported function of the ruleset module - so a guard calling
-  `helper(x)` in two modules that define `helper/1` differently deduplicates to
-  whichever module comes first. Qualify the call.
+  Deduplicated by `expr_id`, keeping the first module that defines it.
+
+  An expression id is the hash of the meta-stripped argument and body AST, with
+  module attributes qualified by the defining module and aliases resolved to the
+  module they name (see `Rete.DSL.Parser.expand_aliases/2`). The one thing it
+  cannot see through is an *unqualified* call - a local or imported function of
+  the ruleset module - so a guard calling `helper(x)` in two modules that define
+  `helper/1` differently gets one id here and loses one of the two functions.
+  Qualify the call.
+
+  **This function is not how a network decides what to share.**
+  `Rete.Compiler.build/2` reads `get_rule_data/1`, where every expression still
+  carries the function of the module that wrote it, and qualifies any code more
+  than one module contributed before building a node from it. Use this only to
+  look at what a set of modules compiled to.
   """
   def get_expr_data(modules) do
     modules

@@ -81,10 +81,14 @@ defmodule Rete.DSL.Bindings do
 
       defrule r({:order, amt} when amt > t, {:threshold, t})
 
-  used to compile into a join filter that read `t` from the token side, where it
-  can never appear, so the production could never fire. W2's topological
-  condition sort will legitimately reorder such conditions;
-  `check_guard_vars!/3` is the single place that has to be relaxed when it does.
+  are **not** that case any more: `Rete.Compiler.Sort` runs first and reorders
+  them, so by the time this phase sees them `{:threshold, t}` comes first and
+  the guard is an ordinary join filter. What is left for `check_guard_vars!/3`
+  to reject is a variable *no* condition binds on this path - a typo, a
+  `_`-prefixed name the pattern discarded, a variable that only exists inside a
+  negation, or one only some branches of a disjunction bind. Any of those would
+  compile into a join filter reading the token side for a key that is never
+  there, so the production could never fire.
 
   The rule level guard, `defrule r(...) when <guard>`, has the same defect and
   the same rule: `check_test_vars!/2` rejects a `Rete.IR.Test` reading a variable
@@ -138,8 +142,9 @@ defmodule Rete.DSL.Bindings do
   ## Position in the pipeline
 
   Gates must already be normalized: a `Rete.IR.Gate` reaching this phase raises.
-  Conditions must still carry their `:__ast__`, so this runs before
-  `Rete.IR.escape/1`.
+  Conditions must already be sorted, because `:join_bind` and `:new_bind` are
+  read off the order they are in. Conditions must still carry their `:__ast__`,
+  so this runs before `Rete.IR.escape/1`.
   """
 
   alias Rete.DSL.Codegen
@@ -362,14 +367,16 @@ defmodule Rete.DSL.Bindings do
 
   A guard may read the variables its own pattern binds (`own`, which includes
   the fact binding, because the alpha's argument is the fact) and the variables
-  bound by an earlier condition (`bound`). Anything else - a typo, or a
-  condition written before the one that binds the variable - would compile into
-  a join filter that reads the token side for a variable that is never there,
-  and the production could never fire.
+  bound by an earlier condition (`bound`). Anything else would compile into a
+  join filter that reads the token side for a variable that is never there, and
+  the production could never fire.
 
-  This is the one place W2's topological condition sort has to relax: once
-  conditions are reordered so that binders come first, a forward reference is no
-  longer an error.
+  A **forward reference** is no longer one of those cases. `Rete.Compiler.Sort`
+  reorders the LHS before this phase runs, so a condition whose guard reads a
+  variable another condition binds has already been moved after it. Reaching
+  here means no condition on this path binds the variable at all, which no
+  ordering can fix. Calling `classify/2` on an unsorted LHS - as a test may -
+  still raises, and that is the same defect seen one phase early.
   """
   @spec check_guard_vars!(binder(), bound(), bound()) :: :ok
   def check_guard_vars!(%{__ast__: %{guard: guard, source: source}} = condition, own, bound) do
@@ -401,7 +408,10 @@ defmodule Rete.DSL.Bindings do
           "so a guard cannot read it. Rename it to `#{rest}`."
 
       _ ->
-        "Move the condition that binds `#{var}` before this one, or correct the name."
+        "Conditions are sorted so that binders come first, so no condition binds `#{var}` " <>
+          "on this path at all: a negation binds nothing downstream, and a variable only " <>
+          "some branches of a disjunction bind is not available after it. Otherwise, " <>
+          "correct the name."
     end
   end
 

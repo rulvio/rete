@@ -27,6 +27,7 @@ defmodule Rete.Ruleset do
 
       Rete.DSL.Parser      parse the quoted declaration into Rete.IR
       Rete.DSL.Normalize   rewrite gates into conditions, negations and :or
+      Rete.Compiler.Sort   order the conditions so every join has its keys
       Rete.DSL.Bindings    classify join/new bindings, split guards
       build/4              recompute the production's :bind from the result
       Rete.DSL.Codegen     emit the expression functions and the RHS
@@ -54,6 +55,7 @@ defmodule Rete.Ruleset do
   alias Rete.DSL.Codegen
   alias Rete.DSL.Normalize
   alias Rete.DSL.Parser
+  alias Rete.Compiler.Sort
   alias Rete.IR
 
   @doc false
@@ -91,7 +93,7 @@ defmodule Rete.Ruleset do
     production = %IR.Production{production | lhs: Normalize.normalize_lhs(production.lhs)}
 
     env
-    |> Bindings.classify(production)
+    |> Bindings.classify(Sort.sort(production))
     |> resolve_bindings()
   end
 
