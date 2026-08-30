@@ -248,8 +248,17 @@ defmodule Rete.EngineTest do
     defmodule Grouped do
       use Rete.Ruleset
 
-      defrule per_day({:customer, cid}, orders = [{:order, cid, day, _amt}]) do
-        {:per_day, cid, day, length(orders)}
+      # `day` is matched by a second collection, so it is a real join and groups
+      # the first one. A plain condition matching `day` would sort *before* the
+      # collection and make it an ordinary join key instead, and a `day` read
+      # only by the right hand side is local to the collection and rejected —
+      # see Rete.DSL.Bindings.mark_inert/1.
+      defrule per_day(
+                {:customer, cid},
+                orders = [{:order, cid, day, _amt}],
+                notes = [{:note, cid, day}]
+              ) do
+        {:per_day, cid, length(orders), length(notes)}
       end
     end
 
@@ -262,7 +271,8 @@ defmodule Rete.EngineTest do
           {:order, 1, :tue, 30}
         ])
 
-      assert [{:per_day, 1, :mon, 2}, {:per_day, 1, :tue, 1}] == derived(session, :per_day)
+      # One activation per day, and the second collection is empty on both.
+      assert [{:per_day, 1, 1, 0}, {:per_day, 1, 2, 0}] == derived(session, :per_day)
     end
 
     # A group only exists where a fact created it, so there is no empty group.
@@ -282,14 +292,14 @@ defmodule Rete.EngineTest do
           {:order, 1, :tue, 20}
         ])
 
-      assert [{:per_day, 1, :mon, 1}, {:per_day, 1, :tue, 1}] == derived(session, :per_day)
+      assert [{:per_day, 1, 1, 0}] == derived(session, :per_day)
 
       session = session |> Session.insert({:order, 1, :mon, 30}) |> Session.fire_rules()
-      assert [{:per_day, 1, :mon, 2}, {:per_day, 1, :tue, 1}] == derived(session, :per_day)
+      assert [{:per_day, 1, 1, 0}, {:per_day, 1, 2, 0}] == derived(session, :per_day)
 
       # Tuesday was never touched, so one retraction has to remove it.
       session = session |> Session.retract({:order, 1, :tue, 20}) |> Session.fire_rules()
-      assert [{:per_day, 1, :mon, 2}] == derived(session, :per_day)
+      assert [{:per_day, 1, 2, 0}] == derived(session, :per_day)
     end
 
     defmodule Ordered do
@@ -706,6 +716,71 @@ defmodule Rete.EngineTest do
     end
   end
 
+  # --- collection-local variables --------------------------------------------------------
+
+  describe "a collection variable nothing else matches on is local to it" do
+    defmodule Local do
+      use Rete.Ruleset
+
+      # `amt` is read only by the collection's own guard, so it constrains which
+      # orders are gathered and does not group them. Before this rule existed
+      # the collection grouped by `amt` and yielded one singleton group per
+      # distinct amount, which is never what anyone means by a guarded
+      # collection.
+      defrule over({:limit, lim}, {:cust, cid}, os = [{:order, cid, amt} when amt > lim]) do
+        {:over, cid, length(os)}
+      end
+    end
+
+    test "a guarded collection gathers every matching fact" do
+      session =
+        run([Local], [
+          {:limit, 100},
+          {:cust, 1},
+          {:order, 1, 50},
+          {:order, 1, 500},
+          {:order, 1, 900}
+        ])
+
+      assert [{:over, 1, 2}] == derived(session, :over)
+    end
+
+    # A local variable means one group, so the empty-collection rule applies.
+    test "a guarded collection with no matches still fires with an empty list" do
+      session = run([Local], [{:limit, 100}, {:cust, 1}, {:order, 1, 50}])
+      assert [{:over, 1, 0}] == derived(session, :over)
+    end
+
+    test "it round trips and drains" do
+      facts = [{:limit, 100}, {:cust, 1}, {:order, 1, 500}]
+      session = run([Local], facts)
+
+      emptied =
+        Enum.reduce(facts, session, fn fact, s ->
+          s |> Session.retract(fact) |> Session.fire_rules()
+        end)
+
+      assert Session.new([Local]).state.memory == emptied.state.memory
+    end
+
+    test "reading a local variable outside the collection is a compile error" do
+      source = """
+      defmodule Rete.EngineTest.ReadsLocal do
+        use Rete.Ruleset
+
+        defrule per_day({:cust, cid}, os = [{:order, cid, day, _a}]) do
+          {:per_day, cid, day, length(os)}
+        end
+      end
+      """
+
+      error = assert_raise ArgumentError, fn -> Code.compile_string(source) end
+
+      assert error.message =~ "reads `day`, which is local to the collection"
+      assert error.message =~ "Enum.group_by/2"
+    end
+  end
+
   # --- truth maintenance ----------------------------------------------------------------
 
   describe "truth maintenance" do
@@ -1031,8 +1106,14 @@ defmodule Rete.EngineTest do
     defmodule Churn do
       use Rete.Ruleset
 
-      defrule per_day({:customer, cid}, orders = [{:order, cid, day, _amt}]) do
-        {:per_day, cid, day, length(orders)}
+      # Two collections sharing `day`, so the first genuinely groups by it —
+      # which is what puts entries in the accum map to leak in the first place.
+      defrule per_day(
+                {:customer, cid},
+                orders = [{:order, cid, day, _amt}],
+                notes = [{:note, cid, day}]
+              ) do
+        {:per_day, cid, length(orders), length(notes)}
       end
     end
 

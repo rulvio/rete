@@ -170,9 +170,170 @@ defmodule Rete.DSL.Bindings do
   """
   @spec classify(Parser.env(), IR.Production.t()) :: IR.Production.t()
   def classify(env, %IR.Production{} = production) do
+    production = mark_inert(production)
     {lhs, _bound} = classify_elements(env, production.lhs, MapSet.new())
-    %IR.Production{production | lhs: lhs}
+    production = %IR.Production{production | lhs: lhs}
+
+    check_inert_reads!(production)
+    production
   end
+
+  # Reading a collection-local variable outside its collection cannot work:
+  # every gathered fact has its own value, so there is no one value to bind.
+  # Without this the module still fails to compile, but with Elixir's own
+  # "undefined variable" pointing at a generated function name, which tells the
+  # author nothing about the rule they wrote.
+  defp check_inert_reads!(%IR.Production{__ast__: %{body: body}} = production) do
+    {guaranteed, optional} = IR.lhs_bindings(production.lhs)
+    available = MapSet.new(guaranteed ++ optional)
+    reads = Vars.read_vars(body)
+
+    for {var, coll} <- inert_bindings(production.lhs),
+        MapSet.member?(reads, var),
+        not MapSet.member?(available, var) do
+      raise ArgumentError, inert_read_message(production, var, coll)
+    end
+
+    :ok
+  end
+
+  defp check_inert_reads!(_production), do: :ok
+
+  defp inert_read_message(production, var, coll) do
+    shown = describe_coll(coll)
+
+    "the right hand side of `#{production.name}` reads `#{var}`, which is local to " <>
+      "the collection `#{shown}`.\n\n" <>
+      "Every fact the collection gathers has its own `#{var}`, so there is no one " <>
+      "value to bind outside it. `#{var}` is local because no other condition " <>
+      "matches on it - only a pattern counts, not a guard and not the right hand " <>
+      "side.\n\n" <>
+      "Either add a condition that matches on it, so the collection groups by it:\n\n" <>
+      "    #{shown}, {:some_fact, #{var}}\n\n" <>
+      "or collect everything and group in the right hand side with " <>
+      "Enum.group_by/2."
+  end
+
+  defp inert_bindings(lhs) do
+    Enum.flat_map(lhs, fn
+      {:or, branches} -> Enum.flat_map(branches, &inert_bindings/1)
+      %IR.Coll{inert: inert} = coll -> Enum.map(inert || [], &{&1, coll})
+      _element -> []
+    end)
+  end
+
+  defp describe_coll(%IR.Coll{coll_binding: nil, __ast__: %{source: source}}),
+    do: Macro.to_string(source)
+
+  defp describe_coll(%IR.Coll{coll_binding: name, __ast__: %{source: source}}),
+    do: "#{name} = #{Macro.to_string(source)}"
+
+  defp describe_coll(%IR.Coll{coll_binding: name}), do: to_string(name)
+
+  @doc """
+  Marks the variables that are local to a collection.
+
+  Elixir fuses binding and constraining: writing `amt` in a pattern binds it,
+  where Clara would have written `(> amount ?lim)` and bound nothing. Taken
+  literally that makes a guarded collection impossible to write —
+
+      os = [{:order, cid, amt} when amt > lim]
+
+  — because `amt` is a new variable, and a collection that introduces a new
+  variable groups by it, so this collects one singleton group per distinct
+  amount instead of every order over the limit.
+
+  The rule that resolves it: **a collection's pattern variable participates only
+  if another condition also matches on it — a real join. Otherwise it is
+  inert.** Inert means local to the collection: it constrains which facts are
+  gathered, groups nothing, and binds nothing downstream. Above, `amt` is
+  matched on by nothing else, so the collection gathers every order over the
+  limit, which is what the author meant.
+
+  Only another condition's **pattern** counts. Guards do not — not another
+  condition's guard, not the collection's own, and not the rule level `when` —
+  and neither does the right hand side. So
+
+      os = [{:order, cid, day, _amt}]   with `day` only in the right hand side
+
+  makes `day` inert, and reading it outside the collection is a compile error.
+  Group by adding a condition that matches on it,
+
+      os = [{:order, cid, day, _amt}], {:holiday, day}
+
+  or collect everything and use `Enum.group_by/2` in the right hand side, which
+  is the same answer this engine already gives for `min`, `max` and `sum`.
+
+  A variable bound by an *earlier* condition is a join key and is never inert.
+
+  This deliberately differs from Clara, where an accumulator's source condition
+  binds whatever it names, because Clara separates binding from constraining —
+  `(= ?cid cid)` binds, `(> amount ?lim)` only constrains. Elixir pattern
+  matching fuses the two, and reintroducing explicit binding syntax to recover
+  the distinction would give up what makes the DSL worth having.
+  """
+  @spec mark_inert(IR.Production.t()) :: IR.Production.t()
+  def mark_inert(%IR.Production{lhs: lhs} = production) do
+    %IR.Production{production | lhs: apply_inert(lhs, [], element_sites(lhs, []))}
+  end
+
+  # Every *pattern* in the LHS, tagged by its path, so that a collection can ask
+  # "does another condition match on this variable?". Guards are deliberately
+  # not sites: reading a variable is not joining on it.
+  defp element_sites(elements, path) do
+    elements
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {element, index} -> element_site(element, path ++ [index]) end)
+  end
+
+  defp element_sites_in({:or, branches}, path) do
+    branches
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {branch, index} -> element_sites(branch, path ++ [index]) end)
+  end
+
+  defp element_site({:or, _} = disjunction, path), do: element_sites_in(disjunction, path)
+
+  # A negation binds nothing downstream, so matching on a variable inside one is
+  # not a join: with nothing else binding it the negation is existential ("no
+  # blocked fact exists") and the shared name is a coincidence, not a
+  # relationship. Counting it would mark a collection variable as participating
+  # and then group by a variable the negation never sees.
+  defp element_site(%IR.Negation{}, _path), do: []
+  defp element_site(%IR.CompoundNegation{}, _path), do: []
+
+  # The rule level `when` reads bindings, it does not match on them.
+  defp element_site(%IR.Test{}, _path), do: []
+
+  defp element_site(%{__ast__: %{pattern: pattern}}, path) do
+    [{path, MapSet.new(Map.keys(Vars.pattern_vars(pattern)))}]
+  end
+
+  defp element_site(_element, _path), do: []
+
+  defp apply_inert(elements, path, sites) do
+    elements
+    |> Enum.with_index()
+    |> Enum.map(fn {element, index} -> put_inert(element, path ++ [index], sites) end)
+  end
+
+  defp put_inert({:or, branches}, path, sites) do
+    {:or,
+     branches
+     |> Enum.with_index()
+     |> Enum.map(fn {branch, index} -> apply_inert(branch, path ++ [index], sites) end)}
+  end
+
+  defp put_inert(%IR.Coll{bind: bind} = coll, path, sites) do
+    outside =
+      sites
+      |> Enum.reject(fn {site, _vars} -> site == path end)
+      |> Enum.reduce(MapSet.new(), fn {_site, vars}, acc -> MapSet.union(acc, vars) end)
+
+    %IR.Coll{coll | inert: Enum.reject(bind || [], &MapSet.member?(outside, &1))}
+  end
+
+  defp put_inert(element, _path, _sites), do: element
 
   @doc """
   Classifies a list of LHS elements against the variables bound before them.
@@ -311,11 +472,17 @@ defmodule Rete.DSL.Bindings do
 
   def classify_condition(env, %module{__ast__: ast} = condition, bound)
       when module in [IR.Fact, IR.Coll] do
-    own = MapSet.new(IR.bound_vars(condition))
+    own = own_scope(condition)
     check_shadowing!(condition, bound)
     check_guard_vars!(condition, own, bound)
 
     {join_bind, new_bind} = Enum.split_with(condition.bind, &MapSet.member?(bound, &1))
+
+    # An inert collection variable stays in :bind - the alpha must still return
+    # it, or a join filter reading it from the fact side would find nothing -
+    # but it is not a new binding: it groups nothing and flows nowhere.
+    new_bind = new_bind -- inert(condition)
+
     {alpha_guard, join_guard} = split_guard(ast.guard, own)
 
     condition = %{condition | join_bind: join_bind, new_bind: new_bind}
@@ -358,6 +525,20 @@ defmodule Rete.DSL.Bindings do
 
     :ok
   end
+
+  defp inert(%IR.Coll{inert: inert}), do: inert || []
+  defp inert(_condition), do: []
+
+  # What a condition's *own guard* may read, which is not the same question as
+  # what the condition makes visible downstream. A collection's inert variables
+  # are excluded from `Rete.IR.bound_vars/1` because nothing outside may see
+  # them, but the collection's own guard is precisely where they are read - that
+  # is what made them inert - so the guard's scope is every variable the pattern
+  # binds, plus the fact or collection binding.
+  defp own_scope(%IR.Fact{bind: bind, fact_binding: nil}), do: MapSet.new(bind || [])
+  defp own_scope(%IR.Fact{bind: bind, fact_binding: f}), do: MapSet.new([f | bind || []])
+  defp own_scope(%IR.Coll{bind: bind, coll_binding: nil}), do: MapSet.new(bind || [])
+  defp own_scope(%IR.Coll{bind: bind, coll_binding: c}), do: MapSet.new([c | bind || []])
 
   defp binding_name(%IR.Fact{fact_binding: name}), do: name
   defp binding_name(%IR.Coll{coll_binding: name}), do: name

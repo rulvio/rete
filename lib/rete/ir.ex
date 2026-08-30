@@ -198,6 +198,7 @@ defmodule Rete.IR do
             join_filter: Rete.IR.Expr.t() | nil,
             join_bind: [atom()] | nil,
             new_bind: [atom()] | nil,
+            inert: [atom()],
             __ast__: Rete.IR.Fact.ast() | nil
           }
 
@@ -209,7 +210,8 @@ defmodule Rete.IR do
       :join_filter,
       :join_bind,
       :new_bind,
-      :__ast__
+      :__ast__,
+      inert: []
     ]
   end
 
@@ -414,12 +416,20 @@ defmodule Rete.IR do
   @spec bound_vars(condition()) :: [atom()]
   def bound_vars(%Fact{bind: bind, fact_binding: nil}), do: bind
   def bound_vars(%Fact{bind: bind, fact_binding: f}), do: bind ++ [f]
-  def bound_vars(%Coll{bind: bind, coll_binding: nil}), do: bind
-  def bound_vars(%Coll{bind: bind, coll_binding: c}), do: bind ++ [c]
+  def bound_vars(%Coll{} = coll), do: coll_bound_vars(coll)
   def bound_vars(%Test{}), do: []
   def bound_vars(%Negation{}), do: []
   def bound_vars(%CompoundNegation{}), do: []
   def bound_vars(%Gate{args: args}), do: args |> Enum.flat_map(&bound_vars/1) |> Enum.uniq()
+
+  # A collection's pattern variables are local to it unless something outside
+  # reads them - see `Rete.DSL.Bindings.mark_inert/1`. An inert one is still in
+  # `:bind`, because the alpha has to return it for the join filter to test, but
+  # it binds nothing downstream and groups nothing.
+  defp coll_bound_vars(%Coll{bind: bind, inert: inert, coll_binding: c}) do
+    visible = bind -- (inert || [])
+    if c, do: visible ++ [c], else: visible
+  end
 
   @doc """
   The variables a classified LHS makes visible to the right hand side, split
@@ -554,7 +564,8 @@ defmodule Rete.IR do
       alpha: escape_expr(coll.alpha),
       join_filter: escape_expr(coll.join_filter),
       join_bind: Macro.escape(coll.join_bind),
-      new_bind: Macro.escape(coll.new_bind)
+      new_bind: Macro.escape(coll.new_bind),
+      inert: Macro.escape(coll.inert)
     )
   end
 

@@ -44,8 +44,11 @@ defmodule Rete.DSL.ParserTest do
       {:big, order, id}
     end
 
+    # `id` is local to the collection - no other condition matches on it - so it
+    # is still bound by the pattern (the alpha returns it) but the right hand
+    # side may not read it. See Rete.DSL.Bindings.mark_inert/1.
     defrule struct_coll(orders = [%ReteParserTestOrder{id: id}]) do
-      {:orders, id, length(orders)}
+      {:orders, length(orders)}
     end
 
     # --- tagged maps ------------------------------------------------------
@@ -59,7 +62,7 @@ defmodule Rete.DSL.ParserTest do
     end
 
     defrule map_coll(orders = [%{__type__: :order, id: id} when id > 0]) do
-      {:orders, id, length(orders)}
+      {:orders, length(orders)}
     end
 
     # --- n-arity in every position ---------------------------------------
@@ -77,11 +80,11 @@ defmodule Rete.DSL.ParserTest do
     end
 
     defrule nary_coll(users = [{:user, id, name}]) do
-      {:coll, id, name, length(users)}
+      {:coll, length(users)}
     end
 
     defrule nary_coll_guarded(users = [{:user, id, name} when id > 0]) do
-      {:coll, id, name, length(users)}
+      {:coll, length(users)}
     end
 
     defrule unary_coll(ticks = [{:tick}]) do

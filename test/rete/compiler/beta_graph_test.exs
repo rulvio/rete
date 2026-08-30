@@ -212,14 +212,24 @@ defmodule Rete.Compiler.BetaGraphTest do
     defmodule Grouped do
       use Rete.Ruleset
 
-      defrule per_group({:a, x}, items = [{:d, x, k}]) do
-        {:grouped, x, k, length(items)}
+      # `k` is matched by a second collection, so it is a real join and not
+      # local to either. Two collections is the shape that still groups: the
+      # sort defers both, so neither can bind `k` before the other and the
+      # first one groups by it. A plain condition matching `k` would sort
+      # *before* the collection and make it an ordinary join key instead.
+      defrule per_group({:a, x}, items = [{:d, x, k}], others = [{:e, x, k}]) do
+        {:grouped, x, length(items), length(others)}
       end
     end
 
     test "a collection introducing a new variable groups by it and cannot propagate empty" do
       graph = graph(Grouped)
       assert [%Node.Accumulate{propagates_empty?: false, new_bind: [:k]}] = typed(graph, :d)
+    end
+
+    test "the second collection joins on the variable the first grouped by" do
+      graph = graph(Grouped)
+      assert [%Node.Accumulate{join_bind: [:k, :x], new_bind: []}] = typed(graph, :e)
     end
   end
 

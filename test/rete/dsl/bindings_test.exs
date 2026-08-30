@@ -450,7 +450,12 @@ defmodule Rete.DSL.BindingsTest do
     test "a collection binding is visible to later conditions" do
       production = classify("r(xs = [{:a, x}], {:b, xs, y})")
 
-      assert %IR.Coll{coll_binding: :xs, new_bind: [:x]} = at(production, 0)
+      # `x` is matched by no other condition, so it is local to the collection:
+      # it constrains what is gathered and binds nothing. The collection binding
+      # `xs` is what escapes.
+      assert %IR.Coll{coll_binding: :xs, bind: [:x], new_bind: [], inert: [:x]} =
+               at(production, 0)
+
       assert %IR.Fact{join_bind: [:xs], new_bind: [:y]} = at(production, 1)
     end
 
@@ -476,9 +481,31 @@ defmodule Rete.DSL.BindingsTest do
       assert %IR.Coll{bind: [:cid], join_bind: [:cid], new_bind: []} = at(production, 1)
     end
 
-    test "a collection introducing a variable groups by it" do
+    # Only a *real join* makes a collection variable participate, and the sort
+    # defers collections, so a plain condition matching the variable ends up
+    # before it and makes it a join key. Two collections is the shape where one
+    # genuinely groups.
+    test "a collection introducing a variable groups by it when another collection joins on it" do
+      production =
+        classify(
+          "r({:customer, cid}, orders = [{:order, cid, amt}], notes = [{:note, cid, amt}])"
+        )
+
+      assert %IR.Coll{join_bind: [:cid], new_bind: [:amt], inert: []} = at(production, 1)
+      assert %IR.Coll{join_bind: [:amt, :cid], new_bind: [], inert: []} = at(production, 2)
+    end
+
+    test "a collection variable nothing else matches on is local, so the collection is not grouped" do
       production = classify("r({:customer, cid}, orders = [{:order, cid, amt}])")
-      assert %IR.Coll{bind: [:amt, :cid], join_bind: [:cid], new_bind: [:amt]} = at(production, 1)
+
+      assert %IR.Coll{bind: [:amt, :cid], join_bind: [:cid], new_bind: [], inert: [:amt]} =
+               at(production, 1)
+    end
+
+    test "a plain condition matching the variable makes it a join key, not a grouping variable" do
+      production = classify("r({:customer, cid}, {:pick, amt}, orders = [{:order, cid, amt}])")
+
+      assert %IR.Coll{join_bind: [:amt, :cid], new_bind: [], inert: []} = at(production, 2)
     end
 
     test "a collection guard reaching upstream still becomes a join filter" do
