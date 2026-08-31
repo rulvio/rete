@@ -91,7 +91,7 @@ defmodule Rete.TaxonomyTest do
     end
 
     test "a cyclic derivation raises" do
-      assert_raise RuntimeError, ~r/Cyclic derivation/, fn ->
+      assert_raise Taxo.CyclicDerivationError, ~r/cyclic derivation/, fn ->
         Taxonomy.new([
           {:derive, :dog, :mammal},
           {:derive, :mammal, :animal},

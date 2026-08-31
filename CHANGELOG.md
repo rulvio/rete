@@ -4,6 +4,35 @@ All notable changes to `rete` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.2.0
+
+Documentation and a dependency bump. No change to the DSL, the compiler or the engine.
+
+### Documentation
+
+* The whole prose surface rewritten in an ASD-STE100-influenced style: the README,
+  `docs/dsl.md`, `docs/design/*.md`, and every `@moduledoc`, `@doc`, `@typedoc` and
+  comment in `lib/`. Short sentences, active voice, no semicolons, no phrasal verbs.
+  Every technical fact, hedge and caveat carries over unchanged — only the sentence
+  structure does.
+* Two stale claims in the README's Limitations section corrected. Neither is a
+  behaviour change; both describe what 0.1.0 already did.
+  * "No parallel or async rule evaluation" was wrong: `fire_rules/2`'s `:concurrency`
+    option already runs one activation group's rule bodies on tasks, and has since
+    0.1.0.
+  * "No durability" overstated the gap. A session holds no PID, ETS table or other
+    process-local handle, so `:erlang.term_to_binary/1` and `:erlang.binary_to_term/1`
+    round-trip a whole session, including its compiled network, as long as the
+    receiving process has the same compiled ruleset and listener modules loaded.
+    There is still no checkpoint API, no versioned migration and no distributed sync.
+
+### Dependencies
+
+* `taxo` bumped to `~> 0.2.0`. A cyclic derivation passed to `derive/2` now raises
+  `Taxo.CyclicDerivationError`, carrying `:child` and `:parent`, in place of a bare
+  `RuntimeError`. `Rete.Taxonomy` already always builds a proper `%Taxo{}` before
+  calling into it, so taxo's stricter argument typing changes nothing observable here.
+
 ## 0.1.0
 
 First release. A complete forward-chaining Rete engine: the DSL front end, the network
