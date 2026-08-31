@@ -4,51 +4,6 @@ All notable changes to `rete` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
-
-### Changed
-
-* **The loop guard is opt-in.** `:max_cycles` now defaults to `:infinity`, so
-  `fire_rules/2` runs to quiescence and an oscillating ruleset spins rather than raising.
-  The old default of 10,000 was reached by 4,000 facts through a three-rule chain — no
-  loop in sight — and a count cannot separate a runaway from a large settling pass, so
-  any default eventually fails correct code. Pass an integer to bound a call.
-  `docs/design/observability.md` §3 has the numbers for picking one. An unrecognised value
-  raises rather than quietly meaning no cap, which is what `max_cycles: nil` used to do
-  by accident of Erlang term order.
-* `mix.exs` no longer declares `extra_applications: [:logger]`. Nothing in the engine
-  logs; tracing goes through `Rete.Listener.Trace`.
-* **`:max_cycles` counts cycles, not activations.** A cycle is one pass of the fire loop:
-  one activation at the default concurrency, one whole activation group above it. The two
-  coincide at `concurrency: 1`, so nothing changes unless you raise it. The runaway error
-  now says "fired n cycles".
-
-### Added
-
-* **`:concurrency` and `:timeout` on `fire_rules/2`.** `concurrency: 1` by default, which
-  is the sequential path unchanged. Above `1`, the rule bodies of one activation group run
-  on tasks and their conclusions are applied in group order. Worth raising only when a
-  body does I/O or real computation — a body that builds a tuple is 1.5% of firing and
-  costs more than that to hand to a task, so break-even is about 5 µs. Sixty-four bodies
-  sleeping 5 ms go from 385 ms to 7 ms.
-
-  It preserves the resulting session, asserted by a property over the every-node-kind
-  ruleset. It does **not** preserve firing order, because taking a group freezes it while
-  firing one at a time re-sorts the agenda after every activation. A body may also run for
-  a match another activation in the same group then invalidates: that activation does not
-  fire and nothing it computed is inserted, but a side effect it performed is not undone.
-  `docs/dsl.md` states the at-least-once contract, and `docs/design/engine.md` §11 has the
-  measurements.
-* **CI** (`.github/workflows/ci.yml`) running the project's six verification commands on
-  the declared floor, Elixir 1.18, and on the current release. The floor was a promise
-  `mix.exs` made and nothing checked.
-* **`mix bench`** (`bench/run.exs`) — nine scaling scenarios reporting the empirical
-  exponent rather than a wall-clock number, so that a reintroduced quadratic shows up as
-  `~n^2` instead of as a figure with no baseline. Eight are linear; filling one collection
-  measures `~n^1.94` and is left in, because a suite that reported only good news would
-  be worth less. Not run in CI — timing thresholds on shared runners fail for reasons
-  that mean nothing.
-
 ## 0.1.0
 
 First release. A complete forward-chaining Rete engine: the DSL front end, the network
@@ -111,7 +66,30 @@ in `docs/design/`.
   never fires.
 * Truth maintenance with **well-founded** support: a conclusion its own match rests on is
   dropped rather than supporting itself for ever.
-* A loop guard, `:max_cycles`, raising with the rules that fired most.
+* An **opt-in** loop guard. `:max_cycles` defaults to `:infinity`, so `fire_rules/2` runs
+  to quiescence and an oscillating ruleset spins rather than raising; pass an integer to
+  bound a call and it raises with the rules that fired most. A numeric default was tried
+  and rejected: 10,000 was reached by 4,000 facts through a three-rule chain with no loop
+  in sight, and a count cannot separate a runaway from a large settling pass, so any
+  default eventually fails correct code. It counts **cycles** — one pass of the fire loop,
+  which is one activation at the default concurrency and one whole activation group above
+  it. An unrecognised value raises rather than quietly meaning no cap, which is what
+  `max_cycles: nil` would do by accident of Erlang term order.
+  `docs/design/observability.md` §3 has the numbers for picking one.
+* **`:concurrency` and `:timeout` on `fire_rules/2`.** `concurrency: 1` by default, which
+  fires one rule body at a time. Above `1` the bodies of one activation group run on
+  tasks, and their conclusions are applied in group order. Worth raising only when a body
+  does I/O or real computation: a body that builds a tuple is 1.5% of firing and costs
+  more than that to hand to a task, so break-even is about 5 µs. Sixty-four bodies
+  sleeping 5 ms go from 385 ms to 7 ms.
+
+  It preserves the resulting session, asserted by a property over a ruleset spanning every
+  node kind. It does **not** preserve firing order, because taking a group freezes it
+  while firing one at a time re-sorts the agenda after every activation. A body may also
+  run for a match another activation in the same group then invalidates: that activation
+  does not fire and nothing it computed is inserted, but a side effect it performed is not
+  undone. `docs/dsl.md` states the at-least-once contract this implies, and
+  `docs/design/engine.md` §11 has the measurements.
 
 ### Observability
 
@@ -141,9 +119,10 @@ but internal and may change in a patch release. See "What is public" in the READ
 
 ### Performance
 
-Three quadratics in the size of one join key's bucket, all measured, all now linear or
-flat. Inserting 4,000 facts under one key went from 250 ms to under 10 ms, and retracting
-200 of them from a bucket of 8,000 from 108 ms to under 1 ms.
+Three quadratics in the size of one join key's bucket, all measured, all linear or flat.
+Inserting 4,000 facts under one key went from 250 ms to under 10 ms, and retracting 200 of
+them from a bucket of 8,000 from 108 ms to under 1 ms. `mix bench` is what says so, and
+keeps saying so.
 
 * `Rete.Agenda` is bucketed by sort key rather than one sorted list. Every activation of
   a production shares a key, so inserting walked past every match already queued for that
@@ -161,6 +140,21 @@ flat. Inserting 4,000 facts under one key went from 250 ms to under 10 ms, and r
   internal hash order, so the previous behaviour changed a rule's firing sequence the
   moment a node saw its 33rd join key.
 * The runaway error says how much it left out. Both of its lists are cut to five, and a
-  cut that says nothing reads as the whole story: it now reports
+  cut that says nothing reads as the whole story: it reports
   `Still pending (5 of 412 activations)` when there is more, and stays quiet when there
   is not.
+
+### Development
+
+Neither of these ships in the package.
+
+* **CI** (`.github/workflows/ci.yml`) runs the project's six verification commands on the
+  declared floor, Elixir 1.18, and on the current release. The floor was a promise
+  `mix.exs` made and nothing checked.
+* **`mix bench`** (`bench/run.exs`) — nine scaling scenarios reporting the empirical
+  exponent rather than a wall-clock number, so a reintroduced quadratic shows up as `~n^2`
+  instead of as a figure with no baseline. Eight are linear. Filling one collection
+  measures `~n^1.94` and is left in, because a suite that reported only good news would be
+  worth less. A tenth scenario compares `:concurrency` settings on a blocking body, which
+  is a ratio rather than a shape. Not run in CI — timing thresholds on shared runners fail
+  for reasons that mean nothing.
