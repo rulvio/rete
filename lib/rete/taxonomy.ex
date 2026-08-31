@@ -2,10 +2,10 @@ defmodule Rete.Taxonomy do
   @moduledoc """
   Decides which alpha nodes a fact must be offered to.
 
-  **Internal.** A condition declares the fact type it is written against, but the alpha
+  **Internal.** A condition declares the fact type it is written against. But the alpha
   expression it compiles to matches a fact of *any* shape. Type filtering happens here
-  instead, at propagation time, so `derive/2` and `underive/2` widen what a condition sees
-  without recompiling an expression.
+  instead, at propagation time. So `derive/2` and `underive/2` widen what a condition
+  sees, without recompiling an expression.
 
   `derive(:premium, :customer)` reads "a premium *is a* customer". A `:premium` fact
   reaches every condition written against `:customer`. A `:customer` fact must **not**
@@ -21,9 +21,9 @@ defmodule Rete.Taxonomy do
       iex> Rete.Taxonomy.alpha_ids(taxonomy, {:customer, 1})
       [:a1]
 
-  `alpha_ids/2` runs for every inserted fact, so `index/2` precomputes the whole
-  `type => ids` map. Empty entries are dropped, and a type absent from the index is
-  answered `[]` without allocating. That keeps a session that inserts foreign facts from
+  `alpha_ids/2` runs for every inserted fact. So `index/2` precomputes the whole
+  `type => ids` map. Empty entries are dropped. A type absent from the index answers
+  `[]`, without allocating. This keeps a session that inserts foreign facts from
   leaking. See `docs/design/network.md` §2.
   """
 
@@ -39,11 +39,11 @@ defmodule Rete.Taxonomy do
   @typedoc """
   Fields:
 
-    * `:taxo` - the folded `Taxo` hierarchy.
-    * `:fact_type_fn` - one-argument function returning a fact's type.
-    * `:alphas` - the `condition type => alpha node ids` map last indexed.
-    * `:index` - the memoized `fact type => alpha node ids` map. Never holds an
-      empty entry; a type absent from it propagates to nothing.
+    * `:taxo` — the folded `Taxo` hierarchy.
+    * `:fact_type_fn` — a one-argument function that returns a fact's type.
+    * `:alphas` — the `condition type => alpha node ids` map last indexed.
+    * `:index` — the memoized `fact type => alpha node ids` map. It never holds an
+      empty entry. A type absent from it propagates to nothing.
   """
   @type t :: %__MODULE__{
           taxo: %Taxo{},
@@ -59,13 +59,14 @@ defmodule Rete.Taxonomy do
 
   Options:
 
-    * `:fact_type_fn` - a one-argument function returning a fact's type,
-      `default_fact_type/1` by default.
-    * `:alphas` - the `condition type => alpha node ids` map to `index/2` right away.
-      `%{}` by default, which makes every lookup answer `[]`.
+    * `:fact_type_fn` — a one-argument function that returns a fact's type. Defaults to
+      `default_fact_type/1`.
+    * `:alphas` — the `condition type => alpha node ids` map to `index/2` right away.
+      Defaults to `%{}`, which makes every lookup answer `[]`.
 
   Declarations are folded in order, so a later `:underive` undoes an earlier `:derive`.
-  Raises if a declaration is neither tuple, and lets `Taxo` raise on a cyclic derivation.
+  This raises if a declaration is not a `:derive` or `:underive` tuple. It lets `Taxo`
+  raise on a cyclic derivation instead.
 
       iex> taxonomy = Rete.Taxonomy.new([{:derive, :dog, :mammal}, {:derive, :mammal, :animal}])
       iex> Rete.Taxonomy.ancestors(taxonomy, :dog)
@@ -207,12 +208,13 @@ defmodule Rete.Taxonomy do
   @doc """
   The default `:fact_type_fn`.
 
-    * a struct is typed by its module,
-    * a tagged tuple `{:type, ...}` of any arity by its first element,
-    * a tagged map `%{__type__: type}` by that value.
+    * a struct is typed by its module.
+    * a tagged tuple `{:type, ...}`, of any arity, is typed by its first element.
+    * a tagged map `%{__type__: type}` is typed by that value.
 
-  Anything else raises. Typing a fact by accident would make it match nothing, silently,
-  with no way to tell that from a rule that does not apply.
+  Anything else raises an error. If a fact had the wrong type by accident, it would
+  match nothing, silently. You could not tell that case apart from a rule that simply
+  does not apply.
 
       iex> Rete.Taxonomy.default_fact_type({:order, 1, 99})
       :order

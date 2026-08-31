@@ -2,15 +2,15 @@ defmodule Rete.Inspect do
   @moduledoc """
   Asking a session why.
 
-  Truth maintenance already records which match inserted what, and read backwards that is
-  a provenance graph. These functions walk it.
+  Truth maintenance already records which match inserted what. Read backwards, that is a
+  provenance graph. These functions walk it.
 
       Rete.Inspect.explain(session, {:escalated, 1})
       Rete.Inspect.fired(session)
       Rete.Inspect.why_not(session, {MyRuleset, :some_rule})
 
   Everything here works on **any** session, with no listener and no setup, because it
-  reads working memory rather than a history. A listener adds what memory cannot know:
+  reads working memory instead of a history. A listener adds what memory cannot know:
   what happened, in what order, including activations that fired and were later
   retracted. See `Rete.Listener`.
 
@@ -31,10 +31,11 @@ defmodule Rete.Inspect do
   @typedoc """
   Why one fact exists.
 
-  `:origin` is `:asserted`, `:derived`, or `:unknown` when the session does not hold the
-  fact. `:rule`, `:module` and `:bindings` are `nil` when asserted. `:supports` holds one
-  nested explanation per fact the match rested on. `:module` is reported alongside
-  `:rule` rather than folded into it, so a caller matching on a bare name still works.
+  `:origin` is `:asserted`, `:derived`, or `:unknown` — when the session does not hold
+  the fact. `:rule`, `:module`, and `:bindings` are `nil` when asserted. `:supports`
+  holds one nested explanation per fact the match rested on. `:module` is reported
+  alongside `:rule`, instead of folded into it, so a caller matching on a bare name still
+  works.
   """
   @type explanation :: %{
           fact: term(),
@@ -66,9 +67,9 @@ defmodule Rete.Inspect do
   @spec explain(Session.t(), term()) :: [explanation()]
   def explain(%Session{state: state}, fact), do: do_explain(state, fact, MapSet.new())
 
-  # `MapSet.t()` is opaque with two internal representations, and dialyzer loses track of
+  # `MapSet.t()` is opaque, with two internal representations. Dialyzer loses track of
   # which one a set threaded through a local recursion holds. `seen` never leaves this
-  # function and is only built by `MapSet.new/0` and `MapSet.put/2`.
+  # function, and only `MapSet.new/0` and `MapSet.put/2` build it.
   @spec do_explain(State.t(), term(), MapSet.t()) :: [explanation()]
   defp do_explain(state, fact, seen) do
     cond do
@@ -131,8 +132,9 @@ defmodule Rete.Inspect do
     end
   end
 
-  # A token's matches are the facts behind it, in order. The empty root token contributes
-  # none, and a collection contributes the list it gathered rather than one fact.
+  # A token's matches are the facts behind it, in order. The empty root token
+  # contributes none. A collection contributes the list it gathered, instead of one
+  # fact.
   defp matched_facts(state, token) do
     Enum.flat_map(token.matches, fn {matched, _node_id} ->
       cond do
@@ -146,11 +148,11 @@ defmodule Rete.Inspect do
   @doc """
   Every rule that has concluded something, with the match and what it inserted.
 
-  Reads truth maintenance, so it reports what is *currently* concluded rather than a
-  history. A rule that fired and was later retracted does not appear. Attach
-  `Rete.Listener.Collect` and read `:activation_fired` events for that.
+  This reads truth maintenance, so it reports what is *currently* concluded, instead of
+  a history. A rule that fired and was later retracted does not appear. Attach
+  `Rete.Listener.Collect`, and read `:activation_fired` events for that instead.
 
-  Generated negation helpers are excluded unless `generated: true`.
+  Generated negation helpers are excluded, unless you pass `generated: true`.
 
       iex> alias Rete.{Inspect, Session}
       iex> Session.new([Rete.Doc.Orders])
@@ -180,22 +182,22 @@ defmodule Rete.Inspect do
   @doc """
   How far a rule got, condition by condition.
 
-  The question behind "why did this not fire?". Each entry reports what one node on the
-  rule's chain holds: `:elements` are facts that matched this condition alone, `:tokens`
-  are partial matches from the left, and `:activations` (terminals only) is how many
-  matches it concluded from.
+  This answers "why did this not fire?". Each entry reports what one node on the rule's
+  chain holds: `:elements` are facts that matched this condition alone, `:tokens` are
+  partial matches from the left, and `:activations` (terminals only) is how many matches
+  it concluded from.
 
   ```
   [%{node: 1, kind: "root_join", type: :customer, elements: 3, tokens: 0},
    %{node: 2, kind: "hash_join", type: :order,    elements: 0, tokens: 3}]
   ```
 
-  Read it in order and find the first node where the two counts disagree. Above, three
-  customers reached the order condition and no order matched them.
+  Read it in order, and find the first node where the two counts disagree. Above, three
+  customers reached the order condition, and no order matched them.
 
-  Neither count is "matches that got through", and the two mean different things per node
-  kind, so `0` in one column is not by itself a failure. Compare a node with the one
-  before it. See `docs/design/observability.md` §2.
+  Neither count means "matches that got through". The two mean different things per node
+  kind, so `0` in one column is not by itself a failure. Compare a node against the one
+  before it instead. See `docs/design/observability.md` §2.
   """
   @spec why_not(Session.t(), {module(), atom()}) :: [map()]
   def why_not(%Session{state: state}, {module, name} = ref)
@@ -223,9 +225,9 @@ defmodule Rete.Inspect do
   @doc """
   The facts a collection gathered behind a token that came from it.
 
-  A collection propagates only its result, so the members are otherwise invisible once a
-  token has moved on. Give it the node id of the accumulate node, which `why_not/2`
-  reports, and the join key from the token.
+  A collection propagates only its result, so the members are otherwise invisible, once
+  a token has moved on. Give this the node id of the accumulate node — `why_not/2`
+  reports it — and the join key from the token.
   """
   @spec collection(Session.t(), term(), map()) :: [term()]
   def collection(%Session{state: state}, node_id, join_key) do
@@ -274,9 +276,9 @@ defmodule Rete.Inspect do
         do: {node.module, node.name}
   end
 
-  # Walks back from the terminal to the root and reports root-first, so the list reads in
-  # the order the conditions are evaluated. A disjunction gives a node several parents.
-  # The first is enough to show where a chain broke without producing a tree.
+  # Walks back from the terminal to the root, and reports root-first. So the list reads
+  # in the order the conditions are evaluated. A disjunction gives a node several
+  # parents. The first is enough to show where a chain broke, without producing a tree.
   defp chain_to(state, id), do: chain_to(state, id, [])
 
   defp chain_to(state, id, acc) do

@@ -7,9 +7,9 @@ defmodule Rete.Session do
   same rules differ only in their working memory.
 
   Facts you insert stay until you retract them. Facts a *rule* concludes are logical: the
-  engine holds them while the match behind them holds. That is why a rule's right hand
-  side only inserts, and why retracting removes anything concluded from a fact too,
-  transitively. Nothing fires until `fire_rules/2`.
+  engine holds them only while the match behind them holds. That is why a rule's right
+  hand side only inserts. It is also why retracting a fact removes anything concluded from
+  it too, transitively. Nothing fires until `fire_rules/2`.
 
   The examples here run against this ruleset:
 
@@ -116,11 +116,11 @@ defmodule Rete.Session do
       pick a number.
     * `:concurrency` — how many rule bodies of one activation group run at once. `1` by
       default, which fires them one at a time. Raise it when a body does I/O or real
-      computation: the bodies of a group then run on tasks, and their conclusions are
-      applied in group order. A body that only builds a tuple is about 1.5% of firing and
-      costs more than that to hand to a task, so the default suits ordinary rules. Above
-      `1` a body runs on a task, so it does not inherit `Logger.metadata`, and its bindings
-      are copied — which is expensive for a collection binding.
+      computation. The bodies of a group then run on tasks, and their conclusions are
+      applied in group order. A body that only builds a tuple is about 1.5% of firing, and
+      it costs more than that to hand to a task, so the default suits ordinary rules.
+      Above `1`, a body runs on a task. It does not inherit `Logger.metadata`, and its
+      bindings are copied, which is expensive for a collection binding.
     * `:timeout` — milliseconds one body may take, or `:infinity`, the default. Applies
       only when `:concurrency` is above `1`.
 
@@ -143,19 +143,20 @@ defmodule Rete.Session do
 
   **Usually you would not write this.** `defquery flagged_for(...)` defines
   `flagged_for/2` in its own module, so the same call reads
-  `Rete.Doc.Orders.flagged_for(session, cid: 1)`, which the compiler checks. Reach for
-  this form when the query is decided at runtime.
+  `Rete.Doc.Orders.flagged_for(session, cid: 1)`, which the compiler checks. Use this form
+  when the query is decided at runtime.
 
   A query is addressed by module and name together because two rulesets composed into one
   session may each define a `:summary`.
 
   `filters` narrows the matches by equality on the *bindings*, before the body runs. It
   may name any variable the left hand side binds, as a keyword list or a map. There is no
-  separate parameter declaration. Naming something the query does not bind raises rather
-  than answering `[]`.
+  separate parameter declaration. Naming something the query does not bind raises an
+  error, instead of answering `[]`.
 
   Row order is **unspecified**. It does not vary with insertion order, so a given set of
-  facts always answers the same way, but sort the result if you need an order.
+  facts always answers the same way. Sort the result yourself, if you need a particular
+  order.
 
       iex> alias Rete.Session
       iex> session =

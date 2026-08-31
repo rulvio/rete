@@ -1,16 +1,16 @@
 defmodule Rete.DSL.HashingTest do
   @moduledoc """
-  Regression tests for expression identity: the code an expression is given
-  decides which conditions share a generated function, and — from W2 on — which
-  conditions share an alpha node.
+  Regression tests for expression identity. The code an expression is given
+  decides which conditions share a generated function. From W2 on, it also
+  decides which conditions share an alpha node.
 
   Two failure directions matter, and they are not symmetric:
 
-    * two conditions that behave the same getting *different* codes only costs
-      a duplicated node;
-    * two conditions that behave *differently* getting the same code is silent
-      wrongness, because the second one is never compiled and the first one's
-      function runs in its place.
+    * two conditions that behave the same, but get *different* codes, only
+      cost a duplicated node.
+    * two conditions that behave *differently*, but get the same code, are
+      silently wrong. The second condition is never compiled, and the first
+      one's function runs in its place instead.
   """
 
   use ExUnit.Case, async: true

@@ -2,10 +2,10 @@ defmodule Rete.Compiler.Negation do
   @moduledoc """
   Turns a `Rete.IR.CompoundNegation` into something a Rete network can express.
 
-  **Internal.** A negation node watches one condition and propagates its token while
-  nothing matches. It cannot watch a *conjunction*, and de Morgan does not rescue it: the
-  conjuncts share existentially quantified variables, so with orders `{1}` and refunds
-  `{2}`, "no `x` has both" is true and the rewrite is false.
+  **Internal.** A negation node watches one condition, and propagates its token while
+  nothing matches. It cannot watch a *conjunction*. De Morgan's law does not rescue it
+  here: the conjuncts share existentially quantified variables. With orders `{1}` and
+  refunds `{2}`, "no `x` has both" is true, and the rewrite is false.
 
   So the conjunction is lifted into a generated helper that inserts a **marker fact**, and
   the compound negation becomes an ordinary negation of that marker:
@@ -18,11 +18,13 @@ defmodule Rete.Compiler.Negation do
       end
       defrule clean({:customer, cid}, {:not, [{:"clean__neg_1", cid}]})
 
-  Three things make that correct. The marker **carries the bindings** the conjunction
-  joins on, or one customer with both would suppress the rule for every customer. The
-  helper **repeats the preceding conditions**, which is what binds those variables. And
-  the helper **fires first**, through an `:internal_salience` set to the nesting depth,
-  so extraction chains correctly and the negating rule never observes an absence that had
+  Three things make that correct.
+
+  The marker **carries the bindings** the conjunction joins on. Otherwise, one customer
+  with both an order and a refund would suppress the rule for every customer. The helper
+  **repeats the preceding conditions**, which is what binds those variables. The helper
+  also **fires first**, through an `:internal_salience` set to the nesting depth. So
+  extraction chains correctly, and the negating rule never observes an absence that had
   merely not been computed yet.
 
   A helper's expressions are plain closures, because extraction runs at build time, long
@@ -38,11 +40,11 @@ defmodule Rete.Compiler.Negation do
   @doc """
   Rewrites every compound negation in a production.
 
-  Returns the rewritten production and the helpers it generated, in the order they must
-  be added to the network. Helpers are extracted depth first, so a compound negation
-  nested inside another appears before the helper that negates it.
+  Returns the rewritten production, and the helpers it generated, in the order they must
+  be added to the network. Extraction runs depth-first, so a compound negation nested
+  inside another appears before the helper that negates it.
 
-  A production with no compound negation is returned unchanged with `[]`.
+  A production with no compound negation comes back unchanged, with `[]`.
   """
   @spec extract(IR.Production.t()) :: extraction()
   def extract(%IR.Production{lhs: lhs} = production) do
@@ -50,8 +52,8 @@ defmodule Rete.Compiler.Negation do
     {%IR.Production{production | lhs: lhs}, Enum.reverse(helpers)}
   end
 
-  # Carries the conditions seen so far, which is the prefix a helper needs, and a counter
-  # that makes generated names unique and stable.
+  # Carries the conditions seen so far — the prefix a helper needs — and a counter that
+  # makes generated names unique and stable.
   defp walk(lhs, production, prefix, helpers, counter, depth) do
     Enum.reduce(lhs, {[], helpers, counter}, fn element, {done, helpers, counter} ->
       prefix = prefix ++ Enum.reverse(done)
@@ -113,14 +115,14 @@ defmodule Rete.Compiler.Negation do
     {%IR.Negation{condition: marker_condition(name, carried)}, [helper | helpers], counter + 1}
   end
 
-  # Must be deterministic across compilations: node sharing depends on it. Never use
-  # make_ref or a time seed here.
+  # Must be deterministic across compilations, since node sharing depends on it. Never
+  # use make_ref or a time seed here.
   defp helper_name(%IR.Production{module: module, name: name}, counter) do
     :"#{inspect(module)}.#{name}__neg_#{counter}"
   end
 
   # The ancestor bindings the conjunction reads. What it binds for itself is
-  # existentially quantified inside the negation and means nothing outside it.
+  # existentially quantified inside the negation, and it means nothing outside it.
   defp carried_bindings(conditions, prefix) do
     available = prefix_bindings(prefix)
     set = MapSet.new(available)
@@ -133,8 +135,8 @@ defmodule Rete.Compiler.Negation do
   end
 
   # A variable a cross-condition guard reads from the token side is not in `:join_bind`,
-  # but it is an ancestor binding just the same. Missing one makes the marker global, so
-  # one binding group with a match suppresses the rule for every group.
+  # but it is an ancestor binding just the same. Missing one makes the marker global. So
+  # one binding group with a match would suppress the rule for every group.
   defp joined_vars(%IR.Fact{} = fact, available),
     do: (fact.join_bind || []) ++ filter_vars(fact.join_filter, fact.type, available)
 
@@ -155,9 +157,9 @@ defmodule Rete.Compiler.Negation do
   defp joined_vars(_element, _available), do: []
 
   # `Rete.IR.escape/1` dropped the filter's AST, so the only record of what it reads is
-  # its `:code`. Both approximations here over-report on purpose: carrying a binding the
-  # conjunction does not read only splits the marker into more groups, while missing one
-  # it does read is a wrong answer.
+  # its `:code`. Both approximations here over-report on purpose. Carrying a binding the
+  # conjunction does not read only splits the marker into more groups. Missing one it
+  # does read gives a wrong answer instead.
   defp filter_vars(nil, _type, _available), do: []
 
   defp filter_vars(%IR.Expr{code: code}, type, available) do
@@ -188,8 +190,8 @@ defmodule Rete.Compiler.Negation do
     Enum.sort(guaranteed ++ optional)
   end
 
-  # The helper inherits the user's salience, so it stays in the same ordering band and
-  # outranks the rule only on the internal tier.
+  # The helper inherits the user's salience. So it stays in the same ordering band, and
+  # it outranks the rule only on the internal tier.
   defp helper_opts(%IR.Production{opts: opts}, depth) do
     opts
     |> Kernel.||([])

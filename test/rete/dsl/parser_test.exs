@@ -334,7 +334,7 @@ defmodule Rete.DSL.ParserTest do
       assert {:seen, 1} == partial.rhs.(partial.hash, %{id: 1, name: "a"})
     end
 
-    # The parser itself leaves these to Rete.DSL.Bindings; the compiled module
+    # The parser itself leaves these to Rete.DSL.Bindings. The compiled module
     # runs that phase too, so this has to be asserted on parser output.
     test "join filter and binding classification are left for the later phases" do
       for source <- [

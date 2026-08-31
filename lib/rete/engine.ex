@@ -4,9 +4,9 @@ defmodule Rete.Engine do
 
   **Internal.** Not part of the public API. Call it through `Rete.Session`.
 
-  Propagation drains a queue of pending work: a node consumes one unit and returns the
-  work it produced. Firing pops the most salient activation, runs its right hand side and
-  inserts what it returned. Propagation is drained to completion **before** the next
+  Propagation drains a queue of pending work. A node consumes one unit, and returns the
+  work it produced. Firing pops the most salient activation, runs its right hand side, and
+  inserts what it returned. Propagation drains to completion **before** the next
   activation fires, so a rule always sees a settled network.
 
   `fire_rules/2` returns at quiescence. Every rule whose left hand side holds has fired,
@@ -98,7 +98,7 @@ defmodule Rete.Engine do
   end
 
   # Batches are collected newest first. Appending per fact would be quadratic in the size
-  # of one insert, and propagation order decides the order matches reach the agenda.
+  # of one insert. Propagation order decides the order matches reach the agenda.
   defp ordered_ops(batches), do: batches |> Enum.reverse() |> Enum.concat()
 
   @doc """
@@ -163,14 +163,14 @@ defmodule Rete.Engine do
   Runs a query: one result per match, computed by the query's body.
 
   A query is named by the `{module, name}` pair it was defined under. `defquery
-  summary(...)` also defines `summary/2` in its own module, and
-  `MyRuleset.summary(session, filters)` is the readable form of this call.
+  summary(...)` also defines `summary/2` in its own module. `MyRuleset.summary(session,
+  filters)` is the readable form of this call.
 
   `filters` narrows the matches by equality on the *bindings*, before the body runs. It
   may name any variable the left hand side binds.
 
-  Row order is **unspecified**. It is deterministic for a given set of facts, but nothing
-  about the order is a guarantee to build on.
+  Row order is **unspecified**. It is deterministic for a given set of facts. But nothing
+  about that order is a guarantee to build on.
   """
   @spec query(State.t(), {module(), atom()}, keyword() | %{atom() => term()}) :: [term()]
   def query(state, ref, filters \\ [])
@@ -187,8 +187,8 @@ defmodule Rete.Engine do
       Enum.all?(filters, fn {key, value} -> Map.get(bindings, key) == value end)
     end)
     |> Enum.map(&node.rhs.(node.hash, &1.bindings))
-    # Beta memory is arrival ordered. Without this sort the same facts inserted in a
-    # different order would answer the same query in a different order.
+    # Beta memory is arrival ordered. Without this sort, the same facts, inserted in a
+    # different order, would answer the same query in a different order.
     |> Enum.sort()
   end
 
@@ -265,9 +265,9 @@ defmodule Rete.Engine do
   @doc """
   Every fact the session holds, inserted or concluded.
 
-  Excludes the marker facts an extracted compound negation inserts. They express a
-  negated conjunction to the network and no rule of the user's concluded them. They are
-  ordinary facts everywhere else.
+  This excludes the marker facts an extracted compound negation inserts. They express a
+  negated conjunction to the network, and no rule of the user's concluded them. Everywhere
+  else, they are ordinary facts.
   """
   @spec facts(State.t()) :: [term()]
   def facts(%State{memory: memory, network: network}) do
@@ -276,7 +276,7 @@ defmodule Rete.Engine do
 
   # --- firing ---------------------------------------------------------------------
 
-  # The cap is checked against work still pending, never against the count alone: a
+  # The cap is checked against work still pending, never against the count alone. A
   # ruleset that fires exactly `max_cycles` and then settles has not run away.
   # `is_integer/1` is what makes `:infinity` mean no cap.
   defp fire_loop(%State{} = state, cfg, fired, tally) do
@@ -297,11 +297,11 @@ defmodule Rete.Engine do
   end
 
   # One activation at the default concurrency, a whole activation group above it. Either
-  # way what comes back is one cycle: `:max_cycles` counts these, not the activations
+  # way, what comes back is one cycle. `:max_cycles` counts these, not the activations
   # inside them, so raising `:concurrency` does not consume the allowance faster.
   #
   # The group is **peeked**, not popped. An activation stays on the agenda until its own
-  # conclusions are applied, so a conclusion applied earlier in the cycle can still cancel
+  # conclusions are applied. So a conclusion applied earlier in the cycle can still cancel
   # it. See `fire_cycle/4`.
   defp next_cycle(%State{} = state, concurrency) when concurrency <= 1 do
     case Agenda.pop(state.agenda) do
@@ -324,7 +324,7 @@ defmodule Rete.Engine do
   @runaway_shown 5
 
   # Leads with which rules fired most. Pending activations only say what happened to be
-  # queued when the cap hit, which for a loop is arbitrary.
+  # queued when the cap hit — arbitrary, for a loop.
   defp runaway(%State{} = state, fired, tally) do
     worst =
       tally
@@ -362,8 +362,8 @@ defmodule Rete.Engine do
 
   defp of_total(_total, _noun), do: ""
 
-  # Qualified: a loop between two rules of one name in different rulesets is exactly the
-  # case where a bare name explains nothing.
+  # Qualified. A loop between two rules of one name, in different rulesets, is exactly
+  # the case where a bare name explains nothing.
   defp rule_name(%State{} = state, node_id) do
     case Network.node(state.network, node_id) do
       %{name: name, module: module} -> Network.ref_string({module, name})
@@ -377,12 +377,13 @@ defmodule Rete.Engine do
     state |> fire(activation) |> drain()
   end
 
-  # A rule body is a pure function of its hash and its already frozen bindings, so the
-  # bodies of a group may run at once. Everything after them threads state — `well_founded`
-  # reads memory, and one conclusion can retract the support of a later activation in the
-  # same group — so conclusions are applied in group order with a drain between each.
+  # A rule body is a pure function of its hash and its already frozen bindings. So the
+  # bodies of a group may run at once. Everything after them threads state instead —
+  # `well_founded` reads memory, and one conclusion can retract the support of a later
+  # activation in the same group. So the engine applies conclusions in group order, with a
+  # drain between each.
   #
-  # Only `{rhs, hash, bindings}` is captured, never the state or the network: a closure
+  # Only `{rhs, hash, bindings}` is captured, never the state or the network. A closure
   # over either would copy the whole compiled network into every task.
   defp fire_cycle(%State{} = state, activations, cfg, :peeked) do
     nodes = Enum.map(activations, &Network.node(state.network, &1.node_id))
@@ -407,9 +408,9 @@ defmodule Rete.Engine do
   end
 
   # Each activation leaves the agenda as its own conclusions are applied. `:missing` means
-  # a conclusion applied earlier in this cycle retracted the match behind it, so it must
+  # a conclusion applied earlier in this cycle retracted the match behind it. So it must
   # not fire — the same outcome firing one at a time would give. Its body already ran, and
-  # the result is discarded.
+  # the engine discards the result.
   defp apply_conclusions({activation, node, result}, %State{} = state) do
     case Agenda.remove(state.agenda, activation) do
       {agenda, :removed} ->
@@ -426,8 +427,9 @@ defmodule Rete.Engine do
     conclude(state, activation, node, compute({node.rhs, node.hash, activation.token.bindings}))
   end
 
-  # The pure half. Failure is returned rather than raised so that it is reported against
-  # the rule in the caller, where the node is in hand, instead of surfacing as a task exit.
+  # The pure half. It returns failure rather than raising it, so the error is reported
+  # against the rule in the caller, where the node is in hand, instead of surfacing as a
+  # task exit.
   defp compute({rhs, hash, bindings}) do
     {:ok, hash |> rhs.(bindings) |> normalize_facts()}
   rescue
@@ -436,8 +438,8 @@ defmodule Rete.Engine do
     kind, value -> {:caught, kind, value, __STACKTRACE__}
   end
 
-  # Facts are recorded against the token before they are inserted, so that retracting the
-  # token later finds them even if the insertion cascades.
+  # The engine records facts against the token before inserting them. So retracting the
+  # token later finds them, even if the insertion cascades.
   defp conclude(%State{} = state, %Activation{token: token}, node, result) do
     facts =
       result
@@ -460,10 +462,10 @@ defmodule Rete.Engine do
 
   defp unwrap!({:ok, facts}, _node, _token), do: facts
 
-  # Reraised exactly as thrown, with the original stacktrace. That stacktrace already names
-  # the generated `__rhs_<name>__` frame in the ruleset module, so the rule is identified
-  # without inventing a wrapper exception. Without this a body's error inside a task would
-  # surface as an opaque exit.
+  # Reraised exactly as thrown, with the original stacktrace. That stacktrace already
+  # names the generated `__rhs_<name>__` frame in the ruleset module, so the rule is
+  # identified without inventing a wrapper exception. Without this, a body's error inside
+  # a task would surface as an opaque exit.
   defp unwrap!({:raised, error, stacktrace}, _node, _token), do: reraise(error, stacktrace)
 
   defp unwrap!({:caught, kind, value, stacktrace}, _node, _token),
@@ -477,9 +479,9 @@ defmodule Rete.Engine do
             "Raise :timeout, or remove it to wait indefinitely."
   end
 
-  # Drops a conclusion the match already rests on, so it cannot support itself. Runs only
-  # when the fact is already present, which is the only way the cycle can close. See
-  # `docs/design/engine.md` §8.
+  # Drops a conclusion the match already rests on, so it cannot support itself. This runs
+  # only when the fact is already present, since that is the only way the cycle can
+  # close. See `docs/design/engine.md` §8.
   defp well_founded(facts, %State{} = state, token) do
     if Enum.any?(facts, &Map.has_key?(state.memory.facts, &1)) do
       support = support_closure(state, token)
@@ -489,8 +491,8 @@ defmodule Rete.Engine do
     end
   end
 
-  # Every fact the match rests on: the ones it matched, plus what the match that concluded
-  # each of those rested on, down to what the user asserted.
+  # Every fact the match rests on. This is the facts it matched, plus what the match that
+  # concluded each of those rested on, down to what the user asserted.
   defp support_closure(%State{memory: memory}, token) do
     walk(MapSet.new(), matched_facts(token), inserted_by(memory))
   end
@@ -507,12 +509,12 @@ defmodule Rete.Engine do
     end
   end
 
-  # `MapSet.t()` is opaque with two internal representations, and dialyzer loses track of
+  # `MapSet.t()` is opaque, with two internal representations. Dialyzer loses track of
   # which one a set threaded through a local recursion holds. This set never leaves these
-  # two functions and is only built by `MapSet.new/0` and `MapSet.put/2`.
+  # two functions, and only `MapSet.new/0` and `MapSet.put/2` build it.
   @dialyzer {:no_opaque, walk: 3, well_founded: 3}
 
-  # fact => the tokens whose activation inserted it. Built on demand, because it is only
+  # fact => the tokens whose activation inserted it. Built on demand, since it is only
   # needed for a conclusion that is already present.
   defp inserted_by(%Memory{insertions: insertions}) do
     for {_node_id, by_token} <- insertions,
@@ -537,9 +539,9 @@ defmodule Rete.Engine do
   defp normalize_facts(facts) when is_list(facts), do: Enum.reject(facts, &is_nil/1)
   defp normalize_facts(fact), do: [fact]
 
-  # Attributes a body that returned something that is not a fact to the rule that returned
-  # it. The `try` must wrap the type call for one fact and nothing else. Wrapping the
-  # insertion would catch whatever the resulting cascade raises and blame it on this rule.
+  # Attributes a body's non-fact return value to the rule that returned it. The `try`
+  # must wrap the type call for one fact, and nothing else. Wrapping the insertion too
+  # would catch whatever the resulting cascade raises, and blame it on this rule.
   defp check_facts!(facts, %State{} = state, node, token) do
     Enum.each(facts, fn fact ->
       try do
@@ -596,7 +598,7 @@ defmodule Rete.Engine do
     end)
   end
 
-  # The single point every event passes through. `build` is a function so that an
+  # The single point every event passes through. `build` is a function, so that an
   # unobserved session allocates nothing and calls nothing.
   defp emit(%State{listeners: []} = state, _build), do: state
 
@@ -615,7 +617,7 @@ defmodule Rete.Engine do
   # --- propagation ------------------------------------------------------------------
 
   # Drains the queue. `{:retract_facts, ...}` is the one op a node cannot carry out
-  # itself: retracting a conclusion has to re-enter the alpha network.
+  # itself — retracting a conclusion has to re-enter the alpha network.
   defp drain(%State{} = state) do
     case State.dequeue(state) do
       :empty ->
@@ -639,9 +641,9 @@ defmodule Rete.Engine do
     end
   end
 
-  # Offers a fact to the alpha nodes its type routes it to. Each turns it into an element
-  # or rejects it. The taxonomy is consulted here and nowhere else, which is what lets an
-  # alpha match a fact of any type.
+  # Offers a fact to the alpha nodes its type routes it to. Each alpha turns it into an
+  # element, or rejects it. The engine consults the taxonomy here, and nowhere else. That
+  # is what lets an alpha match a fact of any type.
   defp alpha_ops(%State{network: network}, fact, direction) do
     for alpha <- alphas_for(network, fact),
         bindings = alpha.fun.(fact),

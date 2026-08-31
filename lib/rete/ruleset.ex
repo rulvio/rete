@@ -2,10 +2,10 @@ defmodule Rete.Ruleset do
   @moduledoc """
   Macros for defining rulesets in a Rete network.
 
-  A rule reads as a function. Its **arguments are the left hand side** and its **body is
-  the right hand side**. Pattern matching in the argument list gives destructuring,
-  variable binding and join-variable identification for free, and what the body returns
-  is the facts to insert. `docs/dsl.md` is the guide.
+  A rule reads as a function. Its **arguments are the left hand side**, and its **body is
+  the right hand side**. Pattern matching in the argument list gives you destructuring,
+  variable binding, and join-variable identification for free. What the body returns is
+  the facts to insert. `docs/dsl.md` is the guide.
 
       defmodule MyRuleset do
         use Rete.Ruleset
@@ -18,8 +18,8 @@ defmodule Rete.Ruleset do
       end
 
   Using this module makes the ruleset expose `get_rule_data/0`, `get_expr_data/0`,
-  `get_taxo_data/0` and `get_version/0`, which `Rete` aggregates across modules. It also
-  defines `<query_name>/1,2` per query, which is the public face of a query, plus the
+  `get_taxo_data/0`, and `get_version/0`. `Rete` aggregates these across modules. It also
+  defines `<query_name>/1,2` for each query, which is the public face of a query, plus the
   `__rhs_<name>__/2` and `__<expr_code>__/1,2` machinery the engine calls.
 
   Every `defrule` and `defquery` expands by running the front end pipeline:
@@ -49,13 +49,14 @@ defmodule Rete.Ruleset do
       @rule_data []
       @taxo_data []
 
-      # name => {:rule | :query, line}, for the duplicate name check. Separate from
-      # @rule_data, which holds escaped IR with the compile-time AST already dropped.
+      # name => {:rule | :query, line}. Used for the duplicate name check. This is
+      # separate from @rule_data, which holds escaped IR with the compile-time AST
+      # already dropped.
       @rete_productions %{}
 
-      # The module attribute values behind each generated expression, so two identically
-      # written conditions reading different values do not share one compiled function.
-      # See `Rete.DSL.Codegen.check_attr_values!/3`.
+      # The module attribute values behind each generated expression. This keeps two
+      # identically written conditions, that read different values, from sharing one
+      # compiled function. See `Rete.DSL.Codegen.check_attr_values!/3`.
       @rete_expr_attrs %{}
 
       @before_compile Rete.Ruleset
@@ -66,11 +67,11 @@ defmodule Rete.Ruleset do
   Runs the front end pipeline over a quoted production declaration.
 
   Returns the fully classified `Rete.IR.Production`, ready for
-  `Rete.DSL.Codegen.compile/1`. Exposed so a test can inspect the IR of a declaration
-  without compiling a module for it.
+  `Rete.DSL.Codegen.compile/1`. This is exposed so a test can inspect the IR of a
+  declaration, without compiling a module for it.
 
-  The last step recomputes `:bind` from the classified LHS, so it is exactly the set of
-  variables a token reaching the right hand side can carry.
+  The last step recomputes `:bind` from the classified LHS. So `:bind` is exactly the set
+  of variables a token reaching the right hand side can carry.
   """
   @spec build(Macro.Env.t(), Macro.t(), Macro.t(), :rule | :query) :: IR.Production.t()
   def build(env, decl, body, type) do
@@ -82,9 +83,9 @@ defmodule Rete.Ruleset do
     |> resolve_bindings()
   end
 
-  # `:bind` is a product of the pipeline, not a pre-pass. To the parser every variable of
+  # `:bind` is a product of the pipeline, not a pre-pass. To the parser, every variable of
   # every element looks like a binding. Only the classified LHS knows that a negation
-  # binds nothing downstream, that a rule level guard only reads, and that a disjunction
+  # binds nothing downstream, that a rule-level guard only reads, and that a disjunction
   # binds the union of its branches. See `docs/design/ir.md` §2.
   defp resolve_bindings(%IR.Production{lhs: lhs, __ast__: ast} = production) do
     {guaranteed, optional} = IR.lhs_bindings(lhs)
@@ -94,12 +95,12 @@ defmodule Rete.Ruleset do
   end
 
   # Keeps the variable AST the parser collected, so the RHS pattern carries the source
-  # metadata, and drops the entries that turned out not to bind.
+  # metadata. Drops the entries that turned out not to bind.
   defp bind_ast(parsed, bind) do
     Map.new(bind, fn var -> {var, Map.get(parsed, var) || {var, [], nil}} end)
   end
 
-  # The name check is spliced in ahead of the codegen, so the first thing to fail on a
+  # The name check is spliced in ahead of the codegen. So the first thing to fail on a
   # repeated name is the check that can explain it. Two queries of one name would
   # otherwise collide as two definitions of the same function.
   defp defproduction(env, decl, body, type) do
@@ -113,7 +114,7 @@ defmodule Rete.Ruleset do
 
   defp name_check(env, name, type) do
     quote do
-      # Fully qualified: this is spliced into the user's module, which has no alias for
+      # Fully qualified. This is spliced into the user's module, which has no alias for
       # this one.
       # credo:disable-for-next-line Credo.Check.Design.AliasUsage
       Rete.Ruleset.check_name!(
@@ -129,9 +130,10 @@ defmodule Rete.Ruleset do
   @doc """
   Rejects a production name the module has already used, and records it.
 
-  Called from the module body, not at macro expansion. A module body is expanded in full
-  **before** any of it is evaluated, so at expansion time the attribute recording earlier
-  declarations is still empty and every declaration would look like the first.
+  The compiler calls this from the module body, not at macro expansion. A module body is
+  expanded in full **before** any of it is evaluated. So at expansion time, the attribute
+  that records earlier declarations is still empty, and every declaration would look like
+  the first.
 
   Rules and queries share one namespace.
   """
@@ -163,8 +165,8 @@ defmodule Rete.Ruleset do
   end
 
   # A production written without a `do` block. Emitting its RHS would define a bodiless
-  # function head, and the module would fail to compile with "implementation not provided
-  # for predefined def", naming the generated function rather than the rule.
+  # function head. The module would then fail to compile, with "implementation not
+  # provided for predefined def" — an error naming the generated function, not the rule.
   @spec no_body!(Macro.t(), :rule | :query) :: no_return()
   defp no_body!(decl, type) do
     raise ArgumentError,
@@ -181,8 +183,9 @@ defmodule Rete.Ruleset do
   @doc """
   Defines a rule.
 
-  The declaration is the left hand side and the body is the right hand side. What the
-  body returns is logically inserted and truth maintained. `nil` or `[]` inserts nothing.
+  The declaration is the left hand side, and the body is the right hand side. The engine
+  logically inserts and truth-maintains what the body returns. `nil` or `[]` inserts
+  nothing.
 
       {:user, id}                      fact pattern, any arity, including {:tick}
       %User{id: id}                    struct fact pattern, the type is the module
@@ -209,17 +212,18 @@ defmodule Rete.Ruleset do
   @doc """
   Defines a query.
 
-  A query has the same left hand side as a rule but never fires. It holds the matches
-  that reached it, and its **body is what the caller gets**, one result per match.
+  A query has the same left hand side as a rule, but it never fires. It holds the matches
+  that reached it. Its **body is what the caller gets**, one result per match.
 
   **The query is a function.** `defquery find_user(...)` also defines `find_user/1,2` in
-  the same module, so it is run by calling it. That is what makes a query addressable, and
-  why two rulesets may each define one of the same name. Use `Rete.Session.query/3` with
-  `{MyRuleset, :find_user}` when the query is decided at runtime.
+  the same module, so you run it by calling it. That is what makes a query addressable,
+  and why two rulesets may each define one of the same name. Use `Rete.Session.query/3`,
+  with `{MyRuleset, :find_user}`, when the query is decided at runtime.
 
   There is nothing to declare about parameters. The caller may constrain any variable the
   left hand side binds. Filtering happens on the bindings, before the body runs. A filter
-  naming something the query does not bind raises rather than answering `[]`.
+  that names something the query does not bind raises an error, instead of answering
+  `[]`.
 
       defquery find_user({:user, id, name}) do
         {id, name}

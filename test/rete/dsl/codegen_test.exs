@@ -162,7 +162,7 @@ defmodule Rete.DSL.CodegenTest do
     test "the guard variables are split across the two sides of the filter" do
       order = cond_at(GuardCheck, :r, 1)
 
-      # t comes from the token, amt from the fact; neither is a hash join key
+      # t comes from the token, amt from the fact. Neither is a hash join key
       assert [] == order.join_bind
       assert [:amt] == order.new_bind
       assert [:t] == cond_at(GuardCheck, :r, 0).new_bind
@@ -340,7 +340,7 @@ defmodule Rete.DSL.CodegenTest do
 
   describe "the whole LHS surface" do
     test "gates are normalized before binding classification" do
-      # {:or, [vip, staff]} fans out; {:not, [banned]} becomes a negation. The
+      # {:or, [vip, staff]} fans out. {:not, [banned]} becomes a negation. The
       # collection is written fourth and lands second to last: `Rete.Compiler.Sort`
       # takes a collection only once no plain condition is left to take, and the
       # rule level test after that.

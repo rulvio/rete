@@ -4,24 +4,24 @@ defmodule Rete.DSL.Bindings do
   @moduledoc """
   Binding classification and guard splitting.
 
-  **Internal.** Runs between gate normalization and code generation. It walks the LHS
-  **in order**, carrying the variables bound so far, and for every fact or collection
-  condition computes `:join_bind` (already bound upstream, so the hash join keys),
-  `:new_bind` (introduced here, which for a collection decides the empty-collection
-  semantics) and `:join_filter` (the part of the guard a single fact cannot decide).
-  `join_bind ++ new_bind == bind` always holds.
+  **Internal.** This runs between gate normalization and code generation. It walks the
+  LHS **in order**, carrying the variables bound so far. For every fact or collection
+  condition, it computes three things: `:join_bind` (bound upstream already — the hash
+  join keys), `:new_bind` (introduced here, which for a collection decides the
+  empty-collection semantics), and `:join_filter` (the part of the guard a single fact
+  cannot decide). `join_bind ++ new_bind == bind` always holds.
 
-  A per-condition guard is split conjunct by conjunct over the top level `and`/`&&`
-  chain, so `{:order, id, amt} when amt > 0 and amt > limit` puts `amt > 0` in the alpha
-  and `amt > limit` in the join filter. A guard that cannot be decomposed goes to the join
-  filter **whole**. Each half is rejoined with the operators it was written with, and
-  `and` is weakened to `&&` once a conjunct has been lifted out, because `and` is strict
-  in its left operand.
+  The compiler splits a per-condition guard conjunct by conjunct, over the top-level
+  `and`/`&&` chain. So `{:order, id, amt} when amt > 0 and amt > limit` puts `amt > 0` in
+  the alpha, and `amt > limit` in the join filter. A guard that cannot be decomposed goes
+  to the join filter **whole**. Each half is rejoined with the operators it was written
+  with. `and` weakens to `&&` once a conjunct has been lifted out, because `and` is
+  strict in its left operand.
 
-  Every branch of a disjunction is a distinct path through the beta graph, so each is
-  classified in **its own** binding context, and so is everything downstream. When the
-  branches classify the tail differently it is **absorbed** into them, bounded at
-  #{@max_elements} LHS elements.
+  Every branch of a disjunction is a distinct path through the beta graph. So each
+  branch is classified in **its own** binding context, and so is everything downstream.
+  When the branches classify the tail differently, the tail is **absorbed** into them,
+  bounded at #{@max_elements} LHS elements.
 
   Raises at compile time for a guard variable no condition binds on a path, a collection
   guard reading its own collection binding, and a right hand side reading a
@@ -42,12 +42,12 @@ defmodule Rete.DSL.Bindings do
   @doc """
   Classifies every condition of a production and splits its guards.
 
-  Returns the production with `:join_bind`, `:new_bind`, `:join_filter` filled
-  in on every `Rete.IR.Fact` and `Rete.IR.Coll`, and with alpha expressions
-  rebuilt wherever a guard was partly or wholly lifted into a join filter.
+  Returns the production with `:join_bind`, `:new_bind`, and `:join_filter` filled in on
+  every `Rete.IR.Fact` and `Rete.IR.Coll`. It rebuilds alpha expressions wherever a guard
+  was partly or wholly lifted into a join filter.
 
-  `env` is the `Macro.Env` of the `defrule`/`defquery` call; it is needed to
-  re-expand struct aliases when an alpha is rebuilt.
+  `env` is the `Macro.Env` of the `defrule`/`defquery` call. It is needed to re-expand
+  struct aliases when an alpha is rebuilt.
   """
   @spec classify(Parser.env(), IR.Production.t()) :: IR.Production.t()
   def classify(env, %IR.Production{} = production) do
@@ -59,9 +59,10 @@ defmodule Rete.DSL.Bindings do
     production
   end
 
-  # Reading a collection-local variable outside its collection cannot work: every
-  # gathered fact has its own value. Without this the module still fails to compile, but
-  # with Elixir's "undefined variable" pointing at a generated function name.
+  # Reading a collection-local variable outside its collection cannot work. Every
+  # gathered fact has its own value. Without this check, the module still fails to
+  # compile — but with Elixir's "undefined variable" error pointing at a generated
+  # function name instead.
   defp check_inert_reads!(%IR.Production{__ast__: %{body: body}} = production) do
     {guaranteed, optional} = IR.lhs_bindings(production.lhs)
     available = MapSet.new(guaranteed ++ optional)
@@ -112,22 +113,22 @@ defmodule Rete.DSL.Bindings do
   @doc """
   Marks the variables that are local to a collection.
 
-  Elixir fuses binding with constraining, so `os = [{:order, cid, amt} when amt > lim]`
-  reads as introducing `amt`. A collection that introduces a variable groups by it, which
-  would collect one singleton group per distinct amount rather than every order over the
-  limit.
+  Elixir fuses binding with constraining. So `os = [{:order, cid, amt} when amt > lim]`
+  reads as introducing `amt`. A collection that introduces a variable groups by it —
+  which would collect one singleton group per distinct amount, instead of every order
+  over the limit.
 
   The rule: **a collection's pattern variable participates only if another condition also
-  matches on it.** Otherwise it is inert, which means local to the collection. An inert
-  variable constrains which facts are gathered, groups nothing and binds nothing
+  matches on it.** Otherwise it is inert, meaning local to the collection. An inert
+  variable constrains which facts are gathered. It groups nothing, and it binds nothing
   downstream.
 
-  Only another condition's **pattern** counts, never a guard and never the right hand
-  side. So `os = [{:order, cid, day, _amt}]` with `day` read only in the body makes `day`
-  inert, and reading it outside the collection is a compile error. Group by adding
-  `{:holiday, day}`, or collect everything and use `Enum.group_by/2` in the body.
+  Only another condition's **pattern** counts — never a guard, and never the right hand
+  side. So `os = [{:order, cid, day, _amt}]`, with `day` read only in the body, makes
+  `day` inert. Reading it outside the collection is a compile error. Group by adding
+  `{:holiday, day}` instead, or collect everything and use `Enum.group_by/2` in the body.
 
-  A variable an *earlier* condition bound is a join key and is never inert. See
+  A variable an *earlier* condition bound is a join key, and it is never inert. See
   `docs/design/ir.md` §2.
   """
   @spec mark_inert(IR.Production.t()) :: IR.Production.t()
@@ -135,8 +136,9 @@ defmodule Rete.DSL.Bindings do
     %IR.Production{production | lhs: apply_inert(lhs, [], element_sites(lhs, []))}
   end
 
-  # Every *pattern* in the LHS, tagged by path, so a collection can ask whether another
-  # condition matches on a variable. Guards are not sites: reading is not joining.
+  # Every *pattern* in the LHS, tagged by path. This lets a collection ask whether
+  # another condition matches on a variable. Guards are not sites — reading is not
+  # joining.
   defp element_sites(elements, path) do
     elements
     |> Enum.with_index()
@@ -156,7 +158,7 @@ defmodule Rete.DSL.Bindings do
   defp element_site(%IR.Negation{}, _path), do: []
   defp element_site(%IR.CompoundNegation{}, _path), do: []
 
-  # The rule level `when` reads bindings, it does not match on them.
+  # The rule-level `when` reads bindings. It does not match on them.
   defp element_site(%IR.Test{}, _path), do: []
 
   defp element_site(%{__ast__: %{pattern: pattern}}, path) do
@@ -192,12 +194,11 @@ defmodule Rete.DSL.Bindings do
   @doc """
   Classifies a list of LHS elements against the variables bound before them.
 
-  Returns `{classified_elements, bound_after}`. The returned list is not
-  necessarily as long as the one given: the elements that follow a disjunction
-  whose branches classify them differently are absorbed into those branches, see
-  the moduledoc.
+  Returns `{classified_elements, bound_after}`. The returned list is not necessarily as
+  long as the one given. The elements that follow a disjunction, whose branches classify
+  them differently, get absorbed into those branches — see the moduledoc.
 
-  Exposed so that a caller can classify a fragment, for instance a branch of a
+  This is exposed so a caller can classify a fragment, for instance a branch of a
   disjunction.
   """
   @spec classify_elements(Parser.env(), IR.lhs(), bound()) :: {IR.lhs(), bound()}
@@ -229,8 +230,8 @@ defmodule Rete.DSL.Bindings do
     {%IR.Negation{condition: classify_condition(env, condition, bound)}, bound}
   end
 
-  # Same for a compound negation, whose inner conjunction is a small LHS of its own: the
-  # conditions bind each other and none escapes.
+  # Same for a compound negation, whose inner conjunction is a small LHS of its own.
+  # Its conditions bind each other, and none of them escapes.
   defp classify_element(env, %IR.CompoundNegation{conditions: conditions}, bound) do
     {conditions, _inner} = classify_elements(env, conditions, bound)
     {%IR.CompoundNegation{conditions: conditions}, bound}
@@ -330,8 +331,8 @@ defmodule Rete.DSL.Bindings do
 
     {join_bind, new_bind} = Enum.split_with(condition.bind, &MapSet.member?(bound, &1))
 
-    # An inert collection variable stays in :bind for the alpha to return, but it is not a
-    # new binding: it groups nothing and flows nowhere.
+    # An inert collection variable stays in `:bind`, for the alpha to return. But it is
+    # not a new binding — it groups nothing, and it flows nowhere.
     new_bind = new_bind -- inert(condition)
 
     {alpha_guard, join_guard} = split_guard(ast.guard, own)
@@ -356,7 +357,7 @@ defmodule Rete.DSL.Bindings do
 
   # A fact binding names the whole fact, so it cannot also be a join key. If an earlier
   # condition bound that name, the guard would read the fact instead of the upstream
-  # value, comparing an integer against a tuple.
+  # value — comparing an integer against a tuple.
   defp check_shadowing!(condition, bound) do
     name = binding_name(condition)
 
@@ -379,9 +380,9 @@ defmodule Rete.DSL.Bindings do
   defp inert(%IR.Coll{inert: inert}), do: inert
   defp inert(_condition), do: []
 
-  # What a condition's *own guard* may read, which is not what it makes visible
-  # downstream. A collection's inert variables are excluded from `Rete.IR.bound_vars/1`,
-  # but its own guard is where they are read.
+  # What a condition's *own guard* may read. This is not the same as what it makes
+  # visible downstream. A collection's inert variables are excluded from
+  # `Rete.IR.bound_vars/1`, but its own guard is where they are read.
   defp own_scope(%IR.Fact{bind: bind, fact_binding: nil}), do: MapSet.new(bind || [])
   defp own_scope(%IR.Fact{bind: bind, fact_binding: f}), do: MapSet.new([f | bind || []])
   defp own_scope(%IR.Coll{bind: bind, coll_binding: nil}), do: MapSet.new(bind || [])
@@ -393,18 +394,18 @@ defmodule Rete.DSL.Bindings do
   @doc """
   Raises unless every variable a condition's guard reads is available to it.
 
-  A guard may read the variables its own pattern binds (`own`, which includes
-  the fact binding, because the alpha's argument is the fact) and the variables
-  bound by an earlier condition (`bound`). Anything else would compile into a
-  join filter that reads the token side for a variable that is never there, and
-  the production could never fire.
+  A guard may read the variables its own pattern binds (`own` — which includes the fact
+  binding, since the alpha's argument is the fact), and the variables bound by an
+  earlier condition (`bound`). Anything else would compile into a join filter that reads
+  the token side for a variable that is never there. The production could then never
+  fire.
 
-  A **forward reference** is no longer one of those cases. `Rete.Compiler.Sort`
-  reorders the LHS before this phase runs, so a condition whose guard reads a
-  variable another condition binds has already been moved after it. Reaching
-  here means no condition on this path binds the variable at all, which no
-  ordering can fix. Calling `classify/2` on an unsorted LHS - as a test may -
-  still raises, and that is the same defect seen one phase early.
+  A **forward reference** is no longer one of those cases. `Rete.Compiler.Sort` reorders
+  the LHS before this phase runs. So a condition whose guard reads a variable another
+  condition binds has already been moved after it. Reaching here means no condition on
+  this path binds the variable at all — no ordering can fix that. Calling `classify/2` on
+  an unsorted LHS, as a test may, still raises. That is the same defect, seen one phase
+  early.
   """
   @spec check_guard_vars!(binder(), bound(), bound()) :: :ok
   def check_guard_vars!(%{__ast__: %{guard: guard, source: source}} = condition, own, bound) do
@@ -456,19 +457,19 @@ defmodule Rete.DSL.Bindings do
   defp check_coll_binding!(_condition, _reads, _source), do: :ok
 
   @doc """
-  Raises unless every variable a rule level guard reads is bound on its path.
+  Raises unless every variable a rule-level guard reads is bound on its path.
 
-  A `Rete.IR.Test` has no fact of its own, so the only thing its function is
-  handed is the token: a variable no condition on this path binds is a key that
-  is never in that map, the generated function falls through to `false`, and the
-  production silently never fires.
+  A `Rete.IR.Test` has no fact of its own, so its function is handed only the token. A
+  variable no condition on this path binds is a key that is never in that map. The
+  generated function would fall through to `false`, and the production would silently
+  never fire.
 
   The check is **path exact**. After a disjunction whose branches bind different
-  variables, `classify_elements/3` has absorbed everything downstream into the
-  branches, so the test is checked once per branch against exactly what that
-  branch binds. A guard over a variable only some branches bind is therefore an
-  error on the branches that do not - write it as a per condition guard inside
-  the branch that does, where it can actually be evaluated.
+  variables, `classify_elements/3` has absorbed everything downstream into the branches.
+  So the test is checked once per branch, against exactly what that branch binds. A
+  guard over a variable only some branches bind is therefore an error, on the branches
+  that do not bind it. Write it as a per-condition guard instead, inside the branch that
+  does bind it, where it can actually be evaluated.
   """
   @spec check_test_vars!(IR.Test.t(), bound()) :: :ok
   def check_test_vars!(%IR.Test{__ast__: nil}, _bound), do: :ok
@@ -502,18 +503,18 @@ defmodule Rete.DSL.Bindings do
   Splits a guard into `{alpha_guard, join_guard}`.
 
   `local` is the set (or list) of variables the condition's own pattern binds,
-  including its fact binding. A conjunct of the top level `and`/`&&` chain whose
-  variables are all local goes to the alpha, any other conjunct goes to the join
-  filter. Either half may be `nil`.
+  including its fact binding. A conjunct of the top-level `and`/`&&` chain goes to the
+  alpha, when all its variables are local. Any other conjunct goes to the join filter
+  instead. Either half may be `nil`.
 
-  Each half is rejoined with the operators the guard was written with, so an
-  all-`&&` chain stays an all-`&&` chain and a guard over a truthy value keeps
-  working after the split. A conjunct that has lost a predecessor is rejoined
-  with `&&` even where the source said `and`: the strict operator would demand a
-  boolean of an expression that is not the one it was written against.
+  Each half is rejoined with the operators the guard was written with. So an all-`&&`
+  chain stays an all-`&&` chain, and a guard over a truthy value keeps working after the
+  split. A conjunct that has lost a predecessor is rejoined with `&&`, even where the
+  source said `and`. The strict operator would otherwise demand a boolean of an
+  expression that is not the one it was written against.
 
-  When nothing has to move, the original guard AST is returned untouched so that
-  the alpha expression keeps its code and stays shared.
+  When nothing has to move, this returns the original guard AST untouched. That way the
+  alpha expression keeps its code, and it stays shared.
 
       iex> Rete.DSL.Bindings.split_guard(nil, [:amt])
       {nil, nil}
@@ -525,13 +526,13 @@ defmodule Rete.DSL.Bindings do
     local = to_set(local)
 
     # split_while, not split_with. The two halves have to stay contiguous. Sorting local
-    # conjuncts out of the middle reorders them relative to the ones left behind, and the
-    # alpha always runs before the beta node, so a short-circuit protected conjunct would
+    # conjuncts out of the middle would reorder them relative to the ones left behind. The
+    # alpha always runs before the beta node, so a short-circuit-protected conjunct would
     # start running first. `amt > t and div(100, amt) > 1` used to put `div(100, amt) > 1`
-    # in the alpha and raise ArithmeticError on amt = 0.
+    # in the alpha, and raise `ArithmeticError` on `amt = 0`.
     #
-    # The price is that a local conjunct after a cross-condition one stays on the beta
-    # side and filters later than it could.
+    # The price: a local conjunct after a cross-condition one stays on the beta side, and
+    # it filters later than it could.
     {alpha, join} =
       guard
       |> conjuncts()
@@ -546,10 +547,10 @@ defmodule Rete.DSL.Bindings do
   @doc """
   The variables an AST fragment reads, sorted.
 
-  Pinned values (`^x`) and module attributes (`@x`) are compile time constants
-  and excluded. `_`-prefixed variables are **not**: `_t` in `amt > _t` really is
-  a read of `_t`, and treating it as local would inline it into the alpha, where
-  it is not in scope. Only the anonymous `_` is skipped.
+  Pinned values (`^x`) and module attributes (`@x`) are compile-time constants, and this
+  excludes them. `_`-prefixed variables are **not** excluded: `_t` in `amt > _t` really
+  is a read of `_t`. Treating it as local would inline it into the alpha, where it is
+  not in scope. Only the anonymous `_` is skipped.
   """
   @spec guard_vars(Macro.t() | nil) :: [atom()]
   def guard_vars(ast), do: ast |> read_vars() |> Enum.sort()
@@ -557,10 +558,10 @@ defmodule Rete.DSL.Bindings do
   @doc """
   The variables a condition's guard needs that its own fact cannot supply.
 
-  These are exactly the variables that force a join filter. Call it on a parsed,
-  not yet classified condition; after `classify_condition/3` the guard left on
-  the condition is the alpha part, which by construction reads nothing but the
-  condition's own variables, so the result is `[]`.
+  These are exactly the variables that force a join filter. Call this on a parsed, not
+  yet classified condition. After `classify_condition/3` runs, the guard left on the
+  condition is the alpha part. That part reads nothing but the condition's own
+  variables, by construction, so the result is `[]`.
   """
   @spec filter_vars(binder()) :: [atom()]
   def filter_vars(%{__ast__: %{guard: guard}} = condition) do
@@ -570,8 +571,8 @@ defmodule Rete.DSL.Bindings do
 
   # --- guard decomposition ---------------------------------------------------
 
-  # Only a top level conjunction is decomposable. Each conjunct is tagged with its
-  # position and its joining operator, which is what lets `conjoin/1` rebuild a subset.
+  # Only a top-level conjunction is decomposable. Each conjunct is tagged with its
+  # position and its joining operator. This is what lets `conjoin/1` rebuild a subset.
   defp conjuncts(guard) do
     guard
     |> conjuncts(nil)
@@ -597,8 +598,9 @@ defmodule Rete.DSL.Bindings do
     guard
   end
 
-  # `and` is strict in its *left* operand, which after a split is no longer the expression
-  # it was written against. Safe only while the rebuilt chain is still the original.
+  # `and` is strict in its *left* operand. After a split, that operand is no longer the
+  # expression it was written against. This is safe only while the rebuilt chain is
+  # still the original.
   defp join_op(:and, index, index), do: :and
   defp join_op(_op, _index, _next), do: :&&
 
@@ -611,14 +613,14 @@ defmodule Rete.DSL.Bindings do
   defp to_set(%MapSet{} = set), do: set
   defp to_set(list) when is_list(list), do: MapSet.new(list)
 
-  # Keeps `_`-prefixed names, unlike `Rete.DSL.Parser.parse_bind/1`: a guard mentioning
+  # Keeps `_`-prefixed names, unlike `Rete.DSL.Parser.parse_bind/1` — a guard mentioning
   # `_t` does read `_t`.
   defp read_vars(ast), do: Vars.read_vars(ast)
 
   # --- expression building ---------------------------------------------------
 
-  # The alpha is left alone unless something forces a change, so a condition whose guard
-  # did not move keeps its code and shares its node.
+  # The alpha is left alone unless something forces a change. So a condition whose
+  # guard did not move keeps its code, and it shares its node.
   defp maybe_rebuild_alpha(env, condition, alpha_guard, join_guard) do
     self = fact_binding(condition)
     alpha_self? = reads_self?(alpha_guard, self)
@@ -635,8 +637,8 @@ defmodule Rete.DSL.Bindings do
   defp reads_self?(_ast, nil), do: false
   defp reads_self?(ast, self), do: MapSet.member?(read_vars(ast), self)
 
-  # A collection binding is not the alpha's argument, because the alpha runs per element,
-  # and `check_coll_binding!/3` already rejected a guard reading it.
+  # A collection binding is not the alpha's argument, because the alpha runs per
+  # element. `check_coll_binding!/3` already rejected a guard that reads it.
   defp fact_binding(%IR.Fact{fact_binding: fact_binding}), do: fact_binding
   defp fact_binding(%IR.Coll{}), do: nil
 
@@ -646,10 +648,10 @@ defmodule Rete.DSL.Bindings do
   defp join_body(%{join_filter: %IR.Expr{__ast__: %{body: body}}}, nil), do: body
   defp join_body(_condition, nil), do: nil
 
-  # Rebuilt through the parser's own helpers, so a condition whose guard was fully lifted
-  # out hashes identically to the same condition written without one. A non-nil `self`
-  # matches the fact binding against the whole argument, and `expose_self?` also returns
-  # it in the bindings map for a join filter to destructure.
+  # Rebuilt through the parser's own helpers. So a condition whose guard was fully
+  # lifted out hashes identically to the same condition written without one. A non-nil
+  # `self` matches the fact binding against the whole argument. `expose_self?` also
+  # returns it in the bindings map, for a join filter to destructure.
   defp rebuild_alpha(env, condition, alpha_guard, self, expose_self?) do
     %{__ast__: %{pattern: pattern, bind: bind}} = condition
     {type, args_ast} = Parser.compile_pattern(env, pattern)

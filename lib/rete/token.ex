@@ -9,8 +9,8 @@ defmodule Rete.Token do
       identity. Two tokens over the same facts in a different order are different matches.
     * `:bindings` — `%{name => value}`, the variables bound so far.
 
-  Tokens are compared by value, which is what makes retraction work when the fact that
-  caused it is a different term with the same value.
+  The engine compares tokens by value. This is what makes retraction work, even when the
+  fact that caused it is a different term with the same value.
   """
 
   @type t :: %__MODULE__{matches: [{term(), term()}], bindings: %{atom() => term()}}

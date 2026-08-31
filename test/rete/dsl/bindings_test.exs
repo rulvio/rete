@@ -209,7 +209,7 @@ defmodule Rete.DSL.BindingsTest do
 
     test "a collection cannot guard on its own collection binding" do
       # The alpha of a collection runs per element, so the list does not exist
-      # yet; there is nowhere correct to evaluate such a guard.
+      # yet. There is nowhere correct to evaluate such a guard.
       assert_raise ArgumentError, ~r/the collection binding/, fn ->
         classify("r(orders = [{:order, amt}] when length(orders) > 2)")
       end

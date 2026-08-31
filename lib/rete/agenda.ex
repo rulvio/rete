@@ -2,16 +2,16 @@ defmodule Rete.Agenda do
   @moduledoc """
   The activations waiting to fire, most salient first.
 
-  **Internal.** Not part of the public API, and documented rather than hidden because
-  durability, checkpointing and scheduling work will need to reach in here. Treat its
+  **Internal.** Not part of the public API. It is documented rather than hidden, because
+  durability, checkpointing, and scheduling work will need to reach in here. Treat its
   functions as liable to change.
 
   Ordering is `{salience, internal_salience}` descending, then compile order ascending.
   Two matches of the same rule fire in the order they arrived.
 
-  Every activation of one production node shares a sort key, so the agenda is a small
-  number of ordered buckets rather than one sorted list. `add/2` and `pop/1` are O(1).
-  `remove/2` is linear in one bucket, which holds one rule's pending matches. See
+  Every activation of one production node shares a sort key. So the agenda is a small
+  number of ordered buckets, not one sorted list. `add/2` and `pop/1` are O(1). `remove/2`
+  is linear in one bucket, which holds one rule's pending matches. See
   `docs/design/engine.md` §7.
 
       iex> alias Rete.{Activation, Agenda}
@@ -41,7 +41,8 @@ defmodule Rete.Agenda do
   @doc """
   How many activations are waiting.
 
-  Counted as they arrive, so that reporting the size of a runaway agenda is cheap.
+  The agenda counts activations as they arrive, so reporting the size of a runaway agenda
+  is cheap.
 
       iex> alias Rete.{Activation, Agenda}
       iex> Agenda.new() |> Agenda.add(%Activation{node_id: :n1}) |> Agenda.size()
@@ -75,10 +76,10 @@ defmodule Rete.Agenda do
   @doc """
   Removes an activation by value.
 
-  Returns `{agenda, :removed}` when it was still pending, `{agenda, :missing}` when it had
-  already fired. The caller must tell the two apart. An activation that never fired
-  inserted nothing, so there is nothing to retract. One that fired has facts that truth
-  maintenance must take back.
+  Returns `{agenda, :removed}` when the activation was still pending. Returns `{agenda,
+  :missing}` when it had already fired. The caller must tell the two apart. An activation
+  that never fired inserted nothing, so there is nothing to retract. One that fired has
+  facts that truth maintenance must take back.
 
       iex> alias Rete.{Activation, Agenda}
       iex> pending = %Activation{node_id: :n1}
@@ -120,13 +121,13 @@ defmodule Rete.Agenda do
   Every activation of the most salient **group**, in firing order, without removing them.
 
   A group is every bucket sharing the leading `{salience, internal_salience}` of the sort
-  key, so it spans the rules that would fire before any less salient one. One group is one
+  key. So it spans the rules that would fire before any less salient one. One group is one
   cycle of the fire loop, however many activations it holds.
 
   **Peeked rather than popped.** A caller firing the group removes each activation with
-  `remove/2` as it applies it, so an activation that an earlier conclusion in the same
-  group invalidates is still found and cancelled. Taking them all out up front would
-  leave the retraction nothing to cancel, and the conclusion would be inserted against a
+  `remove/2`, as it applies it. So an activation that an earlier conclusion in the same
+  group invalidates is still found and cancelled. Taking them all out up front would leave
+  a later retraction nothing to cancel. The conclusion would then be inserted against a
   token that no longer exists — a fact no retraction could ever take back.
 
       iex> alias Rete.{Activation, Agenda}
@@ -155,11 +156,11 @@ defmodule Rete.Agenda do
     Enum.flat_map(keys, fn key -> buckets |> Map.fetch!(key) |> :queue.to_list() end)
   end
 
-  # Drops the key when the bucket empties. `keys` records which buckets exist, so an empty
-  # one left behind would make `pop/1` reach for a value that is not there.
+  # Drops the key when the bucket empties. `keys` records which buckets exist, so an
+  # empty one left behind would make `pop/1` reach for a value that is not there.
   #
-  # Takes a queue, not a list. Round-tripping through `:queue.to_list/1` here would put an
-  # O(bucket) cost on `pop/1`, which has to stay O(1).
+  # Takes a queue, not a list. Round-tripping through `:queue.to_list/1` here would put
+  # an O(bucket) cost on `pop/1`, which has to stay O(1).
   defp store(%__MODULE__{} = agenda, key, remaining) do
     if :queue.is_empty(remaining) do
       %__MODULE__{
@@ -176,7 +177,7 @@ defmodule Rete.Agenda do
     end
   end
 
-  # The key list is as long as the ruleset has production nodes, so a linear insertion
+  # The key list is as long as the ruleset has production nodes. So a linear insertion
   # costs nothing that grows with the session.
   defp insert_key([], key), do: [key]
 
@@ -184,7 +185,7 @@ defmodule Rete.Agenda do
     if key < head, do: [key | keys], else: [head | insert_key(tail, key)]
   end
 
-  # Two activations are the same when they are the same rule reached by the same match.
+  # Two activations are the same when they are the same rule, reached by the same match.
   # `:order` and the salience fields come from the node, so they cannot differ when the
   # node does not. That is also why the one looked for lands in the bucket of the one
   # stored.

@@ -7,7 +7,7 @@ defmodule Rete.PropertyTest do
 
   The first is the **lens**. `Rete.Session.facts/1` is a set, so a node that
   propagates a token it had already propagated collapses into a count bump and
-  looks perfect; the corruption only surfaces later, as a fact that survives the
+  looks perfect. The corruption only surfaces later, as a fact that survives the
   retraction that should have removed it. Everything here compares
   `session.state.memory` — the fact *multiset*, and beneath it the elements,
   tokens, collection groups and truth-maintenance records.
@@ -21,7 +21,7 @@ defmodule Rete.PropertyTest do
   The second is the **oracle**. `expected/1` computes what the ruleset means over
   a fact multiset, in plain `for` comprehensions, counting one support per match.
   Comparing against a rebuilt session only proves the engine is consistent with
-  itself; comparing against `expected/1` proves it is right. It is what makes
+  itself. Comparing against `expected/1` proves it is right. It is what makes
   "support counting" a real property rather than a restatement of the engine.
   """
 
@@ -463,7 +463,7 @@ defmodule Rete.PropertyTest do
 
     property "no match ever inserts twice, and no memory holds a duplicate" do
       # The direct form of "a node propagated a token it had already
-      # propagated". One match at one production owns one batch of facts; two
+      # propagated". One match at one production owns one batch of facts. Two
       # batches under one token is the support imbalance itself, before it has
       # had time to disguise itself as a count.
       check all(facts <- multiset(), max_runs: 60) do

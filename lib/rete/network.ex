@@ -2,8 +2,8 @@ defmodule Rete.Network do
   @moduledoc """
   A compiled rulebase: everything the engine needs, and nothing that changes.
 
-  **Internal.** A network is built once from a set of ruleset modules and is then
-  immutable, so any number of sessions can share one. Working memory, the agenda and
+  **Internal.** A network is built once, from a set of ruleset modules, and it is then
+  immutable. So any number of sessions can share one. Working memory, the agenda, and
   pending propagations belong to the engine, not here.
 
       alphas      alpha node id => %Rete.Network.Node.Alpha{}
@@ -14,13 +14,12 @@ defmodule Rete.Network do
       productions the productions compiled in, including generated helpers
 
   A fact travels in three steps. `Rete.Taxonomy.alpha_ids/2` maps its type to alpha node
-  ids, which is the **only** place the taxonomy is consulted. Each alpha's arity 1
-  function turns the fact into a bindings map or `nil`. Matching elements reach the beta
-  nodes in `alpha_beta`, and the engine propagates along the graph's forward edges.
+  ids — the **only** place the taxonomy is consulted. Each alpha's arity-1 function turns
+  the fact into a bindings map, or `nil`. Matching elements reach the beta nodes in
+  `alpha_beta`. The engine propagates them along the graph's forward edges.
 
-  An alpha node id **is** the expression code of the conditions it was built from, which
-  is why `Rete.Compiler.disambiguate_codes/1` runs first. See
-  `docs/design/network.md` §2.
+  An alpha node id **is** the expression code of the conditions it was built from. That is
+  why `Rete.Compiler.disambiguate_codes/1` runs first. See `docs/design/network.md` §2.
   """
 
   alias Rete.Compiler.BetaGraph
@@ -131,8 +130,8 @@ defmodule Rete.Network do
   @doc """
   The modules that contributed a production to the network, sorted.
 
-  What a session was *built from*. That is the difference between a typo in a query name
-  and a ruleset never passed to `Rete.Session.new/2`.
+  This is what a session was *built from*. It is what tells apart a typo in a query name
+  from a ruleset never passed to `Rete.Session.new/2`.
   """
   @spec modules(t()) :: [module()]
   def modules(%__MODULE__{productions: productions}),
@@ -159,10 +158,11 @@ defmodule Rete.Network do
 
   # --- alpha side --------------------------------------------------------------
 
-  # One alpha per distinct expression code, feeding every beta node built from a condition
-  # with that code, so a condition written in several rules is matched once per fact.
-  # Keeping the first condition's function is safe because every condition reaching here
-  # with the same code came from the same module. See `Rete.Compiler.disambiguate_codes/1`.
+  # One alpha per distinct expression code. It feeds every beta node built from a
+  # condition with that code, so a condition written in several rules is matched once per
+  # fact. Keeping the first condition's function is safe, because every condition
+  # reaching here with the same code came from the same module. See
+  # `Rete.Compiler.disambiguate_codes/1`.
   defp alpha_network(productions, graph) do
     beta_by_code = beta_ids_by_alpha_code(graph)
 
@@ -186,8 +186,8 @@ defmodule Rete.Network do
     |> Enum.group_by(& &1.alpha_code, & &1.id)
   end
 
-  # The type index is keyed on the type a *condition* is written against, which
-  # is not the same as the alpha's own type when several conditions share a code.
+  # The type index is keyed on the type a *condition* is written against. That is not
+  # the same as the alpha's own type, when several conditions share a code.
   defp alpha_types(alphas, productions) do
     productions
     |> Enum.flat_map(&conditions/1)
@@ -201,8 +201,8 @@ defmodule Rete.Network do
     |> Map.new(fn {type, codes} -> {type, Enum.sort(codes)} end)
   end
 
-  # Every condition with an alpha expression, including inside negations and disjunction
-  # branches. A Test has no fact input and therefore no alpha.
+  # Every condition with an alpha expression, including ones inside negations and
+  # disjunction branches. A Test has no fact input, and therefore no alpha.
   defp conditions(%IR.Production{lhs: lhs}), do: Enum.flat_map(lhs, &conditions/1)
   defp conditions(%IR.Fact{} = fact), do: [fact]
   defp conditions(%IR.Coll{} = coll), do: [coll]
@@ -214,7 +214,7 @@ defmodule Rete.Network do
 
   defp conditions(_), do: []
 
-  # Marker facts are real facts, because the negation node matches on them. They are
+  # Marker facts are real facts, because the negation node matches on them. But they are
   # engine machinery, so `Rete.Session.facts/1` hides them.
   defp marker_types(productions) do
     for production <- productions,

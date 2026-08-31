@@ -13,11 +13,11 @@ defmodule Rete.Compiler do
   Node sharing is why this cannot happen per rule. Whether two conditions collapse onto
   one node depends on what every other rule already put in the graph.
 
-  **Cross module expression codes.** A code is equal exactly when two expressions behave
-  the same, with one hole: an *unqualified* call hashes as the bare name, so two modules
+  **Cross-module expression codes.** A code is equal exactly when two expressions behave
+  the same — with one hole. An *unqualified* call hashes as the bare name. So two modules
   that each define `ok?/1` differently produce the same code for
-  `{:bar, amt} when ok?(amt)`. A code more than one module contributed is therefore
-  qualified as `<code>@<module>` before anything is built from it. Sharing within a
+  `{:bar, amt} when ok?(amt)`. The compiler qualifies a code more than one module
+  contributed as `<code>@<module>`, before building anything from it. Sharing within a
   module is untouched. Sharing across modules is only an optimisation, and getting it
   wrong is silent corruption. See `docs/design/ir.md` §5.
   """
@@ -59,16 +59,16 @@ defmodule Rete.Compiler do
     |> Network.new(taxo_data, opts)
   end
 
-  # A helper must be added before the production that negates its marker, so
-  # that its terminal exists when the negation node is built.
+  # A helper must be added before the production that negates its marker. So its
+  # terminal exists when the negation node is built.
   defp extract(production) do
     {rewritten, helpers} = Negation.extract(production)
     helpers ++ [rewritten]
   end
 
   # A production is identified by module *and* name, so two rulesets may use the same
-  # name. Within one module a repeat is a mistake: the second would take over the query
-  # function and the RHS.
+  # name. Within one module, a repeat is a mistake. The second declaration would take
+  # over the query function and the RHS.
   defp validate_names!(productions) do
     duplicates =
       productions
@@ -102,11 +102,11 @@ defmodule Rete.Compiler do
   @doc """
   Qualifies every expression code that more than one module contributed.
 
-  The code of an expression only the module it is written in produces is left
-  alone, so nothing changes for a single module network. See the module doc for
-  why a shared code cannot be trusted across modules.
+  If only one module produces an expression's code, this leaves it alone. So
+  nothing changes for a single-module network. See the module doc for why a
+  shared code cannot be trusted across modules.
 
-  Exposed so that a test can check the disambiguation without a network.
+  This is exposed so a test can check the disambiguation, without building a network.
   """
   @spec disambiguate_codes([IR.Production.t()]) :: [IR.Production.t()]
   def disambiguate_codes(productions) do
@@ -119,8 +119,8 @@ defmodule Rete.Compiler do
     end
   end
 
-  # Codes contributed by two or more distinct modules. `Enum.uniq/1` first, so a code
-  # written twice in one module does not look shared.
+  # Codes contributed by two or more distinct modules. `Enum.uniq/1` runs first, so a
+  # code written twice in one module does not look shared.
   defp shared_codes(productions) do
     productions
     |> Enum.flat_map(fn production ->
@@ -136,8 +136,9 @@ defmodule Rete.Compiler do
     %IR.Production{production | lhs: Enum.map(lhs, &qualify(&1, module, shared))}
   end
 
-  # The same shapes `Rete.IR.exprs/1` walks. Do not add a catch-all clause: a condition
-  # kind this does not know about would keep a code the rest of the build has split.
+  # The same shapes `Rete.IR.exprs/1` walks. Do not add a catch-all clause here. A
+  # condition kind this does not know about would keep a code the rest of the build has
+  # split.
   defp qualify(%IR.Fact{} = fact, module, shared) do
     %IR.Fact{
       fact
@@ -166,7 +167,7 @@ defmodule Rete.Compiler do
     %IR.CompoundNegation{conditions: Enum.map(conditions, &qualify(&1, module, shared))}
   end
 
-  # Normalization rewrites every gate away before this runs, so `:code` has no reader
+  # Normalization rewrites every gate away before this runs. So `:code` has no reader
   # left to keep in step.
   defp qualify(%IR.Gate{args: args} = gate, module, shared) do
     %IR.Gate{gate | args: Enum.map(args, &qualify(&1, module, shared))}

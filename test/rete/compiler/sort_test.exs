@@ -75,7 +75,7 @@ defmodule Rete.Compiler.SortTest do
     end
 
     test "only the blocked conditions move, the rest keep their order" do
-      # `late` needs `t`; everything else is satisfiable from the start, so the
+      # `late` needs `t`. Everything else is satisfiable from the start, so the
       # batch keeps a, b, c together and in order
       assert [:a, :b, :c, :threshold, :late] ==
                order("r({:a, p}, {:late, w} when w > t, {:b, q}, {:c, s}, {:threshold, t})")
@@ -105,7 +105,7 @@ defmodule Rete.Compiler.SortTest do
     end
 
     test "a discarded variable is not a need, so the guard check reports it later" do
-      # nothing can ever bind `_t`, so ordering is not the answer; the message
+      # nothing can ever bind `_t`, so ordering is not the answer. The message
       # that tells the author to rename it comes from Rete.DSL.Bindings
       assert [:threshold, :order] == order("r({:threshold, _t}, {:order, amt} when amt > _t)")
 
@@ -233,7 +233,7 @@ defmodule Rete.Compiler.SortTest do
 
     test "reading a variable nothing binds is left to Rete.DSL.Bindings" do
       # check_test_vars!/2 is checked once per path, so it can say which branch
-      # of a disjunction is missing the variable; the sort has no such answer
+      # of a disjunction is missing the variable. The sort has no such answer
       assert [:order, {:test, [:amt, :zzz]}] == order("r({:order, amt}) when amt > zzz")
 
       assert_raise ArgumentError, ~r/`amt > zzz` reads `zzz`, which no condition binds/, fn ->
