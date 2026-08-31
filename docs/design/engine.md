@@ -285,7 +285,81 @@ to remove**.
 
 ---
 
-## 11. Known gaps
+## 11. Firing bodies concurrently
+
+`fire_rules/2` takes `:concurrency`, defaulting to `1`. Above `1` it pops a whole
+**activation group** — every agenda bucket sharing the leading
+`{salience, internal_salience}` — runs those rule bodies on tasks, and applies their
+conclusions in group order.
+
+### Only the body moves
+
+`fire/2` splits into a pure half and a stateful one:
+
+```elixir
+node.rhs |> apply([node.hash, activation.token.bindings])  # pure: hash + frozen bindings
+|> normalize_facts()                                        # pure
+|> check_facts!(state, node, token)                         # reads the immutable taxonomy
+|> well_founded(state, token)                               # reads state.memory
+```
+
+Only the first two lines run on a task. `well_founded/3` reads working memory, and one
+activation's conclusions can retract the support of another, which is exactly what
+`Rete.Agenda.remove/2`'s `:removed`/`:missing` split detects. So conclusions are applied
+one at a time with a `drain()` between, and a rule still sees a settled network.
+
+The task closure captures `{rhs, hash, bindings}` and nothing else. Closing over the state
+or the network would copy the whole compiled network into every task.
+
+### Why the default is 1
+
+A body that builds a tuple is **1.5%** of `fire_rules`; the other 98.5% is propagation. A
+task costs ~3.5 µs per activation, so parallelising cheap bodies is a large net loss.
+Measured over 2,000 activations on 16 cores:
+
+| body cost | sequential | concurrent | speedup |
+|---|---|---|---|
+| 0 µs | 0.8 ms | 7.1 ms | 0.12× |
+| 1 µs | 2.2 ms | 7.3 ms | 0.29× |
+| 5 µs | 10.1 ms | 9.6 ms | 1.05× |
+| 100 µs | 200.1 ms | 44.2 ms | 4.52× |
+| 500 µs | 1000.1 ms | 78.7 ms | 12.72× |
+
+Break-even is ~5 µs — far above anything a pure body does, and far below any I/O, so the
+option pays exactly when a body waits on something. Sixteen bodies sleeping 20 ms go from
+335 ms to 21 ms.
+
+### What it does and does not preserve
+
+It **preserves the resulting session**, down to the truth-maintenance ledger. A property
+over the every-node-kind ruleset asserts that for concurrency 2..8.
+
+It **does not preserve firing order**, and that follows from batching rather than from
+this implementation. Firing one at a time re-sorts the agenda after every activation, so a
+rule activated by another's conclusion can overtake one that was already pending. Popping
+a group freezes it, so the new activation waits for the next group:
+
+```
+sequential   a → b → c    b, activated by a, overtakes the already pending c
+concurrent   a → c → b    the group {a, c} was frozen before a ran
+```
+
+It also **does not guarantee a body runs only for matches that survive**. A body may run
+for an activation that another in the same group invalidates. Its conclusions are still
+retracted, but a side effect it performed is not undone. Clara documents the same for
+`fire-rules-async`. `docs/dsl.md` states the at-least-once contract this implies.
+
+### Errors
+
+A body's error is caught on the task and reraised in the caller with its original
+stacktrace, which already names the generated `__rhs_<name>__` frame — without that, a
+rule body's exception would surface as an opaque task exit. Throws are re-thrown with
+`:erlang.raise/3`. A `:timeout` kills the task, and since there is then no original error
+to reraise, that one case raises a `RuntimeError` naming the rule.
+
+---
+
+## 12. Known gaps
 
 * **`well_founded/3` costs a pass over the insertion records.** Only when the concluded
   fact is already present, which is the only way the cycle can close, but a rule that

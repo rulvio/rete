@@ -28,6 +28,8 @@ defmodule Rete.Engine do
   alias Rete.Token
 
   @default_max_cycles :infinity
+  @default_concurrency 1
+  @default_timeout :infinity
 
   @doc """
   A state over a network, with nothing inserted.
@@ -108,15 +110,27 @@ defmodule Rete.Engine do
       an oscillating ruleset spins rather than raising. Firing that many and still having
       work pending raises with the rules that fired most. Firing that many and settling is
       fine. See `docs/design/observability.md` §3.
+    * `:concurrency` — how many rule bodies of one activation group run at once. `1` by
+      default, which is the sequential path. Above `1`, the bodies of a group run on tasks
+      and their conclusions are applied in group order. Worth raising only when a body is
+      expensive: a body that just builds a tuple is about 1.5% of firing, and a task costs
+      more than that. See `docs/design/engine.md` §11.
+    * `:timeout` — milliseconds a single body may take, or `:infinity`, the default. Only
+      applies when `:concurrency` is above `1`.
   """
   @spec fire_rules(State.t(), keyword()) :: State.t()
   def fire_rules(%State{} = state, opts \\ []) do
-    max_cycles = opts |> Keyword.get(:max_cycles, @default_max_cycles) |> validate_cycles!()
+    cfg = %{
+      max_cycles: opts |> Keyword.get(:max_cycles, @default_max_cycles) |> validate_cycles!(),
+      concurrency:
+        opts |> Keyword.get(:concurrency, @default_concurrency) |> validate_concurrency!(),
+      timeout: opts |> Keyword.get(:timeout, @default_timeout) |> validate_timeout!()
+    }
 
     state
     |> emit(fn -> {:fire_started, opts} end)
     |> drain()
-    |> fire_loop(max_cycles, 0, %{})
+    |> fire_loop(cfg, 0, %{})
   end
 
   # Do not relax this to accept any term. `fired >= nil` is false for every integer under
@@ -127,6 +141,20 @@ defmodule Rete.Engine do
   defp validate_cycles!(other) do
     raise ArgumentError,
           ":max_cycles must be a non-negative integer or :infinity, got: #{inspect(other)}"
+  end
+
+  defp validate_concurrency!(n) when is_integer(n) and n >= 1, do: n
+
+  defp validate_concurrency!(other) do
+    raise ArgumentError, ":concurrency must be a positive integer, got: #{inspect(other)}"
+  end
+
+  defp validate_timeout!(:infinity), do: :infinity
+  defp validate_timeout!(n) when is_integer(n) and n > 0, do: n
+
+  defp validate_timeout!(other) do
+    raise ArgumentError,
+          ":timeout must be a positive integer or :infinity, got: #{inspect(other)}"
   end
 
   @doc """
@@ -249,20 +277,35 @@ defmodule Rete.Engine do
   # The cap is checked against work still pending, never against the count alone: a
   # ruleset that fires exactly `max_cycles` and then settles has not run away.
   # `is_integer/1` is what makes `:infinity` mean no cap.
-  defp fire_loop(%State{} = state, max_cycles, fired, tally) do
-    case Agenda.pop(state.agenda) do
+  defp fire_loop(%State{} = state, cfg, fired, tally) do
+    max_cycles = cfg.max_cycles
+
+    case pop_next(state.agenda, cfg.concurrency) do
       :empty ->
         emit(%State{state | fired: state.fired + fired}, fn -> {:fire_finished, fired} end)
 
-      {:ok, _activation, _agenda} when is_integer(max_cycles) and fired >= max_cycles ->
+      {:ok, _activations, _agenda} when is_integer(max_cycles) and fired >= max_cycles ->
         raise RuntimeError, runaway(state, fired, tally)
 
-      {:ok, activation, agenda} ->
+      {:ok, activations, agenda} ->
         %State{state | agenda: agenda}
-        |> fire(activation)
-        |> drain()
-        |> fire_loop(max_cycles, fired + 1, Map.update(tally, activation.node_id, 1, &(&1 + 1)))
+        |> fire_all(activations, cfg)
+        |> fire_loop(cfg, fired + length(activations), tally(tally, activations))
     end
+  end
+
+  # One activation at the default concurrency, a whole activation group above it.
+  defp pop_next(agenda, concurrency) when concurrency <= 1 do
+    case Agenda.pop(agenda) do
+      :empty -> :empty
+      {:ok, activation, agenda} -> {:ok, [activation], agenda}
+    end
+  end
+
+  defp pop_next(agenda, _concurrency), do: Agenda.pop_group(agenda)
+
+  defp tally(tally, activations) do
+    Enum.reduce(activations, tally, &Map.update(&2, &1.node_id, 1, fn n -> n + 1 end))
   end
 
   @runaway_shown 5
@@ -316,29 +359,97 @@ defmodule Rete.Engine do
     end
   end
 
-  # Facts are recorded against the token before they are inserted, so that retracting the
-  # token later finds them even if the insertion cascades.
+  # One activation, or a group of one: the sequential path, unchanged.
+  defp fire_all(%State{} = state, [activation], _cfg) do
+    state |> fire(activation) |> drain()
+  end
+
+  # A rule body is a pure function of its hash and its already frozen bindings, so the
+  # bodies of a group may run at once. Everything after them threads state — `well_founded`
+  # reads memory, and one conclusion can retract the support of a later activation in the
+  # same group — so conclusions are applied in group order with a drain between each.
+  #
+  # Only `{rhs, hash, bindings}` is captured, never the state or the network: a closure
+  # over either would copy the whole compiled network into every task.
+  defp fire_all(%State{} = state, activations, cfg) do
+    nodes = Enum.map(activations, &Network.node(state.network, &1.node_id))
+
+    results =
+      nodes
+      |> Enum.zip_with(activations, fn node, a -> {node.rhs, node.hash, a.token.bindings} end)
+      |> Task.async_stream(&compute/1,
+        ordered: true,
+        max_concurrency: cfg.concurrency,
+        timeout: cfg.timeout,
+        on_timeout: :kill_task
+      )
+      |> Enum.map(fn
+        {:ok, result} -> result
+        {:exit, reason} -> {:exited, reason}
+      end)
+
+    [activations, nodes, results]
+    |> Enum.zip()
+    |> Enum.reduce(state, fn {activation, node, result}, state ->
+      state |> conclude(activation, node, result) |> drain()
+    end)
+  end
+
   defp fire(%State{} = state, %Activation{} = activation) do
     node = Network.node(state.network, activation.node_id)
 
+    conclude(state, activation, node, compute({node.rhs, node.hash, activation.token.bindings}))
+  end
+
+  # The pure half. Failure is returned rather than raised so that it is reported against
+  # the rule in the caller, where the node is in hand, instead of surfacing as a task exit.
+  defp compute({rhs, hash, bindings}) do
+    {:ok, hash |> rhs.(bindings) |> normalize_facts()}
+  rescue
+    error -> {:raised, error, __STACKTRACE__}
+  catch
+    kind, value -> {:caught, kind, value, __STACKTRACE__}
+  end
+
+  # Facts are recorded against the token before they are inserted, so that retracting the
+  # token later finds them even if the insertion cascades.
+  defp conclude(%State{} = state, %Activation{token: token}, node, result) do
     facts =
-      node.rhs
-      |> apply([node.hash, activation.token.bindings])
-      |> normalize_facts()
-      |> check_facts!(state, node, activation.token)
-      |> well_founded(state, activation.token)
+      result
+      |> unwrap!(node, token)
+      |> check_facts!(state, node, token)
+      |> well_founded(state, token)
 
     case facts do
       [] ->
-        emit(state, fn -> {:activation_fired, Node.source(node), activation.token, []} end)
+        emit(state, fn -> {:activation_fired, Node.source(node), token, []} end)
 
       facts ->
-        memory = Memory.add_insertion(state.memory, node.id, activation.token, facts)
+        memory = Memory.add_insertion(state.memory, node.id, token, facts)
 
         %State{state | memory: memory}
-        |> emit(fn -> {:activation_fired, Node.source(node), activation.token, facts} end)
+        |> emit(fn -> {:activation_fired, Node.source(node), token, facts} end)
         |> insert(facts, {:derived, Node.source(node)})
     end
+  end
+
+  defp unwrap!({:ok, facts}, _node, _token), do: facts
+
+  # Reraised exactly as thrown, with the original stacktrace. That stacktrace already names
+  # the generated `__rhs_<name>__` frame in the ruleset module, so the rule is identified
+  # without inventing a wrapper exception. Without this a body's error inside a task would
+  # surface as an opaque exit.
+  defp unwrap!({:raised, error, stacktrace}, _node, _token), do: reraise(error, stacktrace)
+
+  defp unwrap!({:caught, kind, value, stacktrace}, _node, _token),
+    do: :erlang.raise(kind, value, stacktrace)
+
+  # A timeout killed the task, so there is no original error to reraise.
+  defp unwrap!({:exited, reason}, node, token) do
+    raise RuntimeError,
+          "#{Network.ref_string({node.module, node.name})} did not finish: " <>
+            "#{inspect(reason)}. It fired on #{inspect(token.bindings)}. " <>
+            "Raise :timeout, or remove it to wait indefinitely."
   end
 
   # Drops a conclusion the match already rests on, so it cannot support itself. Runs only

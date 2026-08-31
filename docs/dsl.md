@@ -513,9 +513,26 @@ Two consequences that surprise people:
   leading with which rules fired most.
 
 The body may read only the variables the left hand side binds on the path that reached
-it. It runs in the ruleset module, so it may call that module's functions, and it should
-be a pure function of its bindings: it may run again after a retraction and reinsertion,
-and nothing orders it against anything else except salience.
+it. It runs in the ruleset module, so it may call that module's functions, and nothing
+orders it against anything else except salience.
+
+### A body may run more than once
+
+Its **return value** is truth maintained, so nothing is concluded twice. A **side effect**
+is not, and there are two ways one can happen more often than the conclusions suggest:
+
+* retracting and reinserting the facts behind a match runs the body again for that match;
+* under `fire_rules(session, concurrency: n)` the bodies of one activation group run at
+  once, so a body may run for a match that another activation *in the same group* then
+  invalidates. Its conclusions are still taken back, because truth maintenance handles
+  that, but a request it already sent is sent.
+
+A body that only computes facts is therefore safe to write however you like. One that
+writes to a database or calls a service should be idempotent and expect at-least-once.
+
+Raising `:concurrency` above its default of `1` is worth it only when the body is
+expensive — I/O, or real computation. A body that builds a tuple is about 1.5% of firing
+and costs more than that to hand to a task. See `docs/design/engine.md` §11.
 
 ## Condition order
 

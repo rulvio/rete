@@ -1671,4 +1671,168 @@ defmodule Rete.EngineTest do
       assert [{:out, :b}] == derived(b, :out)
     end
   end
+
+  # --- concurrency -----------------------------------------------------------------
+
+  describe "concurrency" do
+    defmodule Slow do
+      use Rete.Ruleset
+
+      defrule work({:job, id}) do
+        Process.sleep(20)
+        {:done, id}
+      end
+    end
+
+    defmodule Chained do
+      use Rete.Ruleset
+
+      defrule a({:seed, n}), do: {:middle, n}
+      defrule b({:middle, n}), do: {:leaf, n}
+      defrule c({:other, n}), do: {:tail, n}
+    end
+
+    defmodule Boom do
+      use Rete.Ruleset
+
+      defrule burst({:go, n}), do: {:out, div(10, n)}
+      defrule thrown({:toss, n}), do: throw({:nope, n})
+    end
+
+    defp jobs(n), do: Enum.map(1..n, &{:job, &1})
+
+    test "the bodies of one group run at once" do
+      base = [Slow] |> Session.new() |> Session.insert(jobs(16))
+
+      {serial_us, serial} = :timer.tc(fn -> Session.fire_rules(base, concurrency: 1) end)
+      {parallel_us, parallel} = :timer.tc(fn -> Session.fire_rules(base, concurrency: 16) end)
+
+      # 16 bodies sleeping 20 ms: ~320 ms one at a time, ~20 ms at once.
+      assert serial_us > 250_000
+      assert parallel_us < serial_us / 4
+      assert derived(serial, :done) == derived(parallel, :done)
+    end
+
+    test "concurrency: 1 is the default and fires one body at a time" do
+      base = [Slow] |> Session.new() |> Session.insert(jobs(4))
+
+      {default_us, _} = :timer.tc(fn -> Session.fire_rules(base) end)
+      {explicit_us, _} = :timer.tc(fn -> Session.fire_rules(base, concurrency: 1) end)
+
+      assert default_us > 60_000
+      assert explicit_us > 60_000
+    end
+
+    # Firing one at a time re-sorts the agenda after every activation, so `b`, activated by
+    # `a`'s conclusion, overtakes the already pending `c`. A group is popped whole, so under
+    # concurrency `b` waits for the next group. The session that results is identical, and
+    # `Rete.Listener` reports the order the bodies actually ran in either way.
+    test "a group is frozen when popped, so firing order can differ from sequential" do
+      facts = [{:seed, 1}, {:other, 1}]
+
+      order = fn concurrency ->
+        [Chained]
+        |> Session.new()
+        |> Session.with_listener(Collect, [])
+        |> Session.insert(facts)
+        |> Session.fire_rules(concurrency: concurrency)
+        |> Collect.by_tag(:activation_fired)
+        |> Enum.map(fn {_tag, source, _token, _facts} -> elem(source.rule, 1) end)
+      end
+
+      assert [:a, :b, :c] == order.(1)
+      assert [:a, :c, :b] == order.(4)
+
+      same = fn concurrency ->
+        [Chained]
+        |> Session.new()
+        |> Session.insert(facts)
+        |> Session.fire_rules(concurrency: concurrency)
+        |> Session.facts()
+        |> Enum.sort()
+      end
+
+      assert same.(1) == same.(4)
+    end
+
+    test "a body that raises reports the same error whether or not it is concurrent" do
+      for concurrency <- [1, 4] do
+        assert_raise ArithmeticError, fn ->
+          [Boom]
+          |> Session.new()
+          |> Session.insert([{:go, 0}])
+          |> Session.fire_rules(concurrency: concurrency)
+        end
+      end
+    end
+
+    # The generated `__rhs_<name>__` frame is what names the rule, so a task must not
+    # swallow the stacktrace and leave an opaque exit behind.
+    test "a raising body still names its rule in the stacktrace from a task" do
+      stacktrace =
+        try do
+          [Boom]
+          |> Session.new()
+          |> Session.insert([{:go, 0}])
+          |> Session.fire_rules(concurrency: 4)
+
+          flunk("expected the body to raise")
+        rescue
+          ArithmeticError -> __STACKTRACE__
+        end
+
+      assert Enum.any?(stacktrace, fn {mod, fun, _arity, _loc} ->
+               mod == Boom and fun == :__rhs_burst__
+             end)
+    end
+
+    test "a body that throws propagates the throw, concurrent or not" do
+      for concurrency <- [1, 4] do
+        thrown =
+          catch_throw(
+            [Boom]
+            |> Session.new()
+            |> Session.insert([{:toss, 7}])
+            |> Session.fire_rules(concurrency: concurrency)
+          )
+
+        assert thrown == {:nope, 7}
+      end
+    end
+
+    test "a body that outruns :timeout names its rule" do
+      error =
+        assert_raise RuntimeError, fn ->
+          [Slow]
+          |> Session.new()
+          |> Session.insert(jobs(2))
+          |> Session.fire_rules(concurrency: 2, timeout: 5)
+        end
+
+      assert error.message =~ "Rete.EngineTest.Slow.work did not finish"
+      assert error.message =~ ":timeout"
+    end
+
+    test "an unusable concurrency or timeout is rejected rather than coerced" do
+      cases = [
+        {:concurrency, 0, "must be a positive integer"},
+        {:concurrency, -1, "must be a positive integer"},
+        {:concurrency, nil, "must be a positive integer"},
+        {:concurrency, 1.5, "must be a positive integer"},
+        {:timeout, 0, "must be a positive integer or :infinity"},
+        {:timeout, nil, "must be a positive integer or :infinity"},
+        {:timeout, "5", "must be a positive integer or :infinity"}
+      ]
+
+      for {opt, bad, expected} <- cases do
+        error =
+          assert_raise ArgumentError, fn ->
+            [Slow] |> Session.new() |> Session.insert(jobs(1)) |> Session.fire_rules([{opt, bad}])
+          end
+
+        assert error.message =~ expected
+        assert error.message =~ inspect(bad)
+      end
+    end
+  end
 end

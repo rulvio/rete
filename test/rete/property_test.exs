@@ -139,8 +139,11 @@ defmodule Rete.PropertyTest do
 
   # --- driving the engine ------------------------------------------------------------
 
-  defp build(multiset) do
-    [Everything] |> Session.new() |> Session.insert(multiset) |> Session.fire_rules()
+  defp build(multiset, concurrency \\ 1) do
+    [Everything]
+    |> Session.new()
+    |> Session.insert(multiset)
+    |> Session.fire_rules(concurrency: concurrency)
   end
 
   # A fresh session that has fired. `refunds` is true of the empty session — a
@@ -336,6 +339,22 @@ defmodule Rete.PropertyTest do
         for _ <- shuffles do
           assert base == canon(build(Enum.shuffle(facts)))
         end
+      end
+    end
+
+    # Raising :concurrency moves the rule bodies of an activation group onto tasks. What it
+    # must not change is the session that results, down to the truth-maintenance ledger.
+    # `Everything` spans every node kind, so negation, collections and disjunctions are
+    # covered too.
+    #
+    # It does *not* preserve firing order, and that is a property of batching rather than
+    # of this implementation: firing one at a time re-sorts the agenda after every
+    # activation, so a rule activated by the conclusion of another can overtake a rule that
+    # was already pending. Batching freezes the group, so the new activation waits for the
+    # next one. See the pinned example in `Rete.EngineTest`.
+    property "firing rule bodies concurrently reaches the same session" do
+      check all(facts <- multiset(), concurrency <- integer(2..8), max_runs: 40) do
+        assert canon(build(facts)) == canon(build(facts, concurrency))
       end
     end
 

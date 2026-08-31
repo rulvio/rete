@@ -39,6 +39,21 @@ defmodule Bench do
     verdict(results, opts[:expect] || :linear)
   end
 
+  # An A/B rather than a shape. `:concurrency` does not change how firing scales, only how
+  # long a body blocks for, so the exponent says nothing and the ratio says everything.
+  def compare(label, variants, fun, opts \\ []) do
+    IO.puts("\n\e[1m#{label}\e[0m")
+    for note <- List.wrap(opts[:note]), do: IO.puts("  #{note}")
+
+    results = Enum.map(variants, fn {name, arg} -> {name, time(fn -> fun.(arg) end)} end)
+    {_name, baseline} = hd(results)
+
+    Enum.each(results, fn {name, ms} ->
+      speedup = if ms > 0, do: "   ×#{fmt(baseline / ms)}", else: ""
+      IO.puts("  #{pad(name, 16)}  #{pad(fmt(ms), 9)} ms#{speedup}")
+    end)
+  end
+
   # A run is timed after a warm-up pass, because the first call through a fresh
   # network pays for JIT and for the first allocation of every memory it touches.
   defp time(fun) do
@@ -178,9 +193,22 @@ defmodule Bench.Negation do
   end
 end
 
+defmodule Bench.Blocking do
+  @moduledoc false
+  use Rete.Ruleset
+
+  # Stands in for a body that waits on something — a query, a service, a file. That is the
+  # only case `:concurrency` is for; a body that builds a tuple is ~1.5% of firing and
+  # costs more than that to hand to a task.
+  defrule fetch({:job, id}) do
+    Process.sleep(5)
+    {:fetched, id}
+  end
+end
+
 # --- the scenarios ---------------------------------------------------------------
 
-alias Bench.{Agenda, Cascade, Chain, Collection, ManyKeys, Negation, OneKey}
+alias Bench.{Agenda, Blocking, Cascade, Chain, Collection, ManyKeys, Negation, OneKey}
 
 one_key = Bench.network(OneKey)
 many_keys = Bench.network(ManyKeys)
@@ -189,6 +217,7 @@ cascade = Bench.network(Cascade)
 chain = Bench.network(Chain)
 collection = Bench.network(Collection)
 negation = Bench.network(Negation)
+blocking = Bench.network(Blocking)
 
 IO.puts("\n\e[1m\e[4mrete scaling\e[0m")
 
@@ -317,6 +346,20 @@ Bench.scenario(
   expect:
     {:known,
      "Rete.Engine.Nodes.insert_ordered/2 is O(k) per member — see the known gaps in docs/design/engine.md"}
+)
+
+Bench.compare(
+  "a blocking rule body, by :concurrency",
+  [{"1 (default)", 1}, {"4", 4}, {"16", 16}, {"64", 64}],
+  fn concurrency ->
+    jobs = for i <- 1..64, do: {:job, i}
+
+    blocking
+    |> Bench.session()
+    |> Rete.Session.insert(jobs)
+    |> Rete.Session.fire_rules(concurrency: concurrency)
+  end,
+  note: "64 activations of a body that sleeps 5 ms — the case :concurrency exists for"
 )
 
 IO.puts("")

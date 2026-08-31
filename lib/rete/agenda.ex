@@ -116,6 +116,40 @@ defmodule Rete.Agenda do
     {:ok, activation, store(agenda, key, rest)}
   end
 
+  @doc """
+  Takes every activation of the most salient **group**, or `:empty`.
+
+  A group is every bucket sharing the leading `{salience, internal_salience}` of the sort
+  key, so it spans the rules that would fire before any less salient one. Activations come
+  back in firing order, exactly as repeated `pop/1` would yield them.
+
+      iex> alias Rete.{Activation, Agenda}
+      iex> agenda =
+      ...>   Agenda.new()
+      ...>   |> Agenda.add(%Activation{node_id: :a, salience: 10, order: 0})
+      ...>   |> Agenda.add(%Activation{node_id: :b, salience: 10, order: 1})
+      ...>   |> Agenda.add(%Activation{node_id: :c, salience: 0, order: 2})
+      iex> {:ok, group, rest} = Agenda.pop_group(agenda)
+      iex> {Enum.map(group, & &1.node_id), Agenda.size(rest)}
+      {[:a, :b], 1}
+  """
+  @spec pop_group(t()) :: {:ok, [Activation.t()], t()} | :empty
+  def pop_group(%__MODULE__{keys: []}), do: :empty
+
+  def pop_group(%__MODULE__{keys: [{salience, internal, _order} | _]} = agenda) do
+    {keys, rest_keys} =
+      Enum.split_while(agenda.keys, fn {s, i, _order} -> s == salience and i == internal end)
+
+    activations = Enum.flat_map(keys, &(agenda.buckets |> Map.fetch!(&1) |> :queue.to_list()))
+
+    {:ok, activations,
+     %__MODULE__{
+       keys: rest_keys,
+       buckets: Map.drop(agenda.buckets, keys),
+       size: agenda.size - length(activations)
+     }}
+  end
+
   @doc "Every pending activation, in firing order."
   @spec to_list(t()) :: [Activation.t()]
   def to_list(%__MODULE__{keys: keys, buckets: buckets}) do
