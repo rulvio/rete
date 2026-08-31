@@ -296,6 +296,12 @@ to remove**.
   is better in principle — a ruleset that legitimately fires 50,000 activations in one
   settling pass is fine — but it misses a loop confined to a single salience level, which
   is the common runaway. See `w5-observability.md` §3.
+
+  The default of 10,000 has become the more pressing half of this. `mix bench` reached it
+  with 4,000 facts through a three-rule chain — 12,000 activations, not a loop in sight —
+  and the engine is roughly thirty times faster than it was when that number was chosen,
+  so the cap is now likelier to interrupt real work than to catch anything. Raising it,
+  or counting something other than activations, wants deciding before 1.0.
 * **No partial firing.** `fire_rules/2` runs to quiescence in the calling process. There
   is no fire-one-activation, no async, and no way to interrupt a settling pass other than
   the cycle cap.
@@ -309,11 +315,16 @@ to remove**.
   key went from 250 ms to under 10 ms; retracting 200 of them from a bucket of 8,000,
   from 108 ms to under 1 ms.
 
-  That is one shape of workload. There is still no benchmark suite, nothing has been
-  measured against many join keys, deep cascades or wide disjunctions, and two known
-  costs are untouched: the fact-to-token index behind well-founded support is rebuilt on
-  demand, and `Rete.Engine.Nodes.insert_ordered/2` is O(k) per collection member, so
-  filling a collection of n facts costs O(n²).
+  `mix bench` (`bench/run.exs`) is what says so, and keeps saying so: nine scenarios at
+  three sizes each, reporting the empirical exponent rather than a wall-clock number, so
+  a reintroduced quadratic shows up as `~n^2` instead of as a figure nobody has a
+  baseline for. Eight come out linear. The ninth does not, and is left in deliberately —
+  filling one collection measures `~n^1.94`, because `Rete.Engine.Nodes.insert_ordered/2`
+  is O(k) per member. A suite that only reported the good news would be worth less.
+
+  Still unmeasured: wide disjunctions, many rules over one fact type, and sessions large
+  enough to matter for memory rather than time. The fact-to-token index behind
+  well-founded support is also still rebuilt on demand.
 
   A method note worth keeping. The first attempt fixed the **wrong** quadratic. Beta
   memory's append was real and had to go, but it was not what dominated — the agenda was,

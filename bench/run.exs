@@ -1,0 +1,328 @@
+# Scaling benchmarks. `mix bench`
+#
+# These do not ask "how fast is it". They ask "what shape is it" — the question
+# that matters for a Rete engine, where the failure mode is not a slow function
+# but an operation that is quadratic in something a session accumulates. Three
+# such quadratics were found and fixed at once, and each was invisible until the
+# one above it was gone; nothing but a scaling measurement would have shown them.
+#
+# So every scenario runs at three sizes and reports the empirical exponent: the
+# k in O(n^k), read off the growth between one size and the next. Around 1.0 is
+# linear and fine. Around 2.0 is quadratic and is a bug unless it is listed as a
+# known gap below.
+#
+# Timing is not asserted on and this is not in CI. Wall-clock thresholds on
+# shared runners produce failures that mean nothing, and the number worth
+# watching — the exponent — is stable enough to read by eye and too noisy to
+# gate on.
+
+defmodule Bench do
+  @moduledoc false
+
+  # Enough repeats to median away a stray GC pause, few enough to stay usable.
+  @repeats 5
+
+  def scenario(label, sizes, fun, opts \\ []) do
+    IO.puts("\n\e[1m#{label}\e[0m")
+    for note <- List.wrap(opts[:note]), do: IO.puts("  #{note}")
+
+    results = Enum.map(sizes, fn n -> {n, time(fn -> fun.(n) end)} end)
+
+    results
+    |> Enum.with_index()
+    |> Enum.each(fn {{n, ms}, index} ->
+      IO.puts(
+        "  #{pad(n, 7)}  #{pad(fmt(ms), 9)} ms#{growth(Enum.at(results, index - 1), n, ms, index)}"
+      )
+    end)
+
+    verdict(results, opts[:expect] || :linear)
+  end
+
+  # A run is timed after a warm-up pass, because the first call through a fresh
+  # network pays for JIT and for the first allocation of every memory it touches.
+  defp time(fun) do
+    fun.()
+
+    1..@repeats
+    |> Enum.map(fn _ ->
+      :erlang.garbage_collect()
+      {us, _} = :timer.tc(fun)
+      us / 1000
+    end)
+    |> median()
+  end
+
+  defp median(times) do
+    times |> Enum.sort() |> Enum.at(div(length(times), 2))
+  end
+
+  defp growth(_previous, _n, _ms, 0), do: ""
+
+  defp growth({prev_n, prev_ms}, n, ms, _index) when prev_ms > 0 do
+    "   ×#{fmt(ms / prev_ms)}   ~n^#{fmt(exponent(prev_n, prev_ms, n, ms))}"
+  end
+
+  defp growth(_previous, _n, _ms, _index), do: "   (too fast to compare)"
+
+  # k such that t2/t1 = (n2/n1)^k.
+  defp exponent(n1, t1, n2, t2), do: :math.log(t2 / t1) / :math.log(n2 / n1)
+
+  defp verdict(results, expect) do
+    ks =
+      results
+      |> Enum.chunk_every(2, 1, :discard)
+      |> Enum.filter(fn [{_, t1}, _] -> t1 > 0 end)
+      |> Enum.map(fn [{n1, t1}, {n2, t2}] -> exponent(n1, t1, n2, t2) end)
+
+    case {ks, expect} do
+      {[], _} ->
+        IO.puts("  \e[33m?\e[0m too fast to judge — raise the sizes")
+
+      {ks, :linear} ->
+        worst = Enum.max(ks)
+
+        if worst < 1.5 do
+          IO.puts("  \e[32m✓\e[0m linear (worst ~n^#{fmt(worst)})")
+        else
+          IO.puts("  \e[31m✗\e[0m superlinear: ~n^#{fmt(worst)}, expected about n^1")
+        end
+
+      {ks, {:known, why}} ->
+        IO.puts("  \e[33m!\e[0m ~n^#{fmt(Enum.max(ks))} — known: #{why}")
+    end
+  end
+
+  defp fmt(float), do: :erlang.float_to_binary(float * 1.0, decimals: 2)
+  defp pad(value, width), do: String.pad_leading(to_string(value), width)
+
+  # Every scenario fires with the cap lifted. A benchmark that tripped
+  # `:max_cycles` would be measuring the loop guard, and the guard's default of
+  # 10,000 is reached by perfectly ordinary work here — 4,000 facts through a
+  # three-rule chain is 12,000 activations and none of it is a loop.
+  def fire(session), do: Rete.Session.fire_rules(session, max_cycles: 100_000_000)
+
+  # The network is compiled once and each run gets an empty session over it.
+  # Otherwise every measurement would include compiling the ruleset, which is
+  # constant work that has nothing to do with the thing being measured.
+  def network(module), do: Rete.Compiler.build([module])
+  def session(network), do: Rete.Session.from_network(network)
+end
+
+# --- the rulesets ---------------------------------------------------------------
+#
+# One module per scenario. Sharing a ruleset would mean every scenario's facts
+# propagated through every other scenario's rules, and the measurement would be
+# of the fixture rather than of the thing named.
+
+defmodule Bench.OneKey do
+  @moduledoc false
+  use Rete.Ruleset
+
+  # `{:b, y}` shares no variable with `{:a, x}`, so every element lands under the
+  # same join key. This is also the shape of every rule's *first* condition,
+  # which a root join stores under one key by definition — so a large single
+  # bucket is the normal case, not a pathological one.
+  defrule pair({:a, x}, {:b, y}) do
+    {:pair, x, y}
+  end
+end
+
+defmodule Bench.ManyKeys do
+  @moduledoc false
+  use Rete.Ruleset
+
+  defrule paired({:cust, id}, {:order, id, amt}) do
+    {:paired, id, amt}
+  end
+end
+
+defmodule Bench.Agenda do
+  @moduledoc false
+  use Rete.Ruleset
+
+  defrule note({:seed, i}) do
+    {:noted, i}
+  end
+end
+
+defmodule Bench.Cascade do
+  @moduledoc false
+  use Rete.Ruleset
+
+  # The bound is a fact rather than a literal so the depth can be varied without
+  # recompiling: inserting {:limit, n} and {:n, 0} cascades n deep.
+  defrule step({:limit, limit}, {:n, i} when i < limit) do
+    {:n, i + 1}
+  end
+end
+
+defmodule Bench.Chain do
+  @moduledoc false
+  use Rete.Ruleset
+
+  defrule b({:a, x}), do: {:b, x}
+  defrule c({:b, x}), do: {:c, x}
+  defrule d({:c, x}), do: {:d, x}
+end
+
+defmodule Bench.Collection do
+  @moduledoc false
+  use Rete.Ruleset
+
+  defrule tally({:cust, id}, orders = [{:order, id, _amt}]) do
+    {:tally, id, length(orders)}
+  end
+end
+
+defmodule Bench.Negation do
+  @moduledoc false
+  use Rete.Ruleset
+
+  defrule dormant({:cust, id}, {:not, [{:order, id}]}) do
+    {:dormant, id}
+  end
+end
+
+# --- the scenarios ---------------------------------------------------------------
+
+alias Bench.{Agenda, Cascade, Chain, Collection, ManyKeys, Negation, OneKey}
+
+one_key = Bench.network(OneKey)
+many_keys = Bench.network(ManyKeys)
+agenda = Bench.network(Agenda)
+cascade = Bench.network(Cascade)
+chain = Bench.network(Chain)
+collection = Bench.network(Collection)
+negation = Bench.network(Negation)
+
+IO.puts("\n\e[1m\e[4mrete scaling\e[0m")
+
+Bench.scenario(
+  "insert into one join key",
+  [1_000, 2_000, 4_000],
+  fn n ->
+    facts = [{:a, 1} | for(i <- 1..n, do: {:b, i})]
+
+    one_key |> Bench.session() |> Rete.Session.insert(facts) |> Bench.fire()
+  end,
+  note: "every element under one key — was O(n²) in the bucket's append"
+)
+
+Bench.scenario(
+  "insert across many join keys",
+  [1_000, 2_000, 4_000],
+  fn n ->
+    facts = for i <- 1..n, do: {:cust, i}
+    orders = for i <- 1..n, do: {:order, i, i}
+
+    many_keys
+    |> Bench.session()
+    |> Rete.Session.insert(facts ++ orders)
+    |> Bench.fire()
+  end,
+  note: "the well-keyed case: n buckets of one, so it exercises grouping instead"
+)
+
+Bench.scenario(
+  "retract the oldest facts in a bucket",
+  [1_000, 2_000, 4_000],
+  fn n ->
+    facts = for i <- 1..n, do: {:b, i}
+    session = one_key |> Bench.session() |> Rete.Session.insert([{:a, 1} | facts])
+
+    session
+    |> Rete.Session.retract(Enum.take(facts, 100))
+    |> Bench.fire()
+  end,
+  note: "a fixed 100 retractions, so time must not grow with the bucket at all"
+)
+
+Bench.scenario(
+  "retract the newest facts in a bucket",
+  [1_000, 2_000, 4_000],
+  fn n ->
+    facts = for i <- 1..n, do: {:b, i}
+    session = one_key |> Bench.session() |> Rete.Session.insert([{:a, 1} | facts])
+
+    session
+    |> Rete.Session.retract(Enum.take(facts, -100))
+    |> Bench.fire()
+  end,
+  note: "the other end of the same bucket — a list makes one of these two slow"
+)
+
+Bench.scenario(
+  "pending activations of one rule",
+  [1_000, 2_000, 4_000],
+  fn n ->
+    facts = for i <- 1..n, do: {:seed, i}
+
+    agenda |> Bench.session() |> Rete.Session.insert(facts) |> Bench.fire()
+  end,
+  note: "every match shares a sort key — was O(n²) inserting into a sorted list"
+)
+
+Bench.scenario(
+  "a cascade n rules deep",
+  [1_000, 2_000, 4_000],
+  fn n ->
+    cascade
+    |> Bench.session()
+    |> Rete.Session.insert([{:limit, n}, {:n, 0}])
+    |> Bench.fire()
+  end,
+  note: "one activation at a time, each concluding the next; a depth test, not a width one"
+)
+
+Bench.scenario(
+  "truth maintenance through a chain",
+  [1_000, 2_000, 4_000],
+  fn n ->
+    facts = for i <- 1..n, do: {:a, i}
+
+    session =
+      chain |> Bench.session() |> Rete.Session.insert(facts) |> Bench.fire()
+
+    session |> Rete.Session.retract(facts) |> Bench.fire()
+  end,
+  note: "retracting n facts that each support three conclusions"
+)
+
+Bench.scenario(
+  "a negation flipping on and off",
+  [500, 1_000, 2_000],
+  fn n ->
+    custs = for i <- 1..n, do: {:cust, i}
+    orders = for i <- 1..n, do: {:order, i}
+
+    session =
+      negation |> Bench.session() |> Rete.Session.insert(custs) |> Bench.fire()
+
+    session
+    |> Rete.Session.insert(orders)
+    |> Bench.fire()
+    |> Rete.Session.retract(orders)
+    |> Bench.fire()
+  end,
+  note: "n conclusions suppressed and then released"
+)
+
+Bench.scenario(
+  "filling one collection",
+  [250, 500, 1_000],
+  fn n ->
+    orders = for i <- 1..n, do: {:order, 1, i}
+
+    collection
+    |> Bench.session()
+    |> Rete.Session.insert([{:cust, 1} | orders])
+    |> Bench.fire()
+  end,
+  note: "members are kept in term order, inserted one at a time",
+  expect:
+    {:known,
+     "Rete.Engine.Nodes.insert_ordered/2 is O(k) per member — see the known gaps in docs/design/w3-engine.md"}
+)
+
+IO.puts("")

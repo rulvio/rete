@@ -6,6 +6,18 @@ All notable changes to `rete` are recorded here. The format follows
 
 ## Unreleased
 
+### Added
+
+* **CI** (`.github/workflows/ci.yml`) running the project's six verification commands on
+  the declared floor, Elixir 1.18, and on the current release. The floor was a promise
+  `mix.exs` made and nothing checked.
+* **`mix bench`** (`bench/run.exs`) — nine scaling scenarios reporting the empirical
+  exponent rather than a wall-clock number, so that a reintroduced quadratic shows up as
+  `~n^2` instead of as a figure with no baseline. Eight are linear; filling one collection
+  measures `~n^1.94` and is left in, because a suite that reported only good news would
+  be worth less. Not run in CI — timing thresholds on shared runners fail for reasons
+  that mean nothing.
+
 ## 0.1.0
 
 First release. A complete forward-chaining Rete engine: the DSL front end, the network

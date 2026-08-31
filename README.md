@@ -1,5 +1,7 @@
 # Rete
 
+[![CI](https://github.com/rulvio/rete/actions/workflows/ci.yml/badge.svg)](https://github.com/rulvio/rete/actions/workflows/ci.yml)
+
 A forward-chaining [Rete](https://en.wikipedia.org/wiki/Rete_algorithm) rules engine for Elixir,
 in which a rule reads as a function: its **arguments are the conditions** and its **body is what
 follows**. It is for the part of an application where the logic is a pile of interacting
@@ -313,6 +315,31 @@ design docs under `docs/design/` record why.
   everything and `Enum.group_by/2` instead.
 * **No rule subsumption or suffix sharing.** Two rules sharing a condition prefix share nodes; two
   sharing only a suffix do not.
+
+## Development
+
+```bash
+mix deps.get
+mix compile --warnings-as-errors
+mix test
+mix format --check-formatted
+mix credo --strict
+mix dialyzer
+```
+
+CI runs exactly those, on the declared floor (Elixir 1.18) and on the current release.
+
+```bash
+mix bench
+```
+
+Scaling benchmarks. They report the **empirical exponent** — the k in O(n^k), read off
+the growth between one size and the next — rather than a wall-clock figure nobody has a
+baseline for. The failure mode this engine actually has is not a slow function but an
+operation that turns out to be quadratic in something a session accumulates, and that is
+invisible to a single-size measurement. Around `~n^1` is fine; `~n^2` is a bug, unless it
+is one of the known gaps in `docs/design/`. Not in CI: wall-clock thresholds on shared
+runners fail for reasons that mean nothing.
 
 ## Acknowledgements
 

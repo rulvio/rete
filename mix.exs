@@ -11,6 +11,7 @@ defmodule Rete.MixProject do
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
+      aliases: aliases(),
       name: "Rete",
       description: description(),
       package: package(),
@@ -40,6 +41,13 @@ defmodule Rete.MixProject do
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.34", only: :dev, runtime: false}
     ]
+  end
+
+  # `bench/` is a script rather than a Mix task under `lib/`, so that it is not
+  # compiled into the package and does not add a `mix bench` to every project
+  # that depends on this one.
+  defp aliases do
+    [bench: ["run bench/run.exs"]]
   end
 
   defp description do
