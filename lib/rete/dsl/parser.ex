@@ -3,13 +3,13 @@ defmodule Rete.DSL.Parser do
   Turns the quoted arguments of `Rete.Ruleset.defrule/2` and
   `Rete.Ruleset.defquery/2` into `Rete.IR` structs.
 
-  **Internal.** The first phase of the DSL front end. It records each LHS element's type,
-  bindings and guard, builds the alpha and test `Rete.IR.Expr` descriptors, and keeps the
-  raw pattern and guard AST in `:__ast__` for the later phases.
+  **Internal.** This is the first phase of the DSL front end. It records each LHS
+  element's type, bindings, and guard. It builds the alpha and test `Rete.IR.Expr`
+  descriptors. It keeps the raw pattern and guard AST in `:__ast__`, for the later phases.
 
-  It deliberately does **not** normalize gates, classify bindings or split guards. Gates
-  become `Rete.IR.Gate` placeholders, and `:join_filter`, `:join_bind` and `:new_bind`
-  are left `nil`.
+  It deliberately does **not** normalize gates, classify bindings, or split guards. Gates
+  become `Rete.IR.Gate` placeholders. `:join_filter`, `:join_bind`, and `:new_bind` are
+  left `nil`.
 
       {:type, a, b, ...}              fact pattern of any arity, including {:type}
       %Mod{f: v}                      struct fact pattern, type is the module
@@ -23,10 +23,10 @@ defmodule Rete.DSL.Parser do
   A leading `%{...}` literal is the options map, not a fact pattern. A rule level guard
   becomes a trailing `Rete.IR.Test`.
 
-  Expression codes are stable across compilations of the same source, which is what lets
-  the network share nodes. Module attributes are qualified with the defining module before
-  hashing, so the same pattern in two modules with different attribute values gets
-  different codes. See `docs/design/ir.md` §5.
+  Expression codes stay stable across compilations of the same source. This is what lets
+  the network share nodes. The compiler qualifies module attributes with the defining
+  module before hashing, so the same pattern in two modules with different attribute
+  values gets different codes. See `docs/design/ir.md` §5.
   """
 
   alias Rete.DSL.Codegen
@@ -92,11 +92,10 @@ defmodule Rete.DSL.Parser do
             Macro.to_string(decl)
   end
 
-  # `:params` used to declare which bindings a query's caller could supply.
-  # There is no such declaration any more - `Rete.Session.query/3` accepts any
-  # variable the left hand side binds - so a leftover one would be silently
-  # ignored, which is the worst outcome for something that used to change
-  # behaviour.
+  # `:params` used to declare which bindings a query's caller could supply. There is no
+  # such declaration any more. `Rete.Session.query/3` accepts any variable the left hand
+  # side binds. So a leftover `:params` would be silently ignored — the worst outcome for
+  # something that used to change behaviour.
   defp check_opts!(name, opts) do
     case Keyword.get(opts, :params) do
       nil ->
@@ -114,9 +113,9 @@ defmodule Rete.DSL.Parser do
     end
   end
 
-  # Splits the optional leading options map off the declaration arguments.
-  # A leading map literal is the options map unless it carries a __type__ key,
-  # which makes it a tagged map fact pattern instead.
+  # Splits the optional leading options map off the declaration arguments. A leading map
+  # literal is the options map, unless it carries a `__type__` key. That key makes it a
+  # tagged map fact pattern instead.
   defp parse_args(nil), do: {[], []}
 
   defp parse_args([{:%{}, _, opts} = head | elements]) when is_list(opts) do
@@ -175,8 +174,8 @@ defmodule Rete.DSL.Parser do
               "a collection element cannot be bound to a variable, bind the whole " <>
                 "collection instead (`facts = [{:type, x}]`): " <> Macro.to_string(source)
 
-      # Without this, `compile_pattern/2` treats the gate as a fact pattern and
-      # silently builds a collection of facts whose type tag is the atom `:or`.
+      # Without this, `compile_pattern/2` would treat the gate as a fact pattern. It
+      # would silently build a collection of facts whose type tag is the atom `:or`.
       {gate, args} when gate in @gates and is_list(args) ->
         raise ArgumentError,
               "a #{gate} gate cannot appear inside a collection. A collection " <>
@@ -221,11 +220,11 @@ defmodule Rete.DSL.Parser do
   @doc """
   Compiles a fact pattern into `{type, argument_pattern}`.
 
-  The argument pattern is what the generated alpha function matches the fact
-  against. It never checks the fact type: the tag slot of a tuple becomes `_`,
-  a struct pattern loses its `__struct__` check and a tagged map pattern loses
-  its `__type__` key. Type filtering, including taxonomy, happens when the
-  alpha index decides whether to propagate a fact to a node.
+  The argument pattern is what the generated alpha function matches the fact against. It
+  never checks the fact type. The tag slot of a tuple becomes `_`. A struct pattern loses
+  its `__struct__` check. A tagged map pattern loses its `__type__` key. Type filtering,
+  including taxonomy, happens later, when the alpha index decides whether to propagate a
+  fact to a node.
   """
   @spec compile_pattern(env(), Macro.t()) :: {atom() | module(), Macro.t()}
   def compile_pattern(env, pattern)
@@ -285,14 +284,13 @@ defmodule Rete.DSL.Parser do
   @doc """
   Builds the alpha `Rete.IR.Expr` of a condition.
 
-  `pattern` is the raw pattern as written (it is only used to compute the stable
-  hash), `args_ast` is the compiled argument pattern from `compile_pattern/2`,
-  `guard` is the per-condition guard AST or `nil`, and `bind` maps every bound
-  variable to its AST.
+  `pattern` is the raw pattern as written — only used to compute the stable hash.
+  `args_ast` is the compiled argument pattern from `compile_pattern/2`. `guard` is the
+  per-condition guard AST, or `nil`. `bind` maps every bound variable to its AST.
 
-  The generated function returns the bindings map when the fact matches and the
-  guard holds, and `nil` otherwise. Delegates to `Rete.DSL.Codegen.alpha_expr/5`,
-  which owns the naming and hashing scheme.
+  The generated function returns the bindings map when the fact matches and the guard
+  holds, and `nil` otherwise. This delegates to `Rete.DSL.Codegen.alpha_expr/5`, which
+  owns the naming and hashing scheme.
   """
   @spec build_alpha_expr(
           atom() | module(),
@@ -317,9 +315,9 @@ defmodule Rete.DSL.Parser do
   @doc """
   Collects the variables bound by a pattern.
 
-  Returns `%{name => variable_ast}`. Pinned values (`^x`), module attributes
-  (`@x`) and variables whose name starts with `_` are not bindings and are
-  excluded, and so is anything a nested construct binds for itself. Delegates to
+  Returns `%{name => variable_ast}`. Pinned values (`^x`), module attributes (`@x`), and
+  variables whose name starts with `_` are not bindings, and this excludes them. It also
+  excludes anything a nested construct binds for itself. This delegates to
   `Rete.DSL.Vars.pattern_vars/1`, which owns scope analysis.
   """
   @spec parse_bind(Macro.t()) :: %{atom() => Macro.t()}
@@ -336,24 +334,24 @@ defmodule Rete.DSL.Parser do
   defp condition_code(%IR.Gate{code: code}), do: code
 
   @doc """
-  Replaces compile time constants in the AST with their values.
+  Replaces compile-time constants in the AST with their values.
 
-  Both forms are resolved because an LHS condition is compiled into a standalone function
-  in the ruleset module, and neither survives being moved there.
+  This resolves both forms, because an LHS condition compiles into a standalone function
+  in the ruleset module, and neither form survives being moved there.
 
-  `@attr` is qualified with the defining module, so the same pattern in two modules with
-  different attribute values does not share an expression. The value itself cannot be
-  resolved here: `@attr` expands to a call that only runs once the module body is
-  evaluated, which is after every macro in it has expanded. What distinguishes two uses of
-  one attribute is therefore their *line*, which `Rete.DSL.Codegen.ast_hash/1` keeps for
-  attribute nodes alone. Without it, `@limit 5` and a later `@limit 100` over the same
-  pattern hashed identically and shared one generated function.
+  The compiler qualifies `@attr` with the defining module, so the same pattern in two
+  modules with different attribute values does not share an expression. It cannot resolve
+  the value itself here: `@attr` expands to a call that only runs once the module body is
+  evaluated — after every macro in it has already expanded. So what distinguishes two uses
+  of one attribute is their *line* instead, which `Rete.DSL.Codegen.ast_hash/1` keeps for
+  attribute nodes alone. Without that, `@limit 5` and a later `@limit 100` over the same
+  pattern would hash identically, and share one generated function.
 
-  `^value` has no enclosing scope to refer to once the condition is its own function, so
-  each spelling is unwrapped. `^@limit` and `^5` become the literal, since matching on
-  `^5` and on `5` are the same match. `^amt` becomes `amt`, because sharing a variable
-  between two conditions is already how this DSL spells a join, so dropping the pin lets
-  ordinary binding classification turn it into a join key.
+  `^value` has no enclosing scope to refer to, once the condition becomes its own
+  function. So the compiler unwraps each spelling. `^@limit` and `^5` become the literal
+  value, since matching on `^5` and on `5` is the same match. `^amt` becomes plain `amt`,
+  because sharing a variable between two conditions is already how this DSL spells a
+  join. Dropping the pin lets ordinary binding classification turn it into a join key.
   """
   @spec resolve_constants(Macro.t(), env()) :: Macro.t()
   def resolve_constants(ast, env) do
@@ -372,15 +370,15 @@ defmodule Rete.DSL.Parser do
   @doc """
   Resolves every alias and `__MODULE__` in the AST to the module it names.
 
-  Expression codes are shared across modules, so two conditions with the same
-  code must have the same behaviour. An alias is lexical: `H.ok?(amt)` is the
-  same AST in two modules that alias `H` to different things, and hashing it
-  unresolved would give both the same code and let `Rete.get_expr_data/1`
-  collapse them onto whichever function it saw first. Resolving the alias
-  before hashing makes the code depend on the module actually called.
+  Expression codes are shared across modules, so two conditions with the same code must
+  have the same behaviour. An alias is lexical. `H.ok?(amt)` is the same AST in two
+  modules that alias `H` to different things. Hashing it unresolved would give both the
+  same code, and let `Rete.get_expr_data/1` collapse them onto whichever function it saw
+  first. Resolving the alias before hashing makes the code depend on the module actually
+  called instead.
 
-  Only alias nodes are expanded, never macros: the body has to reach the
-  generated function as the user wrote it.
+  Only alias nodes are expanded, never macros — the body has to reach the generated
+  function exactly as the user wrote it.
   """
   @spec expand_aliases(Macro.t(), env()) :: Macro.t()
   def expand_aliases(ast, env) do

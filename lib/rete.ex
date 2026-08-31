@@ -28,13 +28,13 @@ defmodule Rete do
   The `{expr_id, function}` pairs of `modules`, deduplicated by id, first module winning.
 
   An expr id is the hash of the meta-stripped AST, so two conditions share an id exactly
-  when they behave the same. It cannot see through an *unqualified* call. Two modules
-  that define `helper/1` differently and both write `helper(x)` get one id here, and one
-  of the two functions is dropped. Qualify the call.
+  when they behave the same. It cannot see through an *unqualified* call, though. Two
+  modules that define `helper/1` differently, and both write `helper(x)`, get one id
+  here — and the code drops one of the two functions. Qualify the call to avoid this.
 
   This is not how a network decides what to share. `Rete.Compiler.build/2` reads
-  `get_rule_data/1`, where every expression still carries the function of the module that
-  wrote it, and qualifies any code more than one module contributed. See
+  `get_rule_data/1` instead, where every expression still carries the function of the
+  module that wrote it. It qualifies any code more than one module contributed. See
   `docs/design/ir.md` §5.
 
       iex> Rete.get_expr_data([Rete.Doc.Orders]) |> length()

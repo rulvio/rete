@@ -2,24 +2,26 @@ defmodule Rete.Compiler.BetaGraph do
   @moduledoc """
   The beta side of the network: a graph of `Rete.Network.Node` descriptions.
 
-  **Internal.** Each production's sorted left hand side is walked in order, adding one
-  node per condition under the nodes the previous condition produced. Node `0` is an
-  artificial root, so the graph has a single entry point.
+  **Internal.** The compiler walks each production's sorted left hand side in order. It
+  adds one node per condition, under the nodes the previous condition produced. Node `0`
+  is an artificial root, so the graph has a single entry point.
 
-  **Parents are a list.** A disjunction adds each branch as its own chain and hands the
-  union of the branch terminals to the next condition, so the branches re-converge on it.
-  That is why the LHS is never flattened to disjunctive normal form: whole-LHS DNF is
-  exponential in the number of disjunctions, and fanning out per condition is linear.
+  **Parents are a list.** A disjunction adds each branch as its own chain, and hands the
+  union of the branch terminals to the next condition. So the branches re-converge on it.
+  That is why the compiler never flattens the LHS to disjunctive normal form: whole-LHS
+  DNF costs work exponential in the number of disjunctions, while fanning out per
+  condition costs only linear work.
 
   **Sharing** requires equality *and* the same parent set. Equality alone is a correctness
-  bug: in `a({:customer, cid}, {:order, cid, amt})` and `b({:vendor, cid}, {:order, cid,
-  amt})` the two order conditions are equal but sit under different parents, and sharing
-  them would let a `:vendor` token join a `:customer`'s elements. A terminal keys on the
-  production's identity, so two rules with an identical LHS fire independently.
+  bug. In `a({:customer, cid}, {:order, cid, amt})` and `b({:vendor, cid}, {:order, cid,
+  amt})`, the two order conditions are equal, but they sit under different parents.
+  Sharing them would let a `:vendor` token join a `:customer`'s elements. A terminal keys
+  on the production's identity instead, so two rules with an identical LHS fire
+  independently.
 
-  **`{:or, []}` is false**, and nothing is built for a path through one. A keyless
-  condition after a false element would otherwise become an entry point the alpha index
-  feeds, and an unsatisfiable rule would fire on every fact. See
+  **`{:or, []}` is false**, and the compiler builds nothing for a path through one.
+  Otherwise, a keyless condition after a false element would become an entry point the
+  alpha index feeds. An unsatisfiable rule would then fire on every fact. See
   `docs/design/network.md` §4.
   """
 
@@ -55,8 +57,8 @@ defmodule Rete.Compiler.BetaGraph do
   @doc """
   Adds every production to a new graph, in order.
 
-  Order matters only for id allocation, and therefore only for readability:
-  the same productions in the same order always produce the same ids.
+  Order matters only for id allocation, and therefore only for readability. The same
+  productions, in the same order, always produce the same ids.
   """
   @spec build([IR.Production.t()]) :: t()
   def build(productions), do: Enum.reduce(productions, new(), &add_production(&2, &1))
@@ -118,7 +120,7 @@ defmodule Rete.Compiler.BetaGraph do
     end)
   end
 
-  # Each branch is a chain under the current parents, and the union of their terminals
+  # Each branch is a chain under the current parents. The union of their terminals
   # becomes the parents of what follows. `add_production/2` has already established that
   # at least one branch is satisfiable, so the union is never empty.
   defp add_element(graph, {:or, branches}, parents) do
@@ -139,9 +141,9 @@ defmodule Rete.Compiler.BetaGraph do
     {graph, [id]}
   end
 
-  # Only `{:or, []}` is false, and only a disjunction can absorb it: every other
-  # element is a condition, which may or may not match at run time but is never
-  # statically impossible.
+  # Only `{:or, []}` is false, and only a disjunction can absorb it. Every other element
+  # is a condition. It may or may not match at run time, but it is never statically
+  # impossible.
   defp satisfiable?(elements) when is_list(elements),
     do: Enum.all?(elements, &element_satisfiable?/1)
 
@@ -173,8 +175,8 @@ defmodule Rete.Compiler.BetaGraph do
     end
   end
 
-  # A candidate must be a child of the parents AND have exactly this parent set.
-  # Checking only the key would share nodes across different parents, letting
+  # A candidate must be a child of the parents, AND have exactly this parent set.
+  # Checking only the key would share nodes across different parents. That would let
   # tokens from one rule join another rule's elements.
   defp find_shared(%__MODULE__{} = graph, node, parents, parent_set) do
     key = Node.sharing_key(node)
@@ -204,8 +206,8 @@ defmodule Rete.Compiler.BetaGraph do
 
   # --- IR condition to node description ---------------------------------------
 
-  # A condition with no equality key is a `RootJoin` only when it is *first*. Later it is
-  # a cartesian product, and a `RootJoin` would drop everything the prefix bound. A
+  # A condition with no equality key is a `RootJoin` only when it is *first*. Later, it
+  # is a cartesian product, and a `RootJoin` would drop everything the prefix bound. A
   # keyless `HashJoin` pairs every token with every element instead.
   defp node_for(%IR.Fact{join_filter: nil, join_bind: join_bind} = fact, root?)
        when join_bind == [] or is_nil(join_bind) do
@@ -291,9 +293,10 @@ defmodule Rete.Compiler.BetaGraph do
     }
   end
 
-  # Negating a collection means "this collection is empty", which for a collect-all is
-  # "no element matches": a plain negation over the element pattern, with no accumulation.
-  # The collection binding is dropped because a negation binds nothing downstream.
+  # Negating a collection means "this collection is empty". For a collect-all, that
+  # means "no element matches" — a plain negation over the element pattern, with no
+  # accumulation. The collection binding is dropped, because a negation binds nothing
+  # downstream.
   defp node_for(%IR.Negation{condition: %IR.Coll{join_filter: nil} = coll}, _root?) do
     %Node.Negation{
       type: coll.type,
@@ -334,8 +337,8 @@ defmodule Rete.Compiler.BetaGraph do
     raise ArgumentError, "cannot build a network node from: #{inspect(other)}"
   end
 
-  # A collection introducing no new variable has every variable fixed by the token, so it
-  # has one group and propagates [] when nothing matches.
+  # A collection that introduces no new variable has every variable fixed by the token.
+  # So it has one group, and it propagates [] when nothing matches.
   defp propagates_empty?(%IR.Coll{new_bind: new_bind}), do: (new_bind || []) == []
 
   defp terminal(%IR.Production{type: :query} = production) do
@@ -364,8 +367,9 @@ defmodule Rete.Compiler.BetaGraph do
     }
   end
 
-  # `:internal_salience` is reserved. It is the tier that puts a generated helper ahead of
-  # the rule that negates its marker, and a user-written one would invert that ordering.
+  # `:internal_salience` is reserved. It is the tier that puts a generated helper ahead
+  # of the rule that negates its marker. A user-written value here would invert that
+  # ordering.
   defp internal_salience!(production, opts, generated?) do
     case Keyword.fetch(opts, :internal_salience) do
       :error ->

@@ -2,8 +2,8 @@ defmodule Rete.Listener do
   @moduledoc """
   Observing what a session does, through one callback.
 
-  A listener is a module and a piece of state. Every event is folded through it, and the
-  state it returns is kept on the session, so a session with listeners is still an
+  A listener is a module and a piece of state. The engine folds every event through it,
+  and keeps the state it returns on the session. So a session with listeners is still an
   immutable value. An unobserved session costs nothing.
 
       defmodule CountFirings do
@@ -16,9 +16,9 @@ defmodule Rete.Listener do
 
       session |> Rete.Session.with_listener(CountFirings, 0) |> Rete.Session.fire_rules()
 
-  A listener **must** have a catch-all clause. New event kinds are added as the engine
-  grows, and one that crashes on an unfamiliar event would make upgrading a breaking
-  change.
+  A listener **must** have a catch-all clause. The engine adds new event kinds as it
+  grows. A listener that crashes on an unfamiliar event would turn every upgrade into a
+  breaking change.
 
   ## Events
 
@@ -34,11 +34,11 @@ defmodule Rete.Listener do
   | `{:activation_removed, source, token}` | a pending activation was cancelled |
   | `{:activation_fired, source, token, facts}` | a rule ran and returned `facts` |
 
-  `source` is `%{node: node_id, rule: {module, name}}`, a map so a field can be added
-  without changing the shape every listener matches on. `{:propagated, ...}` is the
-  exception and carries the bare id, because a join has no user-facing name. `origin` is
-  `:asserted` or `{:derived, source}`, which is what lets a listener reconstruct
-  provenance without reading memory. See `docs/design/observability.md` §1.
+  `source` is `%{node: node_id, rule: {module, name}}`. It is a map, so a field can be
+  added later without changing the shape every listener matches on. `{:propagated, ...}`
+  is the exception, and it carries the bare id, because a join has no user-facing name.
+  `origin` is `:asserted` or `{:derived, source}`. This is what lets a listener
+  reconstruct provenance, without reading memory. See `docs/design/observability.md` §1.
   """
 
   @typedoc "Anything a listener chooses to carry between events."
@@ -74,8 +74,9 @@ defmodule Rete.Listener.Collect do
   @moduledoc """
   Records every event, newest last.
 
-  For tests that assert on what the engine did rather than on what it holds. It keeps
-  everything and grows without bound, so do not leave it attached to a long-lived session.
+  Use this for tests that assert on what the engine did, instead of on what it holds. It
+  keeps everything, and it grows without bound. Do not leave it attached to a long-lived
+  session.
   """
 
   @behaviour Rete.Listener

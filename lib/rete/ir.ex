@@ -2,8 +2,8 @@ defmodule Rete.IR do
   @moduledoc """
   The intermediate representation (IR) shared by every compile phase of `Rete`.
 
-  **Internal.** Produced by `Rete.DSL.Parser`, refined in place by the later phases, and
-  escaped into the defining module for the network builder to read at runtime.
+  **Internal.** `Rete.DSL.Parser` produces it. Later phases refine it in place. It is
+  escaped into the defining module, for the network builder to read at runtime.
 
       quoted DSL
         |> Rete.DSL.Parser.parse_production/4      # AST -> IR
@@ -13,31 +13,31 @@ defmodule Rete.IR do
         |> Rete.IR.escape/1                        # emitted into the ruleset module
         |> Rete.Compiler.build/2                   # the network, at build time
 
-  Every phase consumes and produces `%Rete.IR.Production{}`, so a struct carries fields a
-  later phase fills in. Each struct records which are `nil` after parsing.
+  Every phase consumes and produces `%Rete.IR.Production{}`. So a struct carries fields
+  a later phase fills in. Each struct records which fields are `nil` after parsing.
 
   `:__ast__` holds the raw quoted fragments the later phases need. It is **compile-time
-  only**, and `escape/1` drops it so quoted AST never reaches the compiled module.
+  only**. `escape/1` drops it, so quoted AST never reaches the compiled module.
 
   A condition's `:type` is the *declared* fact type. It is never a runtime check baked
-  into the alpha expression, which matches a fact of any type on purpose. The alpha index
-  applies the taxonomy. See `docs/design/ir.md` §2.
+  into the alpha expression — the alpha matches a fact of any type, on purpose. The alpha
+  index applies the taxonomy instead. See `docs/design/ir.md` §2.
   """
 
   defmodule Expr do
     @moduledoc """
     A compile-time generated named function that lives in the ruleset module.
 
-    Expressions are the only executable part of the IR. They are emitted as public
-    side-effect-free functions in the module that used `Rete.Ruleset`, so they can be
-    captured, compared and shared between rules.
+    Expressions are the only executable part of the IR. The compiler emits them as
+    public, side-effect-free functions, in the module that used `Rete.Ruleset`. This lets
+    them be captured, compared, and shared between rules.
 
     `:code` is a stable, readable unique id. Two structurally identical conditions in one
-    module context produce the same code, which is what lets the network share nodes.
+    module context produce the same code. This is what lets the network share nodes.
     `:kind` fixes the calling convention: `:alpha` is `(fact) -> bindings_map | nil`,
     `:test` is `(bindings_map) -> boolean`, and `:join_filter` is
     `(token_bindings, fact_bindings) -> boolean`. `:fun` is `nil` until the expression is
-    escaped, and `:__ast__` is compile-time only.
+    escaped. `:__ast__` is compile-time only.
     """
 
     @typedoc "What an expression is used for; fixes its calling convention."
@@ -57,15 +57,15 @@ defmodule Rete.IR do
 
   defmodule Fact do
     @moduledoc """
-    A single fact condition, e.g. `{:order, id, amt}`, `%Order{id: id}` or
+    A single fact condition — for example, `{:order, id, amt}`, `%Order{id: id}`, or
     `f = {:order, id} when amt > 0`.
 
-    Fields are typed by `t:t/0`. Three are not obvious:
+    `t:t/0` types every field. Three are not obvious:
 
       * `:fact_binding` is **not** part of `:bind`, because the alpha does not return it.
         The engine adds it when it builds a token.
-      * `:bind` excludes `_`-prefixed names, pinned values and module attributes.
-      * `:join_filter`, `:join_bind` and `:new_bind` are `nil` after parsing.
+      * `:bind` excludes `_`-prefixed names, pinned values, and module attributes.
+      * `:join_filter`, `:join_bind`, and `:new_bind` are `nil` after parsing.
         `Rete.DSL.Bindings` fills them in. See `docs/design/ir.md` §2.
     """
 
@@ -106,18 +106,18 @@ defmodule Rete.IR do
 
   defmodule Coll do
     @moduledoc """
-    A collection binding, e.g. `[{:order, id}]` or
+    A collection binding — for example, `[{:order, id}]`, or
     `orders = [{:order, id} when amt > 0]`.
 
     A collection binding is the engine's only accumulator, and it is always *collect
     all*. Aggregation is the right hand side's job.
 
     A condition that introduces no new variable propagates `[]`, and the rule fires with
-    zero matches. One that introduces a new variable groups by it, so only non-empty
-    groups exist. `:new_bind` decides between the two.
+    zero matches. One that introduces a new variable groups by it instead, so only
+    non-empty groups exist. `:new_bind` decides between the two.
 
-    Fields are those of `Rete.IR.Fact`, plus `:coll_binding`, the variable the collected
-    *list* binds to. `:alpha` is applied per element, not to the list.
+    Its fields are those of `Rete.IR.Fact`, plus `:coll_binding`: the variable the
+    collected *list* binds to. `:alpha` is applied per element, not to the list.
     """
 
     @type t :: %__MODULE__{
@@ -149,8 +149,8 @@ defmodule Rete.IR do
     @moduledoc """
     A guard over bindings only, with no fact input.
 
-    Produced by the rule level guard, `defrule r(...) when <guard> do`, and by guards
-    lifted out of a condition because they only reference variables bound upstream.
+    A rule-level guard produces this — `defrule r(...) when <guard> do` — and so do
+    guards lifted out of a condition, when they only reference variables bound upstream.
     `:bind` is what the guard **reads**, not what it introduces.
     """
 
@@ -167,12 +167,14 @@ defmodule Rete.IR do
     @moduledoc """
     An unnormalized logical gate, `{gate, [condition, ...]}`.
 
-    A **parser placeholder**. `Rete.DSL.Normalize` rewrites gates into plain conditions,
-    `Rete.IR.Negation` nodes and `{:or, [[condition, ...], ...]}` disjunctions.
+    This is a **parser placeholder**. `Rete.DSL.Normalize` rewrites gates into plain
+    conditions, `Rete.IR.Negation` nodes, and `{:or, [[condition, ...], ...]}`
+    disjunctions.
 
-    `:gate` is one of `:and`, `:or`, `:not`, `:nand`, `:nor`, `:xor`, `:xnor`. n-ary
-    `:xor` means *exactly one* argument holds, `:xnor` is its negation, and `:not` with
-    several arguments negates their conjunction. `:code` identifies the gate by structure.
+    `:gate` is one of `:and`, `:or`, `:not`, `:nand`, `:nor`, `:xor`, `:xnor`. N-ary
+    `:xor` means *exactly one* argument holds. `:xnor` is its negation. `:not` with
+    several arguments negates their conjunction. `:code` identifies the gate by
+    structure.
     """
 
     @type t :: %__MODULE__{
@@ -188,9 +190,10 @@ defmodule Rete.IR do
     @moduledoc """
     The negation of a single condition.
 
-    Not produced by the parser. `Rete.DSL.Normalize` creates negations while normalizing
-    `Rete.IR.Gate` nodes. `:condition` is always a single `Rete.IR.Fact` or
-    `Rete.IR.Coll`. The negation of a *conjunction* is a `Rete.IR.CompoundNegation`.
+    The parser does not produce this. `Rete.DSL.Normalize` creates negations instead,
+    while normalizing `Rete.IR.Gate` nodes. `:condition` is always a single
+    `Rete.IR.Fact` or `Rete.IR.Coll`. The negation of a *conjunction* is a
+    `Rete.IR.CompoundNegation`.
     """
 
     @type t :: %__MODULE__{condition: Rete.IR.Fact.t() | Rete.IR.Coll.t()}
@@ -202,14 +205,15 @@ defmodule Rete.IR do
     @moduledoc """
     The negation of a *conjunction*: "no match satisfies all of these at once".
 
-    Never de Morganed, because the conjuncts share existentially quantified variables.
-    `{:nand, [{:order, x}, {:refund, x}]}` means "there is no `x` with both", while the de
-    Morganed form means "there are no orders at all, or no refunds at all", which is false
-    whenever one `x` has an order and a different `x` has a refund.
+    Never rewritten with De Morgan's law, because the conjuncts share existentially
+    quantified variables. `{:nand, [{:order, x}, {:refund, x}]}` means "there is no `x`
+    with both". The De Morgan form would mean "there are no orders at all, or no refunds
+    at all" instead — false whenever one `x` has an order and a different `x` has a
+    refund.
 
-    `Rete.Compiler.Negation` extracts it into a helper production whose RHS inserts a
+    `Rete.Compiler.Negation` extracts this into a helper production whose RHS inserts a
     marker fact. Nothing else in the pipeline can evaluate one. It binds nothing
-    downstream, but its inner conditions are still classified, because the helper needs
+    downstream. But its inner conditions are still classified, because the helper needs
     their join keys.
     """
 
@@ -222,15 +226,16 @@ defmodule Rete.IR do
     @moduledoc """
     A rule or a query.
 
-    Fields are typed by `t:t/0`. Three are not obvious:
+    `t:t/0` types every field. Three are not obvious:
 
       * `:name` names the production, but the generated RHS function is `rhs_name/1` of
-        it, because a query owns its own name in its module.
-      * `:bind` is computed from the **classified** LHS by `lhs_bindings/1`, so it excludes
-        a negation's variables and is the *union* over a disjunction's branches. A variable
-        only some branches bind is not in every token, so the RHS reads it defensively.
-      * `:rhs` is `nil` until the production is escaped. Its return value is logically
-        inserted and truth maintained, and `nil` or `[]` inserts nothing.
+        it instead — a query owns its own name in its module.
+      * `:bind` comes from the **classified** LHS, via `lhs_bindings/1`. So it excludes a
+        negation's variables, and it is the *union* over a disjunction's branches. A
+        variable only some branches bind is not in every token, so the RHS reads it
+        defensively.
+      * `:rhs` is `nil` until the production is escaped. The engine logically inserts
+        and truth-maintains its return value. `nil` or `[]` inserts nothing.
     """
 
     @type t :: %__MODULE__{
@@ -255,7 +260,7 @@ defmodule Rete.IR do
       :__rhs_loyalty__
 
   Deliberately not the production's own name. A query is *called* by name, so the name
-  has to stay free for the arity 2 function that runs it.
+  has to stay free for the arity-2 function that runs it.
   """
   @spec rhs_name(atom()) :: atom()
   def rhs_name(name), do: :"__rhs_#{name}__"
@@ -269,17 +274,17 @@ defmodule Rete.IR do
   @typedoc """
   One element of a left hand side.
 
-  Either a single condition or a disjunction of conjunctions. A branch is itself a list
-  of elements, so branches may nest.
+  This is either a single condition, or a disjunction of conjunctions. A branch is
+  itself a list of elements, so branches may nest.
   """
   @type element :: condition() | {:or, [[element()]]}
 
   @typedoc """
   The left hand side of a production.
 
-  An **ordered** list, never flattened to DNF, which explodes combinatorially. A
-  disjunction fans out from the current parents and re-converges before the next element.
-  The parser emits only plain conditions and `Rete.IR.Gate` placeholders.
+  An **ordered** list, never flattened to DNF, since that explodes combinatorially. A
+  disjunction fans out from the current parents, and re-converges before the next
+  element. The parser emits only plain conditions and `Rete.IR.Gate` placeholders.
   """
   @type lhs :: [element()]
 
@@ -303,9 +308,9 @@ defmodule Rete.IR do
   def bound_vars(%CompoundNegation{}), do: []
   def bound_vars(%Gate{args: args}), do: args |> Enum.flat_map(&bound_vars/1) |> Enum.uniq()
 
-  # A collection's pattern variables are local to it unless something outside reads them.
-  # See `Rete.DSL.Bindings.mark_inert/1`. An inert one stays in `:bind`, because the alpha
-  # has to return it for the join filter, but it binds nothing downstream.
+  # A collection's pattern variables are local to it, unless something outside reads
+  # them. See `Rete.DSL.Bindings.mark_inert/1`. An inert one stays in `:bind`, because
+  # the alpha has to return it for the join filter. But it binds nothing downstream.
   defp coll_bound_vars(%Coll{bind: bind, inert: inert, coll_binding: c}) do
     visible = bind -- (inert || [])
     if c, do: visible ++ [c], else: visible
@@ -315,12 +320,13 @@ defmodule Rete.IR do
   The variables a classified LHS makes visible to the right hand side, split
   into `{guaranteed, optional}`.
 
-  Both lists are sorted and disjoint, and together they are the production's `:bind`. A
-  **guaranteed** binding is in every token that reaches the RHS. An **optional** one is
-  bound on some branch of a disjunction but not all, so the RHS reads it with `Map.get/2`.
+  Both lists are sorted and disjoint, and together they make up the production's
+  `:bind`. A **guaranteed** binding is in every token that reaches the RHS. An
+  **optional** one is bound on some branch of a disjunction but not all, so the RHS
+  reads it with `Map.get/2`.
 
-  Run this on the **classified** LHS. On a raw parsed one it answers with the union of a
-  `Rete.IR.Gate`'s arguments, the over-approximation it exists to avoid.
+  Run this on the **classified** LHS. On a raw parsed one, it answers with the union of
+  a `Rete.IR.Gate`'s arguments — the over-approximation it exists to avoid.
 
       iex> alias Rete.IR
       iex> user = %IR.Fact{bind: [:id]}
@@ -358,8 +364,8 @@ defmodule Rete.IR do
   @doc """
   Every `Rete.IR.Expr` reachable from a production or condition, in LHS order.
 
-  An alpha comes before the join filter of the same condition. Not deduplicated: use
-  `Enum.uniq_by(& &1.name)` when emitting functions.
+  An alpha comes before the join filter of the same condition. This is not
+  deduplicated. Use `Enum.uniq_by(& &1.name)` when emitting functions.
   """
   @spec exprs(Production.t() | element()) :: [Expr.t()]
   def exprs(%Production{lhs: lhs}), do: Enum.flat_map(lhs, &exprs/1)
@@ -386,9 +392,9 @@ defmodule Rete.IR do
   @doc """
   Turns a parsed production into quoted code that rebuilds it inside the defining module.
 
-  Splice the result into the module body **after** the expression functions are defined,
-  because it captures them by name. `:__ast__` is dropped, `:fun` and `:rhs` become
-  `Function.capture/3` calls, and `:opts` is kept unescaped so option values are
+  Splice the result into the module body **after** the expression functions are
+  defined, since it captures them by name. This drops `:__ast__`. `:fun` and `:rhs`
+  become `Function.capture/3` calls. `:opts` stays unescaped, so option values get
   evaluated in the module scope.
   """
   @spec escape(Production.t()) :: Macro.t()

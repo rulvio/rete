@@ -539,7 +539,7 @@ defmodule Rete.DSL.NormalizeTest do
 
     test "a negation never grows the branch count, so wide xnor is cheap" do
       # This is the rule that used to distribute into 5282 branches and take
-      # minutes to compile; it is now a single branch of eight negations.
+      # minutes to compile. It is now a single branch of eight negations.
       args = Enum.map(1..8, fn i -> leaf(:"v#{i}") end)
 
       {us, normalized} = :timer.tc(fn -> Normalize.normalize(gate(:xnor, args)) end)

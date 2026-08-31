@@ -150,18 +150,19 @@ defmodule ReteTest do
 
       [bind1 | [bind2 | [bind3 | [bind4 | [bind5 | [bind6 | [bind7 | [test1]]]]]]]] = lhs_expr
 
-      # the two collections are written fourth and sixth and end up last:
-      # `Rete.Compiler.Sort` takes a collection only once no plain condition is
-      # left to take, and the rule level test after that
+      # the two collections are written fourth and sixth, and they end up last.
+      # `Rete.Compiler.Sort` takes a collection only once no plain condition is left to
+      # take, and it takes the rule-level test after that.
       assert %{id: 1} == bind1.({:foo, 1})
       assert nil == bind1.({:foo, 0})
       assert %{id: 1} == bind2.({:bar, 1})
       assert nil == bind2.({:bar, 0})
       assert %{id: 1} == bind3.({:foo, 1})
       assert %{id: 1} == bind4.({:foo, 1})
-      # bind5 tests that the fact matches any fact type, because the expr do not validate taxonomy
-      # as it would not be efficient to do so in the rete network, instead the taxonomy is validated
-      # not when evaluating the lhs conditions but when deciding if a fact should be propagated to a node
+      # bind5 tests that the fact matches any fact type. The expression does not validate
+      # taxonomy, since that would not be efficient inside the Rete network. The taxonomy is
+      # validated later instead — when the engine decides whether to propagate a fact to a
+      # node, not when it evaluates the LHS conditions.
       assert %{name: "Foo"} == bind5.({:living_thing, "Foo"})
       assert %{name: "Fido"} == bind5.({:dog, "Fido"})
       assert %{name: "Whiskers"} == bind5.({:cat, "Whiskers"})
@@ -385,8 +386,8 @@ defmodule ReteTest do
              |> Enum.map(&Map.get(&1, :name))
   end
 
-  # The modules are merged in the order they are given, and an expression the
-  # second module shares with the first is deduplicated onto the first.
+  # The modules are merged in the order they are given. An expression the second
+  # module shares with the first is deduplicated onto the first.
   test "get expr data from combined modules" do
     assert [
              :fact_foo_bind_id_expr_51194764,

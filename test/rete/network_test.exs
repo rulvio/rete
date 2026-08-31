@@ -166,7 +166,7 @@ defmodule Rete.NetworkTest do
       assert nil == predicates[:strict].({:bar, 50})
       assert %{amt: 5000} == predicates[:strict].({:bar, 5000})
 
-      # the fact still reaches both alphas; only the sharing was wrong
+      # the fact still reaches both alphas. Only the sharing was wrong
       assert 2 == length(Network.alphas_for(net, {:bar, 50}))
     end
 

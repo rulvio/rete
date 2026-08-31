@@ -3,33 +3,34 @@ defmodule Rete.BehaviourTest do
   Behaviours mined from Clara's ~8,000 lines of accumulated behavioural tests.
 
   Organised by what a rules engine has to *do*, not by the Clara file the case
-  came from. Each test says what it protects; where a case exists to guard a
-  specific historical defect, the Clara issue number is named so the intent
-  survives.
+  came from. Each test says what it protects. Where a case exists to guard a
+  specific historical defect, the test names the Clara issue number, so the
+  intent survives.
 
   What was deliberately left out, and why:
 
     * **The accumulator library** (`min`/`max`/`sum`/`distinct`/`all`, initial
       values, `convert-return-fn`, `retract-fn`, "false as a reduced value").
-      This engine is collect-all only by an explicit user decision, so most of
-      `test_accumulation.clj` describes machinery that does not exist. Only the
-      retraction and re-accumulation cases are mined, and they are here.
+      This engine is collect-all only, by an explicit user decision. So most of
+      `test_accumulation.clj` describes machinery that does not exist here.
+      Only the retraction and re-accumulation cases are mined, and they are
+      here.
     * **Unconditional insert and RHS retract** (`insert-unconditional!`,
-      `retract!`, `duplicate-reasons-for-retraction-test`). Logical inserts
-      only; there is nothing to test.
-    * **`:no-loop`** and Clara's `:cancelling` fire mode. Neither exists.
+      `retract!`, `duplicate-reasons-for-retraction-test`). This engine has
+      logical inserts only, so there is nothing to test.
+    * **`:no-loop`** and Clara's `:cancelling` fire mode. Neither exists here.
     * **ClojureScript, Java interop, durability, session/compiler caching,
-      loading rules from namespaces or EDN.** Out of scope entirely.
+      loading rules from namespaces or EDN.** All out of scope.
     * **`:exists`.** Clara desugars it to an accumulator plus a test. Rather
-      than adding syntax, "existence" below tests what `{:not, [{:not, [x]}]}`
-      actually does and what to write instead.
+      than adding new syntax, "existence" below tests what
+      `{:not, [{:not, [x]}]}` actually does, and what to write instead.
     * **`[:not [:test ...]]`.** A bare guard is not an LHS element in this DSL,
       so a negated test has no spelling.
     * **Compile-time binding errors** (`test-unbound-bindings`,
-      `test-malformed-binding`, `test-unmatched-nested-binding`). Ported
-      already and exhaustively, in `test/rete/dsl/bindings_test.exs`.
+      `test-malformed-binding`, `test-unmatched-nested-binding`). Already
+      ported, exhaustively, in `test/rete/dsl/bindings_test.exs`.
     * **Identity vs equality** (`test-identical-facts`, Clara issue 35). The
-      BEAM has no fact identity distinct from equality: two equal terms *are*
+      BEAM has no fact identity distinct from equality. Two equal terms *are*
       the same fact, and this engine says so by making facts a multiset.
   """
 
@@ -86,7 +87,7 @@ defmodule Rete.BehaviourTest do
     end
 
     # clara test_simple_rules/test-noop-retraction. Retracting something the
-    # session never held must not disturb what it does hold — in particular it
+    # session never held must not disturb what it does hold. In particular, it
     # must not decrement a *different* fact that happens to share a join key.
     test "retracting a fact that was never inserted changes nothing" do
       session =
@@ -116,8 +117,8 @@ defmodule Rete.BehaviourTest do
       assert [] == Session.facts(session)
       assert [] == Collect.by_tag(session, :activation_fired)
 
-      # The activation really was queued and then cancelled, rather than never
-      # having been created — otherwise this test would pass on an engine that
+      # The activation really was queued, then cancelled — it was not simply
+      # never created. Otherwise, this test would pass on an engine that
       # simply ignores the insert.
       tags = session |> Collect.events() |> Enum.map(&elem(&1, 0))
       assert :activation_added in tags
@@ -270,8 +271,8 @@ defmodule Rete.BehaviourTest do
     end
 
     # clara test_rules/test-simple-test. Two conditions of the same type join
-    # every element against every element, including a fact against itself; the
-    # rule level guard is what makes the pair strict. Both halves matter — an
+    # every element against every element, including a fact against itself. The
+    # rule-level guard is what makes the pair strict. Both halves matter — an
     # engine that skips the self-pair gets the right answer here for the wrong
     # reason and the wrong answer for `t1 <= t2`.
     test "a condition repeated joins the type against itself, filtered by the guard" do
@@ -314,7 +315,7 @@ defmodule Rete.BehaviourTest do
     end
 
     # Clara issue 433, stated behaviourally. The two `{:order, cid, amt}`
-    # conditions are byte identical but sit under different parents; sharing the
+    # conditions are byte identical but sit under different parents. Sharing the
     # node would let a vendor token join elements that only ever belonged to the
     # customer chain.
     test "an identical second condition under a different first does not leak matches" do
@@ -345,7 +346,7 @@ defmodule Rete.BehaviourTest do
     end
 
     # clara test_negation/test-simple-negation queries a session that was never
-    # fired and expects an answer. Propagation happens on insert; only the right
+    # fired and expects an answer. Propagation happens on insert. Only the right
     # hand sides wait for `fire_rules/2`. So a query is a window onto the
     # network's current state, not onto the last settled one.
     test "a query answers before any rule has fired" do
@@ -496,7 +497,7 @@ defmodule Rete.BehaviourTest do
 
     # clara test_negation/test-negation-truth-maintenance. The fact that blocks
     # the negation is itself a conclusion, so the whole loop has to close: an
-    # external insert derives it, which retracts the negation's conclusion; an
+    # external insert derives it, which retracts the negation's conclusion. An
     # external retract undoes the derivation, which releases the negation again.
     test "a conclusion that blocks another rule's negation retracts it, and gives it back" do
       base = [NegTms] |> Session.new() |> Session.fire_rules()
@@ -651,7 +652,7 @@ defmodule Rete.BehaviourTest do
     test "releasing a suppressed token does not re-send one that was already through" do
       session = run(NegOrGuard, [{:temp, 10}, {:temp, 5}, {:cold, 9}])
 
-      # 9 < 10 suppresses the first; 9 < 5 and 9 < 0 are both false, so the
+      # 9 < 10 suppresses the first. 9 < 5 and 9 < 0 are both false, so the
       # second is through already.
       assert [{:found, 5}] == tagged(session, :found)
       assert 1 == session.state.memory.facts[{:found, 5}]
@@ -820,8 +821,8 @@ defmodule Rete.BehaviourTest do
     end
 
     # clara test_rules/test-multi-conditions-with-nested-conjunction-inside-disjunction.
-    # Each branch fans out from the shared prefix and carries its own bindings;
-    # a fact set satisfying both yields one match per branch, not one merged
+    # Each branch fans out from the shared prefix and carries its own bindings.
+    # A fact set satisfying both yields one match per branch, not one merged
     # match and not a cross product.
     test "a conjunction nested in a disjunction contributes one match per branch" do
       session =
@@ -868,7 +869,7 @@ defmodule Rete.BehaviourTest do
 
     # clara test_accumulation/test-accumulator-right-retract-before-matching-tokens-exist,
     # for both node kinds. Candidates arriving before any token exists are held
-    # unreduced; a retraction has to remove them from that holding area too, or
+    # unreduced. A retraction has to remove them from that holding area too, or
     # the first token to arrive collects a ghost.
     test "an element retracted before any token exists is not collected" do
       for query <- [:hashed, :filtered] do
@@ -1206,7 +1207,7 @@ defmodule Rete.BehaviourTest do
     # clara test_truth_maintenance/test-retracting-many-logical-insertions-for-same-rule.
     # One match supporting a thousand facts, all retracted at once. Clara's
     # version guards against a StackOverflowError from lazily stacked
-    # retractions; this engine's flat work queue is what makes it a non-event,
+    # retractions. This engine's flat work queue is what makes it a non-event,
     # and the point of the test is to keep it that way.
     test "one match may support a thousand facts, and give them all back" do
       session = run(Many, [{:temp, 10}])
@@ -1226,7 +1227,7 @@ defmodule Rete.BehaviourTest do
     end
 
     # A two hundred step cascade in a single fire. The flat propagation loop is
-    # supposed to make depth free; a recursive one would be at risk here and a
+    # supposed to make depth free. A recursive one would be at risk here, and a
     # cascade is exactly what a rules engine does for a living.
     test "a long derivation cascade settles in one fire" do
       session = run(Deep, [{:n, 0}])
@@ -1245,8 +1246,8 @@ defmodule Rete.BehaviourTest do
     # clara test_rules/test-negation-with-complex-retractions. `first_to_second`
     # concludes the fact that blocks `blocked`, whose conclusion in turn blocks
     # the query — a doubly blocked chain. Firing it in the easiest order, the
-    # hardest order, and no particular order must all settle in the same place;
-    # if truth maintenance is incomplete, only the easy order looks right.
+    # hardest order, and no particular order must all settle in the same place.
+    # If truth maintenance is incomplete, only the easy order looks right.
     defmodule NoSalience do
       use Rete.Ruleset
 
@@ -1433,8 +1434,8 @@ defmodule Rete.BehaviourTest do
       end
     end
 
-    # clara test_rules/test-rule-order-respected. Salience decides first; among
-    # equals, the order the rules were declared in. Not a semantic guarantee —
+    # clara test_rules/test-rule-order-respected. Salience decides first. Among
+    # equals, it is the order the rules were declared in. Not a semantic guarantee —
     # the previous section pins that salience cannot change the answer — but a
     # predictable one, which is what makes a trace readable.
     test "rules of equal salience fire in declaration order" do
@@ -1449,7 +1450,7 @@ defmodule Rete.BehaviourTest do
     end
 
     # clara test_rules/test-mark-as-fired. An activation is consumed when it
-    # fires; a second `fire_rules/2` over an unchanged session does nothing.
+    # fires. A second `fire_rules/2` over an unchanged session does nothing.
     test "firing twice does not run the same activation again" do
       session =
         [FireOrder]
@@ -1631,7 +1632,7 @@ defmodule Rete.BehaviourTest do
     # Two facts of different types reach one condition through a shared
     # ancestor. They are distinct facts, so retracting one — twice, to be sure —
     # must never touch the other. Clara needed this because the JVM compares
-    # records field-wise; here the risk is a retraction keyed on the condition
+    # records field-wise. Here the risk is a retraction keyed on the condition
     # rather than on the fact.
     test "retracting one descendant type does not retract its sibling" do
       base = run(CommonAncestor, [{:type1}, {:type2}])
@@ -1721,7 +1722,7 @@ defmodule Rete.BehaviourTest do
         # token list for a join key in arrival order, so two orders that agree
         # on every match still disagree on the order of the list holding them —
         # which also makes the order of `Session.query/3` results depend on
-        # insertion history. See the note reported alongside this suite; the
+        # insertion history. See the note reported alongside this suite. The
         # sets agree, only their order does not.
         expected = Rete.Memory.dump(base.state.memory)
         actual = Rete.Memory.dump(session.state.memory)

@@ -345,7 +345,7 @@ defmodule Rete.ObservabilityTest do
 
     # Beta memory is arrival ordered, so without a deterministic sort the same
     # facts inserted in a different order would answer the same query in a
-    # different order. The order itself is not a contract; varying with
+    # different order. The order itself is not a contract. Varying with
     # insertion order is a trap.
     test "does not vary with the order facts were inserted in" do
       answer = fn facts ->

@@ -6,9 +6,9 @@ defmodule Rete.Network.Node do
   expression functions the engine needs, and nothing else. `Rete.Engine.Nodes` implements
   activation against these structs.
 
-  **No node carries its children.** They are forward edges in `Rete.Compiler.BetaGraph`.
-  A node is shared between rules exactly when it is equal, and equality must not depend
-  on how many rules have hung children off it yet.
+  **No node carries its children.** They are forward edges in `Rete.Compiler.BetaGraph`
+  instead. A node is shared between rules exactly when it is equal. Equality must not
+  depend on how many rules have hung children off it yet.
 
   **`:id` is `nil` until the node is in a graph.** A node is described first and inserted
   second, so `nil` means "a description, not yet a node". Every node reachable from a
@@ -19,9 +19,9 @@ defmodule Rete.Network.Node do
     @moduledoc """
     Matches one condition against a single fact, independently of any token.
 
-    `:fun` is arity 1, `(fact) -> bindings_map | nil`. It matches a fact of
-    **any** type on purpose: which alpha nodes a fact reaches is decided by
-    `Rete.Taxonomy`'s type index, so that `derive(:premium, :customer)` lets a
+    `:fun` is arity 1: `(fact) -> bindings_map | nil`. It matches a fact of
+    **any** type, on purpose. `Rete.Taxonomy`'s type index decides which alpha
+    nodes a fact reaches. This is what lets `derive(:premium, :customer)` make a
     `:premium` fact reach a condition written against `:customer`.
     """
     @type t :: %__MODULE__{id: non_neg_integer() | nil, type: atom(), code: atom(), fun: fun()}
@@ -63,9 +63,9 @@ defmodule Rete.Network.Node do
     @moduledoc """
     A hash join plus a filter that needs the token and the fact together.
 
-    Produced when a per-condition guard reads a variable bound upstream, e.g.
-    `{:order, amt} when amt > t`. `:filter` is arity 2,
-    `(token_bindings, fact_bindings) -> boolean`, and runs only on candidates
+    Produced when a per-condition guard reads a variable bound upstream — for
+    example, `{:order, amt} when amt > t`. `:filter` is arity 2:
+    `(token_bindings, fact_bindings) -> boolean`. It runs only on candidates
     that already agree on `:join_bind`.
     """
     @type t :: %__MODULE__{
@@ -122,10 +122,11 @@ defmodule Rete.Network.Node do
     @moduledoc """
     A collection binding: gathers every element matching the token into a list.
 
-    `:propagates_empty?` records the empty-collection rule. A pattern introducing no new
-    variables has every variable fixed by the token, so it has exactly one group and
-    propagates `[]` when nothing matches. A pattern that introduces one groups by it, and
-    a group only exists where a fact created it, so there is no empty group to propagate.
+    `:propagates_empty?` records the empty-collection rule. A pattern that introduces no
+    new variables has every variable fixed by the token. So it has exactly one group, and
+    it propagates `[]` when nothing matches. A pattern that introduces one groups by it
+    instead, and a group exists only where a fact created it — so there is no empty group
+    to propagate.
     """
     @type t :: %__MODULE__{
             id: non_neg_integer() | nil,
@@ -187,13 +188,13 @@ defmodule Rete.Network.Node do
 
   defmodule Production do
     @moduledoc """
-    A terminal node for a rule. Firing it calls `:rhs` with the token's bindings
-    and logically inserts whatever comes back.
+    A terminal node for a rule. Firing it calls `:rhs` with the token's bindings, and
+    logically inserts whatever comes back.
 
     `:salience` is the user's ordering. `:internal_salience` breaks ties in favour of
     machinery the user did not write. An extracted negation helper has to run before the
-    rule that negates its marker, or that rule fires once against an absence that had
-    merely not been computed yet.
+    rule that negates its marker. Otherwise, that rule fires once against an absence that
+    had merely not been computed yet.
     """
     @type t :: %__MODULE__{
             id: non_neg_integer() | nil,
@@ -224,7 +225,7 @@ defmodule Rete.Network.Node do
     A terminal node for a query. Holds the tokens that reached it, to be read back by
     name.
 
-    There is no parameter list. A query is its conditions and its body, and
+    There is no parameter list. A query is its conditions and its body.
     `Rete.Engine.query/3` lets the caller constrain any variable in `:bind`.
     """
     @type t :: %__MODULE__{
@@ -254,13 +255,13 @@ defmodule Rete.Network.Node do
   @doc """
   The value that decides whether two conditions collapse onto one node.
 
-  Built from expression codes and join keys. Never from captured functions, which are
-  never equal, and never from `:id`, which is assigned after the sharing decision. An
-  equal key is necessary but not sufficient: `Rete.Compiler.BetaGraph` also requires an
-  identical parent set.
+  Built from expression codes and join keys. Never built from captured functions, since
+  two functions are never equal to each other. Never built from `:id` either, since that
+  is assigned after the sharing decision. An equal key is necessary, but not sufficient:
+  `Rete.Compiler.BetaGraph` also requires an identical parent set.
 
-  A terminal keys on its production's identity, so two rules with an identical left hand
-  side still get their own terminal and fire independently.
+  A terminal keys on its production's identity. So two rules with an identical left hand
+  side still get their own terminal, and each fires independently.
 
       iex> alias Rete.Network.Node
       iex> Node.sharing_key(%Node.Negation{type: :order, alpha_code: :a1, join_bind: [:cid]})
@@ -312,8 +313,8 @@ defmodule Rete.Network.Node do
   How a terminal names itself in a listener event.
 
   `c:Rete.Listener.handle_event/2` cannot reach the network, so a node id alone would be
-  unresolvable. `{module, name}` is the identity everything else uses. A map rather than
-  a wider tuple, so a field can be added without changing the shape every listener
+  unresolvable. `{module, name}` is the identity everything else uses. This is a map, not
+  a wider tuple, so a field can be added later without changing the shape every listener
   matches on.
 
       iex> node = %Rete.Network.Node.Production{id: 12, module: MyRules, name: :flag}

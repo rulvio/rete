@@ -3,16 +3,17 @@ defmodule Rete.Memory.Bucket do
   One join key's worth of elements or tokens: an ordered multiset.
 
   **Internal.** Everything above it sees a list in arrival order, which `to_list/1`
-  produces. Adding and removing one occurrence are both O(1) amortised however large the
-  bucket grows, and a list cannot have both. Buckets are routinely large: a
+  produces. Adding and removing one occurrence are both O(1) amortised, however large the
+  bucket grows — a plain list cannot do both. Buckets are routinely large: a
   `Rete.Network.Node.RootJoin` has nothing to join on, so it stores every matching fact
   under one key.
 
   `:stack` holds every item ever pushed, newest first. `:counts` holds live occurrences
-  per value and `:dead` holds retracted ones still in the stack. Removing tombstones
-  instead of rebuilding, and `to_list/1` skips the first `dead[value]` occurrences of each
-  value in arrival order, so the **oldest** occurrence is the one that went. Tombstones
-  are compacted once they outnumber the living. See `docs/design/engine.md` §7.
+  per value, and `:dead` holds retracted ones still in the stack. Removal tombstones an
+  occurrence, instead of rebuilding the stack. `to_list/1` then skips the first
+  `dead[value]` occurrences of each value, in arrival order — so the **oldest** occurrence
+  is the one that went. Tombstones are compacted once they outnumber the living
+  occurrences. See `docs/design/engine.md` §7.
 
       iex> alias Rete.Memory.Bucket
       iex> {:ok, bucket} = Bucket.new([:a, :b, :a]) |> Bucket.take(:a)
@@ -52,8 +53,8 @@ defmodule Rete.Memory.Bucket do
   @doc """
   Removes the oldest live occurrence of `target`, or `:error` if there is none.
 
-  `:error` rather than a silent no-op. A caller that propagated a retraction of something
-  the bucket never held would corrupt every count below it.
+  This returns `:error`, instead of silently doing nothing. A caller that propagated a
+  retraction of something the bucket never held would corrupt every count below it.
   """
   @spec take(t(), term()) :: {:ok, t()} | :error
   def take(%__MODULE__{counts: counts} = bucket, target) do
@@ -95,8 +96,8 @@ defmodule Rete.Memory.Bucket do
     end
   end
 
-  # A rebuild costs a pass, and cannot happen again until the dead outnumber the living a
-  # second time. Each one is paid for by the removals that caused it.
+  # A rebuild costs a pass. It cannot happen again until the dead outnumber the living a
+  # second time. Each removal that causes a rebuild pays for it.
   defp compact(%__MODULE__{dead_total: dead_total, live: live} = bucket)
        when dead_total > live do
     %__MODULE__{bucket | stack: bucket |> to_list() |> Enum.reverse(), dead: %{}, dead_total: 0}
@@ -118,8 +119,8 @@ defmodule Rete.Memory do
   @moduledoc """
   Working memory: everything a session knows, as one immutable value.
 
-  **Internal.** Not part of the public API, and documented rather than hidden because
-  durability, checkpointing and advanced tooling will need to reach in here. Treat its
+  **Internal.** Not part of the public API. It is documented rather than hidden, because
+  durability, checkpointing, and advanced tooling will need to reach in here. Treat its
   functions as liable to change.
 
   Five memories, plus one flag:
@@ -130,19 +131,19 @@ defmodule Rete.Memory do
       insertions  node_id => token => [[fact]]               truth maintenance
       facts       fact => count                              what it was told
 
-  Three properties are load bearing. See `docs/design/engine.md` §4.
+  Three properties are load-bearing. See `docs/design/engine.md` §4.
 
     * **Arrival order.** It decides the order tokens propagate, and so the order two
-      matches of one rule fire. A bucket that gave items back in another order would
+      matches of one rule fire. A bucket that gave items back in a different order would
       reorder every `:activation_fired` event.
     * **Removal collapses the level above.** Every key above the leaf is a value, so an
       entry pointing at an empty leaf leaks. `Rete.Engine.Nodes` also needs "no group" and
       "an empty group" to stay different answers.
-    * **Multisets, not sets.** Inserting a fact twice and retracting once must leave it
+    * **Multisets, not sets.** Inserting a fact twice, then retracting once, must leave it
       present. Two rules may each have concluded it.
 
   `root_seeded?` is not a memory. It records that the beta root's empty token has been
-  planted, which must happen exactly once per session. See `docs/design/engine.md` §6.
+  planted. This must happen exactly once per session. See `docs/design/engine.md` §6.
 
       iex> alias Rete.Memory
       iex> {memory, :new} = Memory.add_fact(Memory.new(), {:order, 1})
@@ -184,8 +185,8 @@ defmodule Rete.Memory do
   @doc """
   Records that the beta root's empty token has been propagated.
 
-  `Rete.Engine.Nodes` seeds only while this is `false`, so a session plants exactly one
-  root token however many times it is asked.
+  `Rete.Engine.Nodes` seeds only while this is `false`. So a session plants exactly one
+  root token, however many times it is asked.
   """
   @spec mark_root_seeded(t()) :: t()
   def mark_root_seeded(%__MODULE__{} = memory), do: %__MODULE__{memory | root_seeded?: true}
@@ -215,7 +216,7 @@ defmodule Rete.Memory do
   @doc """
   Removes one occurrence of each given element, returning `{memory, removed}`.
 
-  An element that was not there is left out of `removed`, so a caller can tell a real
+  An element that was not there is left out of `removed`. So a caller can tell a real
   retraction from a no-op. Propagating a retraction that never happened would corrupt the
   counts downstream.
   """
@@ -287,13 +288,13 @@ defmodule Rete.Memory do
   @doc """
   Drops a collection group entirely.
 
-  A group with no facts is not a group holding `[]`. The first does not exist. The second
-  is an empty collection the rule can legitimately see. Only a grouping collection ever
-  drops to nothing.
+  A group with no facts is not the same as a group holding `[]`. The first does not exist.
+  The second is an empty collection the rule can legitimately see. Only a grouping
+  collection ever drops to nothing.
 
-  The join key that held the last group goes with it, and the node with the last join key.
-  Both are binding values, so leaving them behind would leak one entry per entity the
-  session has seen.
+  The join key that held the last group goes with it, and so does the node, if that was
+  its last join key. Both are binding values, so leaving them behind would leak one entry
+  per entity the session has seen.
   """
   @spec drop_group(t(), node_id(), key(), key()) :: t()
   def drop_group(%__MODULE__{} = memory, node_id, key, group_key) do
@@ -309,8 +310,8 @@ defmodule Rete.Memory do
   @doc """
   Records the facts one activation of a production inserted.
 
-  Stored as a list of lists. The same token can activate a production more than once over
-  a session's life, and each activation owns its own batch.
+  This is stored as a list of lists. The same token can activate a production more than
+  once, over a session's life, and each activation owns its own batch.
   """
   @spec add_insertion(t(), node_id(), Token.t(), [term()]) :: t()
   def add_insertion(%__MODULE__{} = memory, node_id, token, facts) do
@@ -329,7 +330,8 @@ defmodule Rete.Memory do
   Takes back one batch of facts a token's activation inserted.
 
   Returns `{memory, facts}`, or `{memory, []}` when the token never inserted anything.
-  That is a production retracted before it fired, or one whose body returned nothing.
+  That case is a production retracted before it fired, or one whose body returned
+  nothing.
   """
   @spec take_insertion(t(), node_id(), Token.t()) :: {t(), [term()]}
   def take_insertion(%__MODULE__{} = memory, node_id, token) do
@@ -352,8 +354,8 @@ defmodule Rete.Memory do
   @doc """
   Records a fact, returning `{memory, :new | :duplicate}`.
 
-  Only `:new` is propagated. A second insertion of an equal fact bumps its count so that
-  one retraction does not remove it. The matches it would make already exist.
+  Only `:new` propagates. A second insertion of an equal fact bumps its count instead, so
+  that one retraction does not remove it. The matches it would make already exist.
   """
   @spec add_fact(t(), term()) :: {t(), :new | :duplicate}
   def add_fact(%__MODULE__{facts: facts} = memory, fact) do
@@ -366,7 +368,7 @@ defmodule Rete.Memory do
   @doc """
   Drops one occurrence of a fact, returning `{memory, :gone | :remaining | :absent}`.
 
-  Only `:gone` — the last occurrence — is propagated.
+  Only `:gone` propagates — that is, only the last occurrence.
   """
   @spec remove_fact(t(), term()) :: {t(), :gone | :remaining | :absent}
   def remove_fact(%__MODULE__{facts: facts} = memory, fact) do
@@ -388,9 +390,9 @@ defmodule Rete.Memory do
   @doc """
   The whole memory as plain data, every bucket rendered as a list in arrival order.
 
-  Reach for this instead of the struct. A `Rete.Memory.Bucket` holds a stack with
-  tombstones in it, and two memories that agree on every match can still disagree there.
-  This is the view that is meaningful to compare, assert on and write down.
+  Use this instead of the struct. A `Rete.Memory.Bucket` holds a stack with tombstones in
+  it, and two memories that agree on every match can still disagree there. This is the
+  view that is meaningful to compare, assert on, and write down.
   """
   @spec dump(t()) :: %{
           elements: %{node_id() => %{key() => [Element.t()]}},

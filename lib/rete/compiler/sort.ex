@@ -2,25 +2,27 @@ defmodule Rete.Compiler.Sort do
   @moduledoc """
   Topological ordering of the left hand side of a production.
 
-  **Internal.** A rule reads best in the order the author thought of it. The network needs
-  an order in which every join already has its keys in the token. This phase reorders the
-  LHS so a condition comes after the conditions that bind what it needs, so
+  **Internal.** A rule reads best in the order the author thought of it. But the network
+  needs an order where every join already has its keys in the token. This phase reorders
+  the LHS, so a condition comes after the conditions that bind what it needs:
 
       defrule r({:order, amt} when amt > t, {:threshold, t})
 
-  is sorted into `{:threshold, t}, {:order, amt} when amt > t`.
+  sorts into `{:threshold, t}, {:order, amt} when amt > t`.
 
-  A condition **needs** only what it reads and cannot supply itself. `_`-prefixed names
-  are dropped, since no ordering can satisfy one. What it **binds** comes from
-  `Rete.IR.lhs_bindings/1`, so this phase and the production's `:bind` cannot drift apart.
+  A condition **needs** only what it reads and cannot supply itself. The sort drops
+  `_`-prefixed names, since no ordering can satisfy one. What a condition **binds** comes
+  from `Rete.IR.lhs_bindings/1`, so this phase and the production's `:bind` cannot drift
+  apart.
 
-  Each pass takes every condition satisfiable right now, in author order, so equally
-  satisfiable conditions keep the order they were written in and two rules sharing a
-  prefix still share their nodes. Collections and tests are deferred: a collection placed
-  too early propagates `[]` before the conditions that would have filled it are joined.
+  Each pass takes every condition satisfiable right now, in author order. So equally
+  satisfiable conditions keep the order they were written in, and two rules sharing a
+  prefix still share their nodes. Collections and tests are deferred. A collection placed
+  too early would propagate `[]` before the conditions that would have filled it are
+  joined.
 
-  Runs after `Rete.DSL.Normalize`, because a `Rete.IR.Gate` reaching it raises, and before
-  `Rete.DSL.Bindings`, which reads `:join_bind` off the final order. See
+  This runs after `Rete.DSL.Normalize`, because a `Rete.IR.Gate` reaching it raises. It
+  runs before `Rete.DSL.Bindings`, which reads `:join_bind` off the final order. See
   `docs/design/ir.md` §1.
   """
 
@@ -33,11 +35,11 @@ defmodule Rete.Compiler.Sort do
   @doc """
   Sorts the left hand side of a production topologically.
 
-  Returns the production with its `:lhs` reordered. The conditions themselves are
+  Returns the production with its `:lhs` reordered. The conditions themselves stay
   untouched, except that a disjunction's branches and a `Rete.IR.CompoundNegation`'s
-  conjunction are sorted the same way, against the variables bound where they sit.
+  conjunction are sorted the same way — against the variables bound where they sit.
 
-  Idempotent. Sorting an already sorted LHS returns it unchanged.
+  This is idempotent. Sorting an already sorted LHS returns it unchanged.
 
       iex> alias Rete.{Compiler.Sort, IR}
       iex> order = %IR.Fact{bind: [:amt], __ast__: %{guard: quote(do: amt > t), bind: %{}}}
@@ -55,7 +57,7 @@ defmodule Rete.Compiler.Sort do
   @doc """
   The variables an element needs bound before it can be placed.
 
-  See the moduledoc; this is the whole ordering constraint.
+  See the moduledoc. This is the whole ordering constraint.
   """
   @spec needs(IR.element()) :: vars()
   def needs(%IR.Fact{} = fact), do: guard_needs(fact)
@@ -75,15 +77,15 @@ defmodule Rete.Compiler.Sort do
     raise ArgumentError, "unsupported LHS element for condition sorting: " <> inspect(element)
   end
 
-  # What a conjunction cannot satisfy for itself. Its elements bind each other, so only
-  # what none of them binds is asked of the conditions upstream.
+  # What a conjunction cannot satisfy for itself. Its elements bind each other. So only
+  # what none of them binds gets asked of the conditions upstream.
   defp residual(elements) do
     {guaranteed, _optional} = IR.lhs_bindings(elements)
     elements |> union(&needs/1) |> MapSet.difference(MapSet.new(guaranteed))
   end
 
   # The fact supplies a guard variable the condition's own pattern binds. Everything else
-  # has to come out of the token, which means from an earlier condition.
+  # has to come out of the token — that is, from an earlier condition.
   defp guard_needs(condition) do
     own = MapSet.new(IR.bound_vars(condition))
 
@@ -194,7 +196,7 @@ defmodule Rete.Compiler.Sort do
   end
 
   # `Rete.DSL.Bindings` checks both once per path through the LHS, so it can name the
-  # branch the variable is missing on. Reordering cannot help either way.
+  # branch the variable is missing on. Reordering cannot help, either way.
   defp checked_per_path?(%IR.Test{}, _unmet, _optional), do: true
   defp checked_per_path?(_element, unmet, optional), do: MapSet.subset?(unmet, optional)
 

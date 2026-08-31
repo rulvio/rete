@@ -191,7 +191,7 @@ defmodule Rete.TaxonomyTest do
 
     # The classic bug: a condition written against the ancestor must see the
     # descendant's facts, and a condition written against the descendant must
-    # NOT see the ancestor's. Every dog is a mammal; not every mammal is a dog.
+    # NOT see the ancestor's. Every dog is a mammal. Not every mammal is a dog.
     test "a condition on an ancestor sees a descendant's facts", %{taxonomy: taxonomy} do
       assert [:p1, :a1, :d1, :d2, :m1] == Taxonomy.alpha_ids(taxonomy, {:poodle, 1})
     end

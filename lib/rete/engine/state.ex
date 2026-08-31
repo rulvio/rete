@@ -2,9 +2,9 @@ defmodule Rete.Engine.State do
   @moduledoc """
   Everything that changes while rules fire, as one value threaded through the loop.
 
-  **Internal.** A node is a function of state that returns the state plus the work it
-  produced. The loop does the walking, which keeps propagation flat and leaves one place
-  where listener events are emitted. See `docs/design/engine.md` §1.
+  **Internal.** A node is a function of state. It returns the state, plus the work it
+  produced. The loop does the walking. This keeps propagation flat, and it leaves one
+  place where listener events are emitted. See `docs/design/engine.md` §1.
 
   `:listeners` is `[{module, state}]` rather than a map, so listeners see events in
   attachment order and one module can be attached twice with different state.
@@ -17,11 +17,11 @@ defmodule Rete.Engine.State do
   @typedoc """
   A unit of pending propagation.
 
-  `:left` carries tokens from a parent, `:right` carries elements from an alpha.
+  `:left` carries tokens from a parent. `:right` carries elements from an alpha.
 
-  The last two are work a node produces but cannot carry out where it happens. A
-  retraction has to re-enter the alpha network, and telling a listener is not a node's
-  business.
+  The last two are work a node produces, but cannot carry out where it happens. A
+  retraction has to re-enter the alpha network. Telling a listener is not a node's
+  business either.
   """
   @type op ::
           {:left | :left_retract, term(), [Rete.Token.t()]}

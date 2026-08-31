@@ -238,7 +238,7 @@ defmodule Rete.RulesetTest do
 
     test "a guard reading one is an error naming the variable to rename" do
       # it is discarded by the pattern, so it is in no bindings map and in no
-      # token; inlining it into the alpha would only trade this for Elixir's
+      # token. Inlining it into the alpha would only trade this for Elixir's
       # own "the underscored variable is used after being set" warning
       message = ~r/`_amt`.*starts with `_` is discarded.*Rename it to `amt`/s
 
@@ -286,7 +286,7 @@ defmodule Rete.RulesetTest do
     end
 
     test "a variable only one branch of a disjunction binds is checked per path" do
-      # the guard is absorbed into both branches; it cannot be evaluated on the
+      # the guard is absorbed into both branches. It cannot be evaluated on the
       # silver one, so it belongs on the gold condition instead
       assert_raise ArgumentError, ~r/reads `tier`, which no condition binds/, fn ->
         build("r({:or, [{:gold, id, tier}, {:silver, id}]}) when tier > 1")
@@ -419,7 +419,7 @@ defmodule Rete.RulesetTest do
       assert nil == customer.alpha.fun.({:customer, 1})
 
       # a collection alpha runs per candidate element, so it binds the element's
-      # variables; `_amt` is discarded, leaving only the join variable
+      # variables. `_amt` is discarded, leaving only the join variable
       assert %{cid: 1} == orders.alpha.fun.({:order, 1, 50})
 
       [_customer, %IR.Negation{condition: order}] = lhs(Demo, :dormant)

@@ -3,9 +3,9 @@ defmodule Rete.DSL.Codegen do
   Expression construction and code generation: the last phase of the DSL front
   end.
 
-  **Internal.** The last phase before `Rete.IR.escape/1`. It **constructs** the
-  `Rete.IR.Expr` descriptor of every executable the IR needs, and **emits** the quoted
-  definitions spliced into the ruleset module. Both live here so the naming and hashing
+  **Internal.** This is the last phase before `Rete.IR.escape/1`. It **constructs** the
+  `Rete.IR.Expr` descriptor of every executable the IR needs. It **emits** the quoted
+  definitions spliced into the ruleset module. Both live here, so the naming and hashing
   scheme has one implementation.
 
   | kind | arity | signature |
@@ -15,19 +15,19 @@ defmodule Rete.DSL.Codegen do
   | `:test` | 1 | `(bindings_map) -> boolean` |
   | RHS | 2 | `(hash, bindings_map) -> facts` |
 
-  An alpha matches a fact of **any** type on purpose, because the alpha index applies
-  type filtering. That is why it signals no match with `nil` while a test and a join
+  An alpha matches a fact of **any** type, on purpose, because the alpha index applies
+  type filtering. That is why it signals no match with `nil`, while a test and a join
   filter return `false`.
 
   A code is `<kind>_<type>_bind_<v1>_<v2>_..._expr_<hash>`, where the variables are
-  **sorted** and the hash is `:erlang.phash2/1` of the meta-stripped `{args, body}` pair.
-  Two expressions with the same code behave identically, and `expr_defs/1` guards every
-  definition with `Module.defines?/2`, so two rules of one module sharing a condition
+  **sorted**, and the hash is `:erlang.phash2/1` of the meta-stripped `{args, body}` pair.
+  Two expressions with the same code behave identically. `expr_defs/1` guards every
+  definition with `Module.defines?/2`, so two rules of one module that share a condition
   share one function.
 
-  The RHS destructures a **guaranteed** binding in the head and reads an **optional** one
-  with `Map.get/2`. Only variables the body reads are bound, so an ignored one becomes
-  `%{name: _name}` and the rule compiles under `--warnings-as-errors`. The map keys are
+  The RHS destructures a **guaranteed** binding in the head, and reads an **optional** one
+  with `Map.get/2`. It binds only the variables the body reads, so an ignored one becomes
+  `%{name: _name}`, and the rule compiles under `--warnings-as-errors`. The map keys stay
   untouched. See `docs/design/ir.md` §5.
   """
 
@@ -44,14 +44,14 @@ defmodule Rete.DSL.Codegen do
   @doc """
   Builds the alpha `Rete.IR.Expr` of a condition, `(fact) -> bindings_map | nil`.
 
-  `pattern` is the pattern as written and is only used to compute the stable
-  hash, `args_ast` is the compiled argument pattern from
-  `Rete.DSL.Parser.compile_pattern/2`, `guard` is the alpha part of the per
-  condition guard (or `nil`), and `bind` maps every bound variable to its AST.
+  `pattern` is the pattern as written, only used to compute the stable hash. `args_ast`
+  is the compiled argument pattern from `Rete.DSL.Parser.compile_pattern/2`. `guard` is
+  the alpha part of the per-condition guard, or `nil`. `bind` maps every bound variable
+  to its AST.
 
-  Because the hash is taken over `{pattern, body}`, a condition whose guard was
-  wholly lifted into a join filter produces exactly the same code as the same
-  condition written without a guard, and shares its alpha node.
+  The hash is taken over `{pattern, body}`. So a condition whose guard was wholly lifted
+  into a join filter produces exactly the same code as the same condition written
+  without a guard, and it shares that condition's alpha node.
   """
   @spec alpha_expr(atom() | module(), Macro.t(), Macro.t(), Macro.t() | nil, bind()) ::
           IR.Expr.t()
@@ -109,22 +109,22 @@ defmodule Rete.DSL.Codegen do
   @doc """
   Builds a join filter, `(token_bindings, fact_bindings) -> boolean`.
 
-  This is what makes a cross condition guard work. `local` is the set of
-  variables the condition's own pattern binds; every variable the guard reads is
-  destructured from the **fact** side when it is local and from the **token**
-  side otherwise, so a join variable is never bound twice in the same pattern.
+  This is what makes a cross-condition guard work. `local` is the set of variables the
+  condition's own pattern binds. The compiler destructures every variable the guard reads
+  from the **fact** side, when it is local, and from the **token** side otherwise. So a
+  join variable is never bound twice in the same pattern.
 
-  The body is wrapped in `if ..., do: true, else: false` so that the documented
-  boolean contract holds whatever the user wrote.
+  The body is wrapped in `if ..., do: true, else: false`, so the documented boolean
+  contract holds, whatever the user wrote.
   """
   @spec join_filter_expr(atom() | module(), MapSet.t(atom()) | [atom()], Macro.t()) ::
           IR.Expr.t()
   def join_filter_expr(type, local, guard) do
     local = if is_list(local), do: local, else: MapSet.to_list(local)
 
-    # A guard is an expression, so ask what it *reads*, not what a pattern would bind.
-    # Pattern analysis would destructure a key the token never carries whenever the guard
-    # contains its own binder.
+    # A guard is an expression, so this asks what it *reads*, not what a pattern would
+    # bind. Pattern analysis would destructure a key the token never carries, whenever
+    # the guard contains its own binder.
     vars =
       guard
       |> Vars.read_var_names()
@@ -146,10 +146,10 @@ defmodule Rete.DSL.Codegen do
     }
   end
 
-  # Sorted, always. `Map.to_list/1` on an atom keyed map iterates in atom table
-  # *interning* order, so the same source text hashed to different codes depending on
-  # whether the build was incremental. Codes are the node sharing key, so that silently
-  # duplicated alpha nodes on every rebuild.
+  # Sorted, always. `Map.to_list/1` on an atom-keyed map iterates in atom-table
+  # *interning* order. So the same source text used to hash to different codes,
+  # depending on whether the build was incremental. Codes are the node-sharing key, so
+  # that silently duplicated alpha nodes on every rebuild.
   defp bind_pattern(bind), do: {:%{}, [], Enum.sort_by(bind, &elem(&1, 0))}
 
   # --------------------------------------------------------------------------
@@ -201,22 +201,21 @@ defmodule Rete.DSL.Codegen do
   @doc """
   The stable hash of an AST fragment.
 
-  Two normalisations run first, and both exist so that the hash is a function of
-  what the code *means* rather than of how it was typed:
+  Two normalisations run first. Both exist so the hash is a function of what the code
+  *means*, not of how it was typed:
 
-    * metadata is stripped, so a rule keeps its hash when it moves down a file;
-    * discarded variables are canonicalised to `_`, so `{:order, _x}` and
-      `{:order, _y}` — which compile to byte identical functions, since a
-      `_`-prefixed name is never a binding — share one expression and therefore
-      one alpha node.
+    * metadata is stripped, so a rule keeps its hash when it moves down a file.
+    * discarded variables are canonicalised to `_`. So `{:order, _x}` and
+      `{:order, _y}` — byte-identical once compiled, since a `_`-prefixed name is never
+      a binding — share one expression, and therefore one alpha node.
 
-  A module attribute hashes as its *name*, because its value cannot be known
-  here: `@limit` expands to a hidden `Module.__get_attribute__` call that only runs
-  once the module body is evaluated, which is after every macro in the body has
-  expanded. Two conditions over the same pattern therefore share a code whatever
-  the attribute is currently worth, which is what keeps them sharing an alpha
-  node in the ordinary case where the value has not changed. The case where it
-  *has* changed is caught by `check_attr_values!/3` when the body runs.
+  A module attribute hashes as its *name*, because its value cannot be known here.
+  `@limit` expands to a hidden `Module.__get_attribute__` call, and that call only runs
+  once the module body is evaluated — after every macro in the body has already
+  expanded. So two conditions over the same pattern share a code, whatever the attribute
+  is currently worth. This is what keeps them sharing an alpha node, in the ordinary case
+  where the value has not changed. `check_attr_values!/3` catches the case where the
+  value *has* changed, when the body runs.
   """
   @spec ast_hash(Macro.t()) :: non_neg_integer()
   def ast_hash(ast) do
@@ -245,8 +244,8 @@ defmodule Rete.DSL.Codegen do
   production captures the expression functions by name, so it must come after
   their definitions.
 
-  The query function comes first so that a `@doc` written above the `defquery`
-  attaches to it — the one definition of the four a caller ever names.
+  The query function comes first, so that a `@doc` written above the `defquery` attaches
+  to it. That is the one definition of the four a caller ever names.
   """
   @spec compile(IR.Production.t()) :: Macro.t()
   def compile(%IR.Production{} = production) do
@@ -264,16 +263,15 @@ defmodule Rete.DSL.Codegen do
   @doc """
   The quoted definition of a query's own function, or `nil` for a rule.
 
-  `defquery summary(...)` defines `summary/1` and `summary/2`, so a query is run
-  by calling it:
+  `defquery summary(...)` defines `summary/1` and `summary/2`, so you run a query by
+  calling it:
 
       MyRuleset.summary(session)
       MyRuleset.summary(session, cid: 1)
 
-  It delegates to `Rete.Session.query/3` with `{__MODULE__, name}`, which is
-  what makes two rulesets free to use the same query name: the pair is the
-  identity, and the caller writes the module rather than hoping the bare name is
-  unique.
+  It delegates to `Rete.Session.query/3`, with `{__MODULE__, name}`. This is what lets
+  two rulesets use the same query name freely — the pair is the identity, and the caller
+  writes the module, instead of hoping the bare name is unique.
   """
   @spec query_def(IR.Production.t()) :: Macro.t() | nil
   def query_def(%IR.Production{type: :query, name: name}) do
@@ -304,20 +302,20 @@ defmodule Rete.DSL.Codegen do
   @doc """
   The quoted definition of the RHS function, `(hash, bindings_map) -> facts`.
 
-  Named `Rete.IR.rhs_name/1` of the production, so `defrule loyalty(...)`
-  defines `__rhs_loyalty__/2` and leaves `loyalty` itself alone.
+  Named after `Rete.IR.rhs_name/1` of the production. So `defrule loyalty(...)` defines
+  `__rhs_loyalty__/2`, and leaves `loyalty` itself alone.
 
-  The bindings are read in two ways, decided by `Rete.IR.lhs_bindings/1`:
+  `Rete.IR.lhs_bindings/1` decides how the RHS reads the bindings, in two ways:
 
-    * a **guaranteed** binding is destructured in the head, `%{cid: cid}`, so a
-      token that is missing it raises a `FunctionClauseError` instead of firing
-      the rule with a hole in it;
-    * an **optional** binding - one only some branches of a disjunction bind -
-      is read with `Map.get/2` in the body, because the tokens of the other
-      branches genuinely do not carry the key. It is `nil` there.
+    * a **guaranteed** binding is destructured in the head, `%{cid: cid}`. A token
+      missing it raises a `FunctionClauseError`, instead of firing the rule with a hole
+      in it.
+    * an **optional** binding — one only some branches of a disjunction bind — is read
+      with `Map.get/2` in the body instead. The tokens of the other branches genuinely
+      do not carry the key, so it is `nil` there.
 
-  Either way only the variables the body actually reads are bound, so a rule
-  that ignores a join variable still compiles under `--warnings-as-errors`.
+  Either way, only the variables the body actually reads get bound. So a rule that
+  ignores a join variable still compiles under `--warnings-as-errors`.
   """
   @spec rhs_def(IR.Production.t()) :: Macro.t()
   def rhs_def(%IR.Production{__ast__: %{bind: bind, body: body}} = production) do
@@ -335,9 +333,9 @@ defmodule Rete.DSL.Codegen do
     end
   end
 
-  # No optional binding is read, so the argument is the bindings pattern and the body is
-  # untouched. That is every production with no disjunction binding different variables
-  # on different branches.
+  # No optional binding is read. So the argument is the bindings pattern, and the body
+  # stays untouched. This covers every production with no disjunction that binds
+  # different variables on different branches.
   defp rhs_arg(pattern, [], body), do: {pattern, body}
 
   defp rhs_arg(pattern, optional, body) do
@@ -362,10 +360,10 @@ defmodule Rete.DSL.Codegen do
   @doc """
   The quoted definition of a single expression function.
 
-  An arity 1 expression matches the fact (or the bindings map) against its
-  argument pattern; an arity 2 join filter matches both sides at once. The
-  fallback of a non matching argument is `nil` for an alpha and `false` for a
-  test or a join filter, matching each kind's documented return type.
+  An arity-1 expression matches the fact (or the bindings map) against its argument
+  pattern. An arity-2 join filter matches both sides at once. The fallback for a
+  non-matching argument is `nil` for an alpha, and `false` for a test or a join filter —
+  matching each kind's documented return type.
   """
   @spec expr_def(IR.Expr.t()) :: Macro.t()
   def expr_def(%IR.Expr{arity: 1, name: name, __ast__: %{args: args, body: body}} = expr) do
@@ -406,8 +404,8 @@ defmodule Rete.DSL.Codegen do
   # attribute's AST does not carry its value. So `@limit 5` and a later `@limit 100` over
   # the same pattern would share one function, and the second rule would match on 5.
   #
-  # Emitted into the module body, where attribute values are readable, this records what
-  # each code saw and rejects a second, different reading.
+  # This is emitted into the module body, where attribute values are readable. It
+  # records what each code saw, and it rejects a second, different reading.
   defp attr_check(%IR.Expr{code: code, __ast__: ast}) do
     case attr_names(ast) do
       [] ->
@@ -416,7 +414,7 @@ defmodule Rete.DSL.Codegen do
       names ->
         pairs = Enum.map(names, fn name -> {name, {:@, [], [{name, [], nil}]}} end)
 
-        # Fully qualified: this is spliced into the user's module, which has no alias
+        # Fully qualified. This is spliced into the user's module, which has no alias
         # for this one.
         quote do
           # credo:disable-for-next-line Credo.Check.Design.AliasUsage
@@ -444,10 +442,10 @@ defmodule Rete.DSL.Codegen do
   @doc """
   Asserts that an expression code always sees the same module attribute values.
 
-  Called from the ruleset module's body, where attribute values are readable,
-  once per generated expression that mentions an attribute. Raises when a code
-  that was already generated is reached again with a different value, which
-  would otherwise silently reuse the first rule's compiled function.
+  The ruleset module's body calls this, where attribute values are readable, once per
+  generated expression that mentions an attribute. It raises when a code that was
+  already generated is reached again with a different value. Otherwise, the second rule
+  would silently reuse the first rule's compiled function.
   """
   @spec check_attr_values!(module(), atom(), keyword()) :: :ok
   def check_attr_values!(module, code, values) do
@@ -483,14 +481,15 @@ defmodule Rete.DSL.Codegen do
     end
   end
 
-  # An alpha signals "no match" with nil, which is distinguishable from the empty
-  # bindings map an arity 0 pattern returns. A test and a join filter are predicates.
+  # An alpha signals "no match" with nil. This is distinguishable from the empty
+  # bindings map an arity-0 pattern returns. A test and a join filter are predicates
+  # instead.
   defp fallback(%IR.Expr{kind: :alpha}), do: nil
   defp fallback(%IR.Expr{}), do: false
 
-  # The RHS destructures every variable bound on the LHS. A variable the body never reads
-  # is renamed to _var in the pattern, so the rule compiles under --warnings-as-errors.
-  # The map key is untouched.
+  # The RHS destructures every variable bound on the LHS. It renames a variable the body
+  # never reads to `_var` in the pattern, so the rule compiles under
+  # --warnings-as-errors. The map key stays untouched.
   defp rhs_bind_pattern(bind, body) do
     used = read_vars(body)
 
