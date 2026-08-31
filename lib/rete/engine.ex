@@ -282,16 +282,16 @@ defmodule Rete.Engine do
   defp fire_loop(%State{} = state, cfg, fired, tally) do
     max_cycles = cfg.max_cycles
 
-    case pop_next(state.agenda, cfg.concurrency) do
+    case next_cycle(state, cfg.concurrency) do
       :empty ->
         emit(%State{state | fired: state.fired + fired}, fn -> {:fire_finished, fired} end)
 
-      {:ok, _activations, _agenda} when is_integer(max_cycles) and fired >= max_cycles ->
+      {:ok, _mode, _activations, _state} when is_integer(max_cycles) and fired >= max_cycles ->
         raise RuntimeError, runaway(state, fired, tally)
 
-      {:ok, activations, agenda} ->
-        %State{state | agenda: agenda}
-        |> fire_all(activations, cfg)
+      {:ok, mode, activations, state} ->
+        state
+        |> fire_cycle(activations, cfg, mode)
         |> fire_loop(cfg, fired + 1, tally(tally, activations))
     end
   end
@@ -299,14 +299,23 @@ defmodule Rete.Engine do
   # One activation at the default concurrency, a whole activation group above it. Either
   # way what comes back is one cycle: `:max_cycles` counts these, not the activations
   # inside them, so raising `:concurrency` does not consume the allowance faster.
-  defp pop_next(agenda, concurrency) when concurrency <= 1 do
-    case Agenda.pop(agenda) do
+  #
+  # The group is **peeked**, not popped. An activation stays on the agenda until its own
+  # conclusions are applied, so a conclusion applied earlier in the cycle can still cancel
+  # it. See `fire_cycle/4`.
+  defp next_cycle(%State{} = state, concurrency) when concurrency <= 1 do
+    case Agenda.pop(state.agenda) do
       :empty -> :empty
-      {:ok, activation, agenda} -> {:ok, [activation], agenda}
+      {:ok, activation, agenda} -> {:ok, :popped, [activation], %State{state | agenda: agenda}}
     end
   end
 
-  defp pop_next(agenda, _concurrency), do: Agenda.pop_group(agenda)
+  defp next_cycle(%State{} = state, _concurrency) do
+    case Agenda.peek_group(state.agenda) do
+      [] -> :empty
+      activations -> {:ok, :peeked, activations, state}
+    end
+  end
 
   defp tally(tally, activations) do
     Enum.reduce(activations, tally, &Map.update(&2, &1.node_id, 1, fn n -> n + 1 end))
@@ -363,8 +372,8 @@ defmodule Rete.Engine do
     end
   end
 
-  # One activation, or a group of one: the sequential path, unchanged.
-  defp fire_all(%State{} = state, [activation], _cfg) do
+  # The sequential path, unchanged. The activation is already off the agenda.
+  defp fire_cycle(%State{} = state, [activation], _cfg, :popped) do
     state |> fire(activation) |> drain()
   end
 
@@ -375,7 +384,7 @@ defmodule Rete.Engine do
   #
   # Only `{rhs, hash, bindings}` is captured, never the state or the network: a closure
   # over either would copy the whole compiled network into every task.
-  defp fire_all(%State{} = state, activations, cfg) do
+  defp fire_cycle(%State{} = state, activations, cfg, :peeked) do
     nodes = Enum.map(activations, &Network.node(state.network, &1.node_id))
 
     results =
@@ -394,9 +403,21 @@ defmodule Rete.Engine do
 
     [activations, nodes, results]
     |> Enum.zip()
-    |> Enum.reduce(state, fn {activation, node, result}, state ->
-      state |> conclude(activation, node, result) |> drain()
-    end)
+    |> Enum.reduce(state, &apply_conclusions/2)
+  end
+
+  # Each activation leaves the agenda as its own conclusions are applied. `:missing` means
+  # a conclusion applied earlier in this cycle retracted the match behind it, so it must
+  # not fire — the same outcome firing one at a time would give. Its body already ran, and
+  # the result is discarded.
+  defp apply_conclusions({activation, node, result}, %State{} = state) do
+    case Agenda.remove(state.agenda, activation) do
+      {agenda, :removed} ->
+        %State{state | agenda: agenda} |> conclude(activation, node, result) |> drain()
+
+      {_agenda, :missing} ->
+        state
+    end
   end
 
   defp fire(%State{} = state, %Activation{} = activation) do

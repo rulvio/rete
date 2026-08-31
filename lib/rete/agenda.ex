@@ -117,13 +117,17 @@ defmodule Rete.Agenda do
   end
 
   @doc """
-  Takes every activation of the most salient **group**, or `:empty`.
+  Every activation of the most salient **group**, in firing order, without removing them.
 
   A group is every bucket sharing the leading `{salience, internal_salience}` of the sort
-  key, so it spans the rules that would fire before any less salient one. Activations come
-  back in firing order, exactly as repeated `pop/1` would yield them.
+  key, so it spans the rules that would fire before any less salient one. One group is one
+  cycle of the fire loop, however many activations it holds.
 
-  One group is one cycle of the fire loop, however many activations it holds.
+  **Peeked rather than popped.** A caller firing the group removes each activation with
+  `remove/2` as it applies it, so an activation that an earlier conclusion in the same
+  group invalidates is still found and cancelled. Taking them all out up front would
+  leave the retraction nothing to cancel, and the conclusion would be inserted against a
+  token that no longer exists — a fact no retraction could ever take back.
 
       iex> alias Rete.{Activation, Agenda}
       iex> agenda =
@@ -131,25 +135,18 @@ defmodule Rete.Agenda do
       ...>   |> Agenda.add(%Activation{node_id: :a, salience: 10, order: 0})
       ...>   |> Agenda.add(%Activation{node_id: :b, salience: 10, order: 1})
       ...>   |> Agenda.add(%Activation{node_id: :c, salience: 0, order: 2})
-      iex> {:ok, group, rest} = Agenda.pop_group(agenda)
-      iex> {Enum.map(group, & &1.node_id), Agenda.size(rest)}
-      {[:a, :b], 1}
+      iex> Agenda.peek_group(agenda) |> Enum.map(& &1.node_id)
+      [:a, :b]
+      iex> Agenda.size(agenda)
+      3
   """
-  @spec pop_group(t()) :: {:ok, [Activation.t()], t()} | :empty
-  def pop_group(%__MODULE__{keys: []}), do: :empty
+  @spec peek_group(t()) :: [Activation.t()]
+  def peek_group(%__MODULE__{keys: []}), do: []
 
-  def pop_group(%__MODULE__{keys: [{salience, internal, _order} | _]} = agenda) do
-    {keys, rest_keys} =
-      Enum.split_while(agenda.keys, fn {s, i, _order} -> s == salience and i == internal end)
-
-    activations = Enum.flat_map(keys, &(agenda.buckets |> Map.fetch!(&1) |> :queue.to_list()))
-
-    {:ok, activations,
-     %__MODULE__{
-       keys: rest_keys,
-       buckets: Map.drop(agenda.buckets, keys),
-       size: agenda.size - length(activations)
-     }}
+  def peek_group(%__MODULE__{keys: [{salience, internal, _order} | _]} = agenda) do
+    agenda.keys
+    |> Enum.take_while(fn {s, i, _order} -> s == salience and i == internal end)
+    |> Enum.flat_map(&(agenda.buckets |> Map.fetch!(&1) |> :queue.to_list()))
   end
 
   @doc "Every pending activation, in firing order."

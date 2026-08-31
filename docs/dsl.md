@@ -524,8 +524,8 @@ is not, and there are two ways one can happen more often than the conclusions su
 * retracting and reinserting the facts behind a match runs the body again for that match;
 * under `fire_rules(session, concurrency: n)` the bodies of one activation group run at
   once, so a body may run for a match that another activation *in the same group* then
-  invalidates. Its conclusions are still taken back, because truth maintenance handles
-  that, but a request it already sent is sent.
+  invalidates. That activation does not fire — nothing it computed is inserted, exactly as
+  if the bodies had run one at a time — but a request it already sent is sent.
 
 A body that only computes facts is therefore safe to write however you like. One that
 writes to a database or calls a service should be idempotent and expect at-least-once.

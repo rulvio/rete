@@ -33,11 +33,12 @@ All notable changes to `rete` are recorded here. The format follows
   sleeping 5 ms go from 385 ms to 7 ms.
 
   It preserves the resulting session, asserted by a property over the every-node-kind
-  ruleset. It does **not** preserve firing order, because popping a group freezes it while
+  ruleset. It does **not** preserve firing order, because taking a group freezes it while
   firing one at a time re-sorts the agenda after every activation. A body may also run for
-  a match another activation in the same group then invalidates — conclusions are still
-  retracted, side effects are not. `docs/dsl.md` states the at-least-once contract, and
-  `docs/design/engine.md` §11 has the measurements.
+  a match another activation in the same group then invalidates: that activation does not
+  fire and nothing it computed is inserted, but a side effect it performed is not undone.
+  `docs/dsl.md` states the at-least-once contract, and `docs/design/engine.md` §11 has the
+  measurements.
 * **CI** (`.github/workflows/ci.yml`) running the project's six verification commands on
   the declared floor, Elixir 1.18, and on the current release. The floor was a promise
   `mix.exs` made and nothing checked.
@@ -54,7 +55,7 @@ First release. A complete forward-chaining Rete engine: the DSL front end, the n
 compiler, the propagation loop, truth maintenance and the observability tools.
 
 `0.1.0` rather than `1.0.0` deliberately. Everything documented works and is covered by
-660 tests, but one part of the surface is known to be unsettled and is likely to change
+725 tests, but one part of the surface is known to be unsettled and is likely to change
 without a major version: how a collection reaches per-group firing. See the known gaps
 in `docs/design/`.
 

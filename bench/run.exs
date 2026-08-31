@@ -6,7 +6,7 @@
 # such quadratics were found and fixed at once, and each was invisible until the
 # one above it was gone; nothing but a scaling measurement would have shown them.
 #
-# So every scenario runs at three sizes and reports the empirical exponent: the
+# So a scaling scenario runs at three sizes and reports the empirical exponent: the
 # k in O(n^k), read off the growth between one size and the next. Around 1.0 is
 # linear and fine. Around 2.0 is quadratic and is a bug unless it is listed as a
 # known gap below.

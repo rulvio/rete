@@ -345,9 +345,16 @@ concurrent   a → c → b    the group {a, c} was frozen before a ran
 ```
 
 It also **does not guarantee a body runs only for matches that survive**. A body may run
-for an activation that another in the same group invalidates. Its conclusions are still
-retracted, but a side effect it performed is not undone. Clara documents the same for
-`fire-rules-async`. `docs/dsl.md` states the at-least-once contract this implies.
+for an activation that another in the same group then invalidates. What it computed is
+discarded — that activation does not fire, and `Rete.Agenda.remove/2` returning `:missing`
+is what detects it — but a side effect the body performed is not undone. Clara documents
+the same for `fire-rules-async`. `docs/dsl.md` states the at-least-once contract.
+
+Discarding rather than applying is the whole reason the group is peeked instead of popped.
+Taking the group off the agenda up front left the retraction nothing to cancel, so the
+conclusion was inserted against a token that no longer existed and no retraction could
+ever take it back. `Rete.EngineTest` pins both halves: the activation does not fire, and
+the session still drains to empty.
 
 ### What a body runs in
 

@@ -1705,6 +1705,15 @@ defmodule Rete.EngineTest do
       defrule grow({:counter, n}), do: {:counter, n + 1}
     end
 
+    defmodule Cancel do
+      use Rete.Ruleset
+
+      # Both sit at salience 0, so both land in one activation group. `veto`'s conclusion
+      # retracts the match behind `act`.
+      defrule veto({:trigger, n}), do: {:blocked, n}
+      defrule act({:task, n}, {:not, [{:blocked, n}]}), do: {:acted, n}
+    end
+
     defp jobs(n), do: Enum.map(1..n, &{:job, &1})
 
     test "the bodies of one group run at once" do
@@ -1843,6 +1852,45 @@ defmodule Rete.EngineTest do
           |> Session.insert({:counter, 0})
           |> Session.fire_rules(max_cycles: 20, concurrency: concurrency)
         end
+      end
+    end
+
+    # An activation stays on the agenda until its own conclusions are applied, so a
+    # conclusion applied earlier in the cycle still cancels it. Taking the whole group off
+    # up front left the retraction nothing to cancel, and `{:acted, 1}` was inserted
+    # against a token that no longer existed — a fact no retraction could take back.
+    test "an activation cancelled within its own group does not fire" do
+      facts = [{:trigger, 1}, {:task, 1}]
+
+      settled = fn concurrency ->
+        [Cancel]
+        |> Session.new()
+        |> Session.insert(facts)
+        |> Session.fire_rules(concurrency: concurrency)
+      end
+
+      for concurrency <- [1, 8] do
+        session = settled.(concurrency)
+
+        assert [] == derived(session, :acted)
+        assert [{:blocked, 1}] == derived(session, :blocked)
+      end
+    end
+
+    test "a cancelled group still drains completely on retraction" do
+      facts = [{:trigger, 1}, {:task, 1}]
+
+      for concurrency <- [1, 8] do
+        drained =
+          [Cancel]
+          |> Session.new()
+          |> Session.insert(facts)
+          |> Session.fire_rules(concurrency: concurrency)
+          |> Session.retract(facts)
+          |> Session.fire_rules(concurrency: concurrency)
+
+        assert [] == Session.facts(drained)
+        assert %{} == Rete.Memory.dump(drained.state.memory).facts
       end
     end
 
