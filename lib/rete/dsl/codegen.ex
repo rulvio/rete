@@ -3,68 +3,32 @@ defmodule Rete.DSL.Codegen do
   Expression construction and code generation: the last phase of the DSL front
   end.
 
-  Codegen is the last phase before `Rete.IR.escape/1`. It owns two things:
+  **Internal.** The last phase before `Rete.IR.escape/1`. It **constructs** the
+  `Rete.IR.Expr` descriptor of every executable the IR needs, and **emits** the quoted
+  definitions spliced into the ruleset module. Both live here so the naming and hashing
+  scheme has one implementation.
 
-    * **construction** - building the `Rete.IR.Expr` descriptor of every kind of
-      executable the IR needs (`alpha_expr/5`, `test_expr/2`,
-      `join_filter_expr/3`), including the stable code and name every one of
-      them is identified by;
-    * **emission** - turning a classified `Rete.IR.Production` into the quoted
-      definitions that are spliced into the ruleset module (`expr_defs/1`,
-      `rhs_def/1`, `compile/1`).
+  | kind | arity | signature |
+  |---|---|---|
+  | `:alpha` | 1 | `(fact) -> bindings_map \| nil` |
+  | `:join_filter` | 2 | `(token_bindings, fact_bindings) -> boolean` |
+  | `:test` | 1 | `(bindings_map) -> boolean` |
+  | RHS | 2 | `(hash, bindings_map) -> facts` |
 
-  Both halves live here so that the naming and hashing scheme has exactly one
-  implementation: `Rete.DSL.Parser` and `Rete.DSL.Bindings` build their
-  expressions through this module.
+  An alpha matches a fact of **any** type on purpose, because the alpha index applies
+  type filtering. That is why it signals no match with `nil` while a test and a join
+  filter return `false`.
 
-  ## The four generated functions
-
-  | kind | arity | signature | emitted for |
-  |---|---|---|---|
-  | `:alpha` | 1 | `(fact) -> bindings_map \\| nil` | every `Rete.IR.Fact` and `Rete.IR.Coll` |
-  | `:join_filter` | 2 | `(token_bindings, fact_bindings) -> boolean` | a condition whose guard reads an upstream variable |
-  | `:test` | 1 | `(bindings_map) -> boolean` | a rule level `when` guard |
-  | RHS | 2 | `(hash, bindings_map) -> facts` | every production |
-
-  An alpha function matches a fact of **any** type on purpose: type filtering,
-  including the taxonomy declared with `Rete.Ruleset.derive/2`, is applied by
-  the alpha index when it decides whether to propagate a fact to a node, never
-  inside the expression. The falsy result of an expression therefore depends on
-  its kind: an alpha returns `nil` when the fact does not match, while a test
-  and a join filter return `false`.
-
-  ## Naming and hashing
-
-      fact_<type>_bind_<v1>_<v2>_..._expr_<hash>        alpha, no guard
-      test_fact_<type>_bind_<v1>_..._expr_<hash>        alpha, with guard
-      test_bind_<v1>_..._expr_<hash>                    test over bindings only
-      join_<type>_bind_<v1>_..._expr_<hash>             join filter
-
-  `<type>` loses its `Elixir.` prefix and its dots (`MyApp.Order` becomes
-  `MyApp_Order`), `<v...>` are the variables the expression reads, **sorted**,
-  and `<hash>` is `:erlang.phash2/1` of the meta stripped `{args, body}` AST
-  pair. The generated function is named `:"__<code>__"`.
-
-  Two expressions with the same code have byte identical behaviour, which is
-  what lets the network share nodes: `expr_defs/1` guards every definition with
-  `Module.defines?/2`, so two rules of the same module that share a condition
+  A code is `<kind>_<type>_bind_<v1>_<v2>_..._expr_<hash>`, where the variables are
+  **sorted** and the hash is `:erlang.phash2/1` of the meta-stripped `{args, body}` pair.
+  Two expressions with the same code behave identically, and `expr_defs/1` guards every
+  definition with `Module.defines?/2`, so two rules of one module sharing a condition
   share one function.
 
-  ## Dedup and the RHS
-
-  The RHS reads the variables of the production's `:bind`, which is a product
-  of the pipeline: `Rete.Ruleset.build/4` recomputes it from the **classified**
-  LHS, so a variable that only ever appears inside a negation is not in it and
-  the RHS never asks for a key no token can carry.
-
-  How each one is read is decided by `Rete.IR.lhs_bindings/1`. A **guaranteed**
-  binding is destructured in the head, `%{cid: cid}`; a binding only some
-  branches of a disjunction produce is read with `Map.get/2` in the body and is
-  `nil` on the branches that do not bind it. Either way only the variables the
-  body actually reads are bound - ignoring a join variable is very common - so
-  a guaranteed binding the body ignores is emitted as `%{name: _name}` and an
-  ignored optional one is not read at all, and the rule still compiles under
-  `--warnings-as-errors`. The map *keys* are untouched.
+  The RHS destructures a **guaranteed** binding in the head and reads an **optional** one
+  with `Map.get/2`. Only variables the body reads are bound, so an ignored one becomes
+  `%{name: _name}` and the rule compiles under `--warnings-as-errors`. The map keys are
+  untouched. See `docs/design/w1-ir.md` §5.
   """
 
   alias Rete.DSL.Vars
@@ -158,9 +122,9 @@ defmodule Rete.DSL.Codegen do
   def join_filter_expr(type, local, guard) do
     local = if is_list(local), do: local, else: MapSet.to_list(local)
 
-    # A guard is an expression, so ask what it *reads*, not what a pattern would
-    # bind. Using the pattern analysis here would destructure a key the token
-    # never carries whenever the guard contains its own binder.
+    # A guard is an expression, so ask what it *reads*, not what a pattern would bind.
+    # Pattern analysis would destructure a key the token never carries whenever the guard
+    # contains its own binder.
     vars =
       guard
       |> Vars.read_var_names()
@@ -183,11 +147,9 @@ defmodule Rete.DSL.Codegen do
   end
 
   # Sorted, always. `Map.to_list/1` on an atom keyed map iterates in atom table
-  # *interning* order, which depends on what the VM happened to intern first —
-  # so the same source text hashed to different codes depending on whether the
-  # build was incremental. Codes are the node sharing key, so that silently
-  # duplicated alpha nodes on every rebuild. Sorting makes the pattern, and
-  # therefore the hash, a function of the source alone.
+  # *interning* order, so the same source text hashed to different codes depending on
+  # whether the build was incremental. Codes are the node sharing key, so that silently
+  # duplicated alpha nodes on every rebuild.
   defp bind_pattern(bind), do: {:%{}, [], Enum.sort_by(bind, &elem(&1, 0))}
 
   # --------------------------------------------------------------------------
@@ -373,9 +335,9 @@ defmodule Rete.DSL.Codegen do
     end
   end
 
-  # No optional binding is read: the argument is the bindings pattern itself and
-  # the body is untouched, which is every production that has no disjunction
-  # binding different variables on different branches.
+  # No optional binding is read, so the argument is the bindings pattern and the body is
+  # untouched. That is every production with no disjunction binding different variables
+  # on different branches.
   defp rhs_arg(pattern, [], body), do: {pattern, body}
 
   defp rhs_arg(pattern, optional, body) do
@@ -440,14 +402,12 @@ defmodule Rete.DSL.Codegen do
     end
   end
 
-  # Two expressions share a generated function when their AST is equal, and a
-  # module attribute's AST does not carry its value. So `@limit 5` and a later
-  # `@limit 100` over the same pattern would share one function, and the second
-  # rule would silently match on 5.
+  # Two expressions share a generated function when their AST is equal, and a module
+  # attribute's AST does not carry its value. So `@limit 5` and a later `@limit 100` over
+  # the same pattern would share one function, and the second rule would match on 5.
   #
-  # Emitted into the module body, where attribute values finally *are*
-  # readable, this records what each code saw and rejects a second, different
-  # reading. Conditions with no attributes emit nothing and share as before.
+  # Emitted into the module body, where attribute values are readable, this records what
+  # each code saw and rejects a second, different reading.
   defp attr_check(%IR.Expr{code: code, __ast__: ast}) do
     case attr_names(ast) do
       [] ->
@@ -456,8 +416,8 @@ defmodule Rete.DSL.Codegen do
       names ->
         pairs = Enum.map(names, fn name -> {name, {:@, [], [{name, [], nil}]}} end)
 
-        # Fully qualified on purpose: this is spliced into the *user's* module,
-        # which has no alias for this one.
+        # Fully qualified: this is spliced into the user's module, which has no alias
+        # for this one.
         quote do
           # credo:disable-for-next-line Credo.Check.Design.AliasUsage
           Rete.DSL.Codegen.check_attr_values!(__MODULE__, unquote(code), unquote(pairs))
@@ -523,15 +483,14 @@ defmodule Rete.DSL.Codegen do
     end
   end
 
-  # An alpha signals "no match" with nil, because nil is distinguishable from
-  # the empty bindings map an arity 0 pattern returns. A test and a join filter
-  # are predicates.
+  # An alpha signals "no match" with nil, which is distinguishable from the empty
+  # bindings map an arity 0 pattern returns. A test and a join filter are predicates.
   defp fallback(%IR.Expr{kind: :alpha}), do: nil
   defp fallback(%IR.Expr{}), do: false
 
-  # The RHS destructures every variable bound on the LHS. A variable the body
-  # never reads is renamed to _var in the pattern so the rule still compiles
-  # under --warnings-as-errors; the map key is untouched.
+  # The RHS destructures every variable bound on the LHS. A variable the body never reads
+  # is renamed to _var in the pattern, so the rule compiles under --warnings-as-errors.
+  # The map key is untouched.
   defp rhs_bind_pattern(bind, body) do
     used = read_vars(body)
 

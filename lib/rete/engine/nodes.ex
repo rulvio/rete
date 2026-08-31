@@ -2,50 +2,19 @@ defmodule Rete.Engine.Nodes do
   @moduledoc """
   What each node kind does when tokens or elements arrive.
 
-  Every clause has the same shape: take the state and the items, return the new
-  state and the propagation work produced. The loop in `Rete.Engine` does the
-  walking, so nothing here calls a child directly.
+  **Internal.** Every clause has the same shape: take the state and the items, return the
+  new state and the propagation work produced. The loop in `Rete.Engine` does the walking,
+  so nothing here calls a child directly.
 
-  ## Nodes do not know listeners exist
+  **The retraction rule.** A node must retract exactly what it propagated, by value.
+  Downstream memories remove by value, and a mismatch strands a token forever. So a node
+  never propagates from what it was *handed*. It propagates from what its memory reports
+  after the memory has been updated. Retracting something never stored produces no
+  downstream work at all.
 
-  Two things a node produces cannot be carried out where they happen: retracting
-  the facts an activation inserted has to go back through the alpha network, and
-  telling a listener something happened is not a node's business. Both are
-  returned as ops — `{:retract_facts, node_id, facts}` and `{:event, event}` —
-  for `Rete.Engine` to act on. That is what keeps event emission in one place
-  rather than scattered through every clause here.
-
-  ## The retraction rule
-
-  Every node must retract exactly what it propagated. Not "something equivalent"
-  — the same value, because downstream memories remove by value and a mismatch
-  leaves a token stranded forever, which then fires a rule whose support is gone.
-
-  The discipline that makes this hold is that a node never propagates from what
-  it was *handed*; it propagates from what its memory says, after the memory has
-  been updated. `Rete.Memory.remove_elements/4` and `remove_tokens/4` report what
-  was actually there, and only that is propagated onward. A retraction of
-  something never stored produces no downstream work at all.
-
-  ## The root token
-
-  Nothing binds before a rule's first condition, so a rule that opens with a
-  negation, a collection or a test has no element to build its first token from.
-  A `RootJoin` does not need one — it mints a token per element — but a
-  `Negation` hanging off the beta root has to pass *something* while nothing
-  matches, and an `Accumulate` there has to emit its collection to someone.
-
-  Classic Rete answers this with a single empty token seeded at the root, and so
-  does this. `seed_root/1` plants it: one `%Rete.Token{}` sent left to every
-  child of the beta root, once per session and never retracted. Without it those
-  rules are dead — they never fire, and nothing says so.
-
-  It has to be planted at state creation rather than on the first fact, because
-  a rule whose whole left hand side is an absence or an empty collection is true
-  of the *empty* session and must be able to fire before anything is inserted.
-  `Rete.Engine.new/1` is what calls it, and calling it twice is a no-op — a
-  second root token would give every one of those rules a second support that no
-  retraction clears.
+  Two kinds of work are returned as ops rather than done here.
+  `{:retract_facts, node_id, facts}` has to re-enter the alpha network, and
+  `{:event, event}` is not a node's business. See `docs/design/w3-engine.md` §5.
   """
 
   alias Rete.Activation
@@ -72,14 +41,12 @@ defmodule Rete.Engine.Nodes do
   @doc """
   Seeds the beta root's empty token, returning the state and the work it produced.
 
-  Every child of the beta root is sent one `%Rete.Token{}` from the left. A
-  `RootJoin` ignores it — its elements are its own starting point — but a
-  negation, a collection or a test in first position has no other way to receive
-  the match it is entitled to.
+  Every child of the beta root is sent one `%Rete.Token{}` from the left. A `RootJoin`
+  ignores it. A negation, a collection or a test in first position has no other way to
+  receive the match it is entitled to.
 
-  Does nothing after the first call: the root token is permanent, and a second
-  one would give every rule that opens with a negation or a collection a second
-  support that no retraction clears.
+  Does nothing after the first call. A second root token would give every such rule a
+  second support that no retraction clears. See `docs/design/w3-engine.md` §6.
   """
   @spec seed_root(State.t()) :: {State.t(), [State.op()]}
   def seed_root(%State{memory: %Memory{root_seeded?: true}} = state), do: {state, []}
@@ -106,9 +73,9 @@ defmodule Rete.Engine.Nodes do
   end
 
   defp dispatch(%Node.RootJoin{}, kind, _items, state) when kind in [:left, :left_retract] do
-    # The root token reaches it like every other child of the root, and it has
-    # no use for it: joining the empty token with each element is exactly what
-    # the `:right` clause already does, so honouring it would double every match.
+    # The root token reaches it like every other child of the root, and it has no use for
+    # it. The `:right` clause already joins the empty token with each element, so
+    # honouring this would double every match.
     {state, []}
   end
 
@@ -164,9 +131,9 @@ defmodule Rete.Engine.Nodes do
 
   # --- negation ---------------------------------------------------------------------
 
-  # A token passes only while nothing matches it. The interesting transitions are
-  # the edges: the *first* element to arrive suppresses the tokens that already
-  # went through, and the *last* to leave releases them.
+  # A token passes only while nothing matches it. The edges are what matter: the first
+  # element to arrive suppresses the tokens that already went through, and the last to
+  # leave releases them.
   defp dispatch(%kind{} = node, :left, tokens, %State{} = state)
        when kind in [Node.Negation, Node.NegationJoin] do
     reduce_groups(state, tokens, &Token.join_key(&1, node.join_bind), fn %State{} = state,
@@ -250,10 +217,9 @@ defmodule Rete.Engine.Nodes do
     end)
   end
 
-  # An element joining or leaving a collection changes the value every matching
-  # token carries, so each one is retracted at its old value and re-sent at the
-  # new one. Sending without retracting would leave two contradictory matches
-  # downstream, both of which believe they are current.
+  # An element joining or leaving a collection changes the value every matching token
+  # carries, so each is retracted at its old value and re-sent at the new one. Sending
+  # without retracting would leave two contradictory matches downstream.
   defp dispatch(%kind{} = node, right, elements, %State{} = state)
        when kind in [Node.Accumulate, Node.AccumulateJoin] and right in [:right, :right_retract] do
     reduce_groups(state, elements, &Element.join_key(&1, node.join_bind), fn %State{} = state,
@@ -274,9 +240,8 @@ defmodule Rete.Engine.Nodes do
 
   # --- test -----------------------------------------------------------------------------
 
-  # No fact input and no memory: a test is a filter on the way past. It must
-  # apply the same predicate on retraction, or it would try to retract tokens it
-  # never let through.
+  # No fact input and no memory: a test is a filter on the way past. It must apply the
+  # same predicate on retraction, or it would retract tokens it never let through.
   defp dispatch(%Node.Test{} = node, :left, tokens, %State{} = state) do
     send_left(state, node, Enum.filter(tokens, &passes?(node, &1)))
   end
@@ -299,10 +264,8 @@ defmodule Rete.Engine.Nodes do
     {%State{state | agenda: agenda}, events}
   end
 
-  # Either the match is still waiting to fire, in which case it simply never
-  # does, or it already fired and truth maintenance has to take back what it
-  # inserted. Those are the only two possibilities, and telling them apart is
-  # exactly what `Agenda.remove/2` reports.
+  # Either the match is still pending, so it never fires, or it fired and truth
+  # maintenance takes back what it inserted. `Agenda.remove/2` reports which.
   defp dispatch(%Node.Production{} = node, :left_retract, tokens, %State{} = state) do
     Enum.reduce(tokens, {state, []}, fn token, {%State{} = state, ops} ->
       {agenda, outcome} = Agenda.remove(state.agenda, activation(state, node, token))
@@ -392,8 +355,8 @@ defmodule Rete.Engine.Nodes do
 
   # --- collections ------------------------------------------------------------------------
 
-  # One extended token per group, plus the empty one when the locked rule says a
-  # collection with no new variables still matches with nothing in it.
+  # One extended token per group, plus the empty one when a collection binding no new
+  # variables still matches with nothing in it.
   defp collected(%State{} = state, node, key, tokens) do
     groups = groups_for(state, node, key)
 
@@ -405,11 +368,9 @@ defmodule Rete.Engine.Nodes do
     end
   end
 
-  # A group with no members is not the same as no group. When the pattern binds
-  # no new variables every variable it uses is already fixed by the token, so
-  # there is exactly one group and it exists whether or not a fact ever landed in
-  # it — that is the locked empty-collection rule, precomputed as
-  # :propagates_empty? at build time.
+  # A group with no members is not the same as no group. A pattern binding no new
+  # variables has every variable fixed by the token, so it has exactly one group whether
+  # or not a fact landed in it. Precomputed as :propagates_empty? at build time.
   defp groups_for(%State{} = state, node, key) do
     case Memory.groups(state.memory, node.id, key) do
       empty when empty == %{} -> if node.propagates_empty?, do: %{key => []}, else: %{}
@@ -417,11 +378,9 @@ defmodule Rete.Engine.Nodes do
     end
   end
 
-  # A plain collection takes its group whole. A filtered one cannot: whether a
-  # candidate belongs depends on the token, so the stored group is only a
-  # candidate set and membership is decided per token. That is why groups hold
-  # elements rather than bare facts — the filter needs the bindings the alpha
-  # produced, which a fact on its own has thrown away.
+  # A plain collection takes its group whole. For a filtered one the stored group is only
+  # a candidate set, and membership is decided per token. That is why groups hold elements
+  # rather than facts: the filter needs the bindings the alpha produced.
   defp visible(%Node.AccumulateJoin{filter: filter}, token, candidates) do
     for element <- candidates,
         filter.(token.bindings, element.bindings),
@@ -444,14 +403,9 @@ defmodule Rete.Engine.Nodes do
 
         :right_retract ->
           case List.delete(current, element) do
-            # A group that loses its last member is dropped, whether or not the
-            # collection groups. Keeping an empty one for a non-grouping
-            # collection would leak: the key holds binding *values*, so a
-            # session that inserts and retracts a million customers would
-            # accumulate a million empty groups that nothing ever reads. The
-            # empty collection a non-grouping pattern still matches is virtual —
-            # `groups_for/3` conjures it whenever a token asks — so there is
-            # nothing to preserve here.
+            # A group that loses its last member is dropped either way. The key holds
+            # binding values, so keeping empties would leak one per entity the session has
+            # seen. `groups_for/3` conjures the virtual empty group when a token asks.
             [] -> Memory.drop_group(memory, node.id, key, group_key)
             remaining -> Memory.put_group(memory, node.id, key, group_key, remaining)
           end
@@ -459,12 +413,10 @@ defmodule Rete.Engine.Nodes do
     end)
   end
 
-  # A group is kept in the term order of its facts, not in the order they
-  # arrived. What a rule concludes has to be a function of the fact set: with
-  # arrival order, `hd(orders)` depends on how the session was fed, and
-  # retracting a member and putting it back moves it to the end and changes the
-  # conclusion — a round trip that does not round trip. The list is built sorted,
-  # so one element costs a walk rather than a re-sort.
+  # A group is kept in the term order of its facts, not arrival order. What a rule
+  # concludes has to be a function of the fact set. Under arrival order `hd(orders)` would
+  # depend on how the session was fed, and a retract-and-reinsert round trip would move a
+  # member to the end and change the conclusion.
   defp insert_ordered([], element), do: [element]
 
   defp insert_ordered([head | tail] = elements, element) do
@@ -475,8 +427,8 @@ defmodule Rete.Engine.Nodes do
     end
   end
 
-  # The fact first, because that is what the rule sees. The bindings only break
-  # ties between two elements over the same fact, so the order is total.
+  # The fact first, because that is what the rule sees. The bindings break ties between
+  # two elements over the same fact, which makes the order total.
   defp order_key(%Element{fact: fact, bindings: bindings}), do: {fact, bindings}
 
   # --- propagation helpers ---------------------------------------------------------------
@@ -494,12 +446,8 @@ defmodule Rete.Engine.Nodes do
      for(child <- Network.children(state.network, node.id), do: {:left_retract, child, tokens})}
   end
 
-  # Items arriving together can belong to different join groups, so they are
-  # split before anything touches memory: a group is the unit a join works on.
-  # A negation compares what matched before the batch with what matches after
-  # it, and a collection re-sends its result once rather than once per member,
-  # so the batch really is the unit — splitting further would be correct but
-  # would churn.
+  # Items arriving together can belong to different join groups, so they are split before
+  # anything touches memory. A group is the unit a join works on.
   defp reduce_groups(%State{} = state, items, key_fun, fun) do
     items
     |> group_in_arrival_order(key_fun)
@@ -509,20 +457,10 @@ defmodule Rete.Engine.Nodes do
     end)
   end
 
-  # Groups keyed the way `Enum.group_by/2` does, but handed back in the order
-  # each key first appeared rather than in map order.
-  #
-  # The order matters: groups are processed in turn and each appends its
-  # propagation work, so it decides the order matches reach the agenda. Map
-  # iteration order is unspecified, and Elixir's differs above and below
-  # thirty-two keys, so taking it would mean a rule's firing order changing
-  # character the moment a node saw its thirty-third join key.
-  #
-  # Arrival order rather than a sort. It costs one pass instead of O(g log g)
-  # comparisons of binding maps, and it is the convention everywhere else here —
-  # beta memory hands items back in arrival order and `Rete.Agenda` breaks ties
-  # on it. Sorting would have imposed a total order on binding maps that means
-  # nothing to anyone reading a trace.
+  # Groups keyed the way `Enum.group_by/2` does, handed back in the order each key first
+  # appeared. Do not substitute map order. Each group appends its propagation work in
+  # turn, so this decides the order matches reach the agenda, and Elixir iterates a map of
+  # up to 32 keys in term order and a larger one in an internal hash order.
   defp group_in_arrival_order(items, key_fun) do
     {groups, keys} =
       Enum.reduce(items, {%{}, []}, fn item, {groups, keys} ->

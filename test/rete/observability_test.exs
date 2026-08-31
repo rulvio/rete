@@ -5,6 +5,8 @@ defmodule Rete.ObservabilityTest do
   alias Rete.Listener
   alias Rete.Session
 
+  doctest Rete.Inspect
+
   defmodule Rules do
     use Rete.Ruleset
 

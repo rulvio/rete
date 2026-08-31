@@ -1,47 +1,42 @@
 defmodule Rete.Session do
   @moduledoc """
-  The public API: a session is an immutable value.
+  A session is an immutable value: every operation returns a new one.
 
-  Every operation returns a new session rather than changing the one you passed,
-  so a session can be held, compared, kept as a checkpoint and shared across
-  processes without coordination. The compiled network inside it is shared, not
-  copied — only the working memory differs between two sessions built from the
-  same rules.
+  A session can be held, compared, kept as a checkpoint and sent between processes. The
+  compiled network inside it is shared rather than copied, so two sessions built from the
+  same rules differ only in their working memory.
 
-      session =
-        Rete.Session.new([MyRuleset])
-        |> Rete.Session.insert([{:customer, 1, "Ada"}, {:order, 1, 250}])
-        |> Rete.Session.fire_rules()
+  Facts you insert stay until you retract them. Facts a *rule* concludes are logical: the
+  engine holds them while the match behind them holds. That is why a rule's right hand
+  side only inserts, and why retracting removes anything concluded from a fact too,
+  transitively. Nothing fires until `fire_rules/2`.
 
-      Rete.Session.facts(session)
-      MyRuleset.flagged_for(session, cid: 1)
+  The examples here run against this ruleset:
 
-  ## Insert, retract, and what a rule may do
+      defmodule Rete.Doc.Orders do
+        use Rete.Ruleset
 
-  Facts you insert are yours: they stay until you retract them. Facts a *rule*
-  concludes are logical — the engine holds them exactly as long as the match
-  behind them holds, and takes them back when it stops holding.
+        derive :premium, :customer
 
-  That is why a rule's right hand side only ever inserts. It says what follows
-  from a match, and keeping that true as facts change is the engine's job. There
-  is no unconditional insert and no right-hand-side retract, so a session cannot
-  end up asserting something whose support has gone.
+        defrule large_order({:customer, cid}, {:order, cid, amt} when amt > 100) do
+          {:flagged, cid, amt}
+        end
 
-  Nor can a conclusion hold itself up. A rule that concludes something its own
-  match already rests on does not give it a second support, so retracting what
-  you inserted really does empty the session — see the truth maintenance section
-  of `Rete.Engine` for what that costs.
+        defquery flagged_for({:flagged, cid, amt}), do: {cid, amt}
+      end
 
-  Retracting a fact therefore does more than remove it: anything concluded from
-  it goes too, and anything concluded from *that*, until the session settles.
+      iex> alias Rete.Session
+      iex> session =
+      ...>   Session.new([Rete.Doc.Orders])
+      ...>   |> Session.insert([{:customer, 1}, {:order, 1, 250}])
+      ...>   |> Session.fire_rules()
+      iex> Session.facts(session) |> Enum.sort()
+      [{:customer, 1}, {:flagged, 1, 250}, {:order, 1, 250}]
+      iex> Rete.Doc.Orders.flagged_for(session, cid: 1)
+      [{1, 250}]
 
-  ## When rules run
-
-  Nothing fires until `fire_rules/2`. Inserting only propagates matches through
-  the network and queues the activations, so a batch of facts can be inserted
-  and reasoned about together rather than each one triggering a cascade of its
-  own. Querying a session that has pending activations tells you what was true
-  before they fired.
+  See `docs/dsl.md` for writing rules and `docs/design/w3-engine.md` §8 for truth
+  maintenance.
   """
 
   alias Rete.Compiler
@@ -56,11 +51,11 @@ defmodule Rete.Session do
   @doc """
   Builds a session from ruleset modules.
 
-  Options are passed to `Rete.Compiler.build/2`; `:fact_type_fn` is the useful
-  one, and it defaults to struct, tagged tuple and tagged map.
+  Options go to `Rete.Compiler.build/2`. Compiling the network is the expensive part, so
+  a long-lived application should do it once and use `from_network/1`.
 
-  Compiling the network is the expensive part, so a long-lived application
-  should do it once — see `from_network/1`.
+      iex> Rete.Session.new([Rete.Doc.Orders]) |> Rete.Session.facts()
+      []
   """
   @spec new([module()], keyword()) :: t()
   def new(modules, opts \\ []) when is_list(modules) do
@@ -76,20 +71,33 @@ defmodule Rete.Session do
   def from_network(%Network{} = network), do: %__MODULE__{state: Engine.new(network)}
 
   @doc """
-  Inserts facts, returning a new session.
+  Inserts one fact or a list of them, returning a new session.
 
-  Accepts one fact or a list. Inserting a fact equal to one already present
-  bumps its count rather than duplicating its matches, so a later retraction of
-  one occurrence leaves the other standing.
+  Facts are a multiset. Inserting a fact equal to one already present bumps its count
+  instead of duplicating its matches, so retracting one occurrence leaves the other.
+
+      iex> alias Rete.Session
+      iex> session = Session.new([Rete.Doc.Orders]) |> Session.insert({:customer, 1})
+      iex> Session.facts(session)
+      [{:customer, 1}]
   """
   @spec insert(t(), term() | [term()]) :: t()
   def insert(session, facts), do: update(session, &Engine.insert(&1, List.wrap(facts)))
 
   @doc """
-  Retracts facts, returning a new session.
+  Retracts one fact or a list of them, returning a new session.
 
-  Anything concluded from them is retracted too, transitively. Retracting a fact
-  that is not present does nothing.
+  Anything concluded from them is retracted too, transitively. Retracting a fact that is
+  not present does nothing.
+
+      iex> alias Rete.Session
+      iex> session =
+      ...>   Session.new([Rete.Doc.Orders])
+      ...>   |> Session.insert([{:customer, 1}, {:order, 1, 250}])
+      ...>   |> Session.fire_rules()
+      ...>   |> Session.retract({:customer, 1})
+      iex> Session.facts(session)
+      [{:order, 1, 250}]
   """
   @spec retract(t(), term() | [term()]) :: t()
   def retract(session, facts), do: update(session, &Engine.retract(&1, List.wrap(facts)))
@@ -99,12 +107,22 @@ defmodule Rete.Session do
 
   Options:
 
-    * `:max_cycles` — how many activations one call may fire. `:infinity` by
-      default: the engine runs to quiescence, and an oscillating ruleset spins
-      rather than raising. Give it an integer to bound the call — a ruleset that
-      exceeds it raises with the rules that fired most, and one that fires the
-      whole allowance and then settles is fine. See the loop guard section of
-      `Rete.Engine` for how to pick one and what it costs.
+    * `:max_cycles` — how many activations one call may fire. `:infinity` by default: the
+      engine runs to quiescence, and an oscillating ruleset spins rather than raising.
+      Give it an integer to bound the call. A ruleset that exceeds it raises with the
+      rules that fired most. One that fires the whole allowance and then settles is fine.
+      See `docs/design/w5-observability.md` §3 for how to pick a number.
+
+  Inserting queues activations. Firing runs them and leaves the agenda empty.
+
+      iex> alias Rete.Session
+      iex> queued =
+      ...>   Session.new([Rete.Doc.Orders])
+      ...>   |> Session.insert([{:customer, 1}, {:order, 1, 250}])
+      iex> length(Session.pending(queued))
+      1
+      iex> Session.pending(Session.fire_rules(queued))
+      []
   """
   @spec fire_rules(t(), keyword()) :: t()
   def fire_rules(session, opts \\ []), do: update(session, &Engine.fire_rules(&1, opts))
@@ -112,33 +130,29 @@ defmodule Rete.Session do
   @doc """
   Runs a query by `{module, name}`: one result per match, computed by its body.
 
-      Rete.Session.query(session, {MyRuleset, :flagged_for}, cid: 1)
-      #=> [{1, 250}]
-
   **Usually you would not write this.** `defquery flagged_for(...)` defines
-  `flagged_for/2` in its own module, so the same call reads:
+  `flagged_for/2` in its own module, so the same call reads
+  `Rete.Doc.Orders.flagged_for(session, cid: 1)`, which the compiler checks. Reach for
+  this form when the query is decided at runtime.
 
-      MyRuleset.flagged_for(session, cid: 1)
-      session |> MyRuleset.flagged_for(cid: 1)
+  A query is addressed by module and name together because two rulesets composed into one
+  session may each define a `:summary`.
 
-  which is a plain function call the compiler checks. This is the form to reach
-  for when the query is decided at runtime rather than written down.
+  `filters` narrows the matches by equality on the *bindings*, before the body runs. It
+  may name any variable the left hand side binds, as a keyword list or a map. There is no
+  separate parameter declaration. Naming something the query does not bind raises rather
+  than answering `[]`.
 
-  A query is addressed by module and name together because a bare name belongs
-  to no one: two rulesets composed into one session may each define a
-  `:summary`, and the pair is what tells them apart.
+  Row order is **unspecified**. It does not vary with insertion order, so a given set of
+  facts always answers the same way, but sort the result if you need an order.
 
-  `filters` narrows the matches by equality on the *bindings*, before the body
-  runs, and may name any variable the left hand side binds — there is no
-  separate parameter declaration. A keyword list or a map both work. Naming
-  something the query does not bind raises, rather than quietly answering `[]`.
-
-  Reads the session as it stands: a query answered while activations are still
-  pending reports what was true before they fired.
-
-  Row order is **unspecified**. It does not vary with the order the facts were
-  inserted in, so a given set of facts always answers the same way, but sort the
-  result if you need a particular order.
+      iex> alias Rete.Session
+      iex> session =
+      ...>   Session.new([Rete.Doc.Orders])
+      ...>   |> Session.insert([{:customer, 1}, {:order, 1, 250}])
+      ...>   |> Session.fire_rules()
+      iex> Session.query(session, {Rete.Doc.Orders, :flagged_for}, cid: 1)
+      [{1, 250}]
   """
   @spec query(t(), {module(), atom()}, keyword() | %{atom() => term()}) :: [term()]
   def query(%__MODULE__{state: state}, ref, filters \\ []),
@@ -147,8 +161,7 @@ defmodule Rete.Session do
   @doc """
   Every fact the session holds, inserted or concluded.
 
-  Unordered: a session is a set of facts, not a sequence, and depending on the
-  order would be depending on an implementation detail.
+  Unordered. A session is a set of facts, not a sequence.
   """
   @spec facts(t()) :: [term()]
   def facts(%__MODULE__{state: state}), do: Engine.facts(state)
@@ -164,15 +177,15 @@ defmodule Rete.Session do
   @doc """
   Attaches a listener, returning a new session.
 
-  The listener sees every event from now on, and its accumulated state is read
-  back with `listener_state/2`. Attaching several is fine; they see events in
-  the order they were attached.
+  The listener sees every event from now on. Read what it accumulated with
+  `listener_state/2`. Attaching several is fine, and they see events in attachment order.
 
-      session
-      |> Rete.Session.with_listener(Rete.Listener.Collect, [])
-      |> Rete.Session.insert(facts)
-      |> Rete.Session.fire_rules()
-      |> Rete.Listener.Collect.events()
+      iex> alias Rete.Session
+      iex> Session.new([Rete.Doc.Orders])
+      ...> |> Session.with_listener(Rete.Listener.Collect, [])
+      ...> |> Session.insert({:customer, 1})
+      ...> |> Rete.Listener.Collect.by_tag(:fact_inserted)
+      [{:fact_inserted, {:customer, 1}, :asserted}]
   """
   @spec with_listener(t(), module(), term()) :: t()
   def with_listener(session, module, init \\ nil),

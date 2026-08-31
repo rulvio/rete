@@ -2,51 +2,24 @@ defmodule Rete.Compiler do
   @moduledoc """
   Turns ruleset modules into a `Rete.Network`.
 
-  The DSL front end already ran at *compile* time, inside each `defrule`: the
-  productions a ruleset module hands over are parsed, normalized, sorted and
-  classified, and their expression functions are compiled into that module. What
-  is left to do at *build* time is the part that depends on the whole set of
-  rules rather than on one rule:
+  **Internal.** The DSL front end already ran at *compile* time inside each `defrule`.
+  What is left at *build* time is the part that depends on the whole set of rules:
 
       Rete.Compiler.Negation   rewrite compound negations into helper productions
       disambiguate_codes/1     qualify an expression code two modules disagree on
       Rete.Compiler.BetaGraph  build the beta nodes, sharing them where possible
       Rete.Network             group conditions into alpha nodes, index the taxonomy
 
-  Node sharing is the reason this cannot happen per rule: whether two conditions
-  collapse onto one node depends on what every other rule already put in the
-  graph.
+  Node sharing is why this cannot happen per rule. Whether two conditions collapse onto
+  one node depends on what every other rule already put in the graph.
 
-  ## Cross module expression codes
-
-  An expression code is the sharing key of every node built from it, and the front end
-  promises that two codes are equal exactly when the two expressions behave the
-  same. That promise has one hole, recorded as a known gap in `w1-ir.md`: the
-  hash is taken over the meta stripped AST with aliases, `__MODULE__` and module
-  attributes resolved, but an **unqualified** call - a local or imported
-  function of the ruleset module - hashes as the bare name. Two modules that
-  each define `ok?/1` differently produce the same code for
-  `{:bar, amt} when ok?(amt)` and compile it to two different functions.
-
-  So a code contributed by more than one module is qualified with the module
-  that contributed it, `<code>@<module>`, before anything is built from it.
-  Sharing inside a module is untouched; sharing across modules is only ever an
-  optimisation, while getting it wrong is silent corruption - the alpha map
-  would keep whichever module was reduced first, and since a node's sharing key
-  is built from the alpha code the two rules would collapse onto one beta chain
-  as well, so the second rule would run the first module's predicate.
-
-  Nothing at build time can tell a real collision from two modules that did
-  write the same condition: the AST is long gone and the captured functions are
-  `&A.f/1` and `&B.f/1` either way. Qualifying is the conservative half of that
-  choice, and the only one that cannot be wrong.
-
-  ## Validation
-
-  Building fails, rather than producing a network that misbehaves later:
-
-    * two productions with the same name, even across modules — a query would
-      otherwise be ambiguous and an activation unattributable.
+  **Cross module expression codes.** A code is equal exactly when two expressions behave
+  the same, with one hole: an *unqualified* call hashes as the bare name, so two modules
+  that each define `ok?/1` differently produce the same code for
+  `{:bar, amt} when ok?(amt)`. A code more than one module contributed is therefore
+  qualified as `<code>@<module>` before anything is built from it. Sharing within a
+  module is untouched. Sharing across modules is only an optimisation, and getting it
+  wrong is silent corruption. See `docs/design/w1-ir.md` §5.
   """
 
   alias Rete.Compiler.BetaGraph
@@ -57,8 +30,8 @@ defmodule Rete.Compiler do
   @doc """
   Builds a network from ruleset modules.
 
-  Options are passed through to `Rete.Taxonomy.new/2`; `:fact_type_fn` is the
-  one that matters, and it defaults to struct, tagged tuple and tagged map.
+  Options go to `Rete.Taxonomy.new/2`. `:fact_type_fn` is the one that matters, and it
+  defaults to struct, tagged tuple and tagged map.
 
       Rete.Compiler.build([MyRuleset])
       Rete.Compiler.build([MyRuleset, OtherRuleset], fact_type_fn: &MyApp.type/1)
@@ -93,10 +66,9 @@ defmodule Rete.Compiler do
     helpers ++ [rewritten]
   end
 
-  # A production is identified by module *and* name, so two rulesets are free to
-  # use the same name — composing two libraries that both call something
-  # `:summary` must not be a build error. Within one module a repeat is still a
-  # mistake: the second would silently take over the query function and the RHS.
+  # A production is identified by module *and* name, so two rulesets may use the same
+  # name. Within one module a repeat is a mistake: the second would take over the query
+  # function and the RHS.
   defp validate_names!(productions) do
     duplicates =
       productions
@@ -147,8 +119,8 @@ defmodule Rete.Compiler do
     end
   end
 
-  # Codes contributed by two or more distinct modules. `Enum.uniq/1` first, so
-  # that a code written twice in one module does not look shared.
+  # Codes contributed by two or more distinct modules. `Enum.uniq/1` first, so a code
+  # written twice in one module does not look shared.
   defp shared_codes(productions) do
     productions
     |> Enum.flat_map(fn production ->
@@ -164,9 +136,8 @@ defmodule Rete.Compiler do
     %IR.Production{production | lhs: Enum.map(lhs, &qualify(&1, module, shared))}
   end
 
-  # The same shapes `Rete.IR.exprs/1` walks, and deliberately with no catch all
-  # clause: a condition kind this does not know about would otherwise keep a
-  # code that the rest of the build has already split.
+  # The same shapes `Rete.IR.exprs/1` walks. Do not add a catch-all clause: a condition
+  # kind this does not know about would keep a code the rest of the build has split.
   defp qualify(%IR.Fact{} = fact, module, shared) do
     %IR.Fact{
       fact
@@ -195,8 +166,7 @@ defmodule Rete.Compiler do
     %IR.CompoundNegation{conditions: Enum.map(conditions, &qualify(&1, module, shared))}
   end
 
-  # Normalization rewrites every gate away long before this runs, so :code -
-  # which identifies the gate by the codes of its arguments - has no reader
+  # Normalization rewrites every gate away before this runs, so `:code` has no reader
   # left to keep in step.
   defp qualify(%IR.Gate{args: args} = gate, module, shared) do
     %IR.Gate{gate | args: Enum.map(args, &qualify(&1, module, shared))}

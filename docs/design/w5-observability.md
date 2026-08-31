@@ -159,9 +159,22 @@ ruleset spins with no output until it is interrupted. Between a wrong answer and
 a visible hang, this engine takes the hang and hands the judgement to the caller,
 who knows whether they are in a test suite or a batch job.
 
-`Rete.Engine`'s loop guard section carries the numbers for choosing one: the
-worst runaway grows working memory by a fact per activation, at roughly 3.5 ms
-and 0.46 MB per thousand.
+### Choosing a number
+
+Worth setting wherever a hang is more expensive than a false alarm — a test suite, a
+request handler, a first run of a rule someone just wrote. The cost of setting it too
+high is what the worst runaway does before it trips. That is a rule concluding a fact its
+own left hand side matches, which grows working memory by one fact per activation,
+measured at about 3.5 ms and 0.46 MB per thousand:
+
+| `max_cycles` | raises after | heap used |
+|---|---|---|
+| 10,000 | 35 ms | 0.5 MB |
+| 100,000 | 270 ms | 46 MB |
+| 500,000 | 1.7 s | 230 MB |
+
+Against that, the cost of setting it too low is a `RuntimeError` on work that was fine.
+The error says to raise it, so that mistake announces itself. A hang does not.
 
 Clara counts transitions between *activation groups* rather than activations.
 That is a better signal in principle, but it has a failure mode this does not: a

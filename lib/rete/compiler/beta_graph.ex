@@ -2,60 +2,25 @@ defmodule Rete.Compiler.BetaGraph do
   @moduledoc """
   The beta side of the network: a graph of `Rete.Network.Node` descriptions.
 
-  Each production's sorted left hand side is walked in order, adding one node
-  per condition and hanging it off the nodes the previous condition produced.
-  Node `0` is an artificial root that every rule's first condition attaches to,
-  so the graph has a single entry point.
+  **Internal.** Each production's sorted left hand side is walked in order, adding one
+  node per condition under the nodes the previous condition produced. Node `0` is an
+  artificial root, so the graph has a single entry point.
 
-  ## Parents are a list
+  **Parents are a list.** A disjunction adds each branch as its own chain and hands the
+  union of the branch terminals to the next condition, so the branches re-converge on it.
+  That is why the LHS is never flattened to disjunctive normal form: whole-LHS DNF is
+  exponential in the number of disjunctions, and fanning out per condition is linear.
 
-  A condition is added under a *list* of parent ids, not one. A disjunction
-  needs it: `{:or, [b1, b2]}` adds each branch as its own chain under the
-  current parents, and hands the union of the branch terminals to the next
-  condition. The condition after a disjunction therefore has one parent per
-  branch, and the branches re-converge on it.
+  **Sharing** requires equality *and* the same parent set. Equality alone is a correctness
+  bug: in `a({:customer, cid}, {:order, cid, amt})` and `b({:vendor, cid}, {:order, cid,
+  amt})` the two order conditions are equal but sit under different parents, and sharing
+  them would let a `:vendor` token join a `:customer`'s elements. A terminal keys on the
+  production's identity, so two rules with an identical LHS fire independently.
 
-  This is also why the left hand side is never flattened to disjunctive normal
-  form. Whole-LHS DNF is exponential in the number of disjunctions; fanning out
-  and re-converging per condition is linear.
-
-  ## Sharing
-
-  Two conditions collapse onto one node when they are **equal** and have the
-  **same parent set**. Equality alone is not enough, and the difference is a
-  correctness bug rather than a missed optimisation:
-
-      defrule a({:customer, cid}, {:order, cid, amt})
-      defrule b({:vendor, cid},   {:order, cid, amt})
-
-  The two `{:order, cid, amt}` conditions are equal, but they sit under
-  different parents. Sharing them would let a token from `{:vendor, ...}` join
-  elements that only ever belonged to `{:customer, ...}`, so `a` would fire on
-  `b`'s facts. Clara records the same requirement as issue 433.
-
-  Equality itself is `Rete.Network.Node.sharing_key/1`, built from expression
-  codes. The front end guarantees a code is deterministic across compilations and equal
-  exactly when behaviour is equal, which is what makes sharing reproducible
-  between a full build and an incremental one.
-
-  Sharing is what makes two rules over a common prefix evaluate that prefix
-  once, so it is worth pinning precisely in tests rather than treating as an
-  incidental optimisation.
-
-  ## Terminals
-
-  A production or query node is keyed on the production's identity, so two rules
-  with an identical left hand side still get one terminal each and fire
-  independently.
-
-  ## Unsatisfiable left hand sides
-
-  `{:or, []}` is *false*: no branch, so nothing on that path can ever match.
-  Normalization keeps it rather than dropping it, because dropping it would
-  change the meaning of the production. Nothing is built for a path that runs
-  through one — not the conditions after it, and not the terminal — because a
-  keyless condition after a false element would otherwise become an entry point
-  the alpha index feeds, and an unsatisfiable rule would fire on every fact.
+  **`{:or, []}` is false**, and nothing is built for a path through one. A keyless
+  condition after a false element would otherwise become an entry point the alpha index
+  feeds, and an unsatisfiable rule would fire on every fact. See
+  `docs/design/w2-network.md` §4.
   """
 
   alias Rete.IR
@@ -153,11 +118,9 @@ defmodule Rete.Compiler.BetaGraph do
     end)
   end
 
-  # A disjunction: each branch is a chain under the current parents, and the
-  # union of their terminals becomes the parents of whatever follows. A branch
-  # that is itself unsatisfiable contributes no chain and no terminal;
-  # `add_production/2` has already established that at least one branch here is
-  # satisfiable, so the union is never empty.
+  # Each branch is a chain under the current parents, and the union of their terminals
+  # becomes the parents of what follows. `add_production/2` has already established that
+  # at least one branch is satisfiable, so the union is never empty.
   defp add_element(graph, {:or, branches}, parents) do
     {graph, terminals} =
       branches
@@ -167,8 +130,7 @@ defmodule Rete.Compiler.BetaGraph do
         {graph, acc ++ branch_parents}
       end)
 
-    # An empty branch matches unconditionally, so its "terminal" is the parent
-    # set itself; dedupe in case two branches converge on a shared node.
+    # An empty branch matches unconditionally, so its terminal is the parent set.
     {graph, Enum.uniq(terminals)}
   end
 
@@ -242,10 +204,8 @@ defmodule Rete.Compiler.BetaGraph do
 
   # --- IR condition to node description ---------------------------------------
 
-  # A condition with no equality key is a `RootJoin` only when it is *first*.
-  # Later on it is a cartesian product: there is an incoming token, and a
-  # `RootJoin` would turn each element straight into a token of its own, drop
-  # everything the prefix bound and make the conditions before it vacuous. A
+  # A condition with no equality key is a `RootJoin` only when it is *first*. Later it is
+  # a cartesian product, and a `RootJoin` would drop everything the prefix bound. A
   # keyless `HashJoin` pairs every token with every element instead.
   defp node_for(%IR.Fact{join_filter: nil, join_bind: join_bind} = fact, root?)
        when join_bind == [] or is_nil(join_bind) do
@@ -331,14 +291,9 @@ defmodule Rete.Compiler.BetaGraph do
     }
   end
 
-  # `Rete.IR.Negation` may hold a collection as well as a fact, and negating a
-  # collection can only mean "this collection is empty". Collections are
-  # collect-all, so an element belongs to the collection exactly when it matches
-  # the pattern and the token, and "the collection is empty" is therefore
-  # literally "no element matches" — a plain negation over the element pattern,
-  # with no accumulation to do. The collection binding is dropped because a
-  # negation binds nothing downstream, and `:propagates_empty?` does not apply:
-  # it describes what an accumulate node emits, and there is no accumulate node.
+  # Negating a collection means "this collection is empty", which for a collect-all is
+  # "no element matches": a plain negation over the element pattern, with no accumulation.
+  # The collection binding is dropped because a negation binds nothing downstream.
   defp node_for(%IR.Negation{condition: %IR.Coll{join_filter: nil} = coll}, _root?) do
     %Node.Negation{
       type: coll.type,
@@ -379,10 +334,8 @@ defmodule Rete.Compiler.BetaGraph do
     raise ArgumentError, "cannot build a network node from: #{inspect(other)}"
   end
 
-  # The locked empty-collection rule: a collection that introduces no new
-  # variable has every variable fixed by the token, so it has exactly one group
-  # and propagates [] when nothing matches. One that introduces a new variable
-  # groups by it, and a group only exists where a fact created it.
+  # A collection introducing no new variable has every variable fixed by the token, so it
+  # has one group and propagates [] when nothing matches.
   defp propagates_empty?(%IR.Coll{new_bind: new_bind}), do: (new_bind || []) == []
 
   defp terminal(%IR.Production{type: :query} = production) do
@@ -411,11 +364,8 @@ defmodule Rete.Compiler.BetaGraph do
     }
   end
 
-  # `:internal_salience` is the tier `Rete.Compiler.Negation` uses to put an
-  # extracted helper ahead of the rule that negates its marker. A user-written
-  # one would silently invert that ordering — the negating rule would observe an
-  # absence that had merely not been computed yet — so the key is reserved
-  # rather than merged with the user's options.
+  # `:internal_salience` is reserved. It is the tier that puts a generated helper ahead of
+  # the rule that negates its marker, and a user-written one would invert that ordering.
   defp internal_salience!(production, opts, generated?) do
     case Keyword.fetch(opts, :internal_salience) do
       :error ->

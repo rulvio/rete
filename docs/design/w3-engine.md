@@ -302,9 +302,8 @@ to remove**.
   the guard is now `:infinity` by default, the same opt-in call Clara makes. A count
   cannot separate a runaway from a large settling pass, so any default eventually fails
   correct code, and stopping part way through settling returns an answer that is wrong
-  rather than late. The cost is that an oscillating ruleset now spins until interrupted;
-  `Rete.Engine`'s loop guard section carries the numbers for choosing a cap where that
-  matters.
+  rather than late. The cost is that an oscillating ruleset now spins until interrupted.
+  `w5-observability.md` §3 carries the numbers for choosing a cap where that matters.
 * **No partial firing.** `fire_rules/2` runs to quiescence in the calling process. There
   is no fire-one-activation, no async, and no way to interrupt a settling pass other than
   the cycle cap.
@@ -322,8 +321,8 @@ to remove**.
   three sizes each, reporting the empirical exponent rather than a wall-clock number, so
   a reintroduced quadratic shows up as `~n^2` instead of as a figure nobody has a
   baseline for. Eight come out linear. The ninth does not, and is left in deliberately —
-  filling one collection measures `~n^1.94`, because `Rete.Engine.Nodes.insert_ordered/2`
-  is O(k) per member. A suite that only reported the good news would be worth less.
+  filling one collection measures `~n^1.94`, because the private `insert_ordered/2` in
+  `Rete.Engine.Nodes` is O(k) per member. A suite that only reported the good news would be worth less.
 
   Still unmeasured: wide disjunctions, many rules over one fact type, and sessions large
   enough to matter for memory rather than time. The fact-to-token index behind

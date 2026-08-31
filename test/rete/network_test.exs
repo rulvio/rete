@@ -8,6 +8,8 @@ defmodule Rete.NetworkTest do
   alias Rete.Network.Node
   alias Rete.Taxonomy
 
+  doctest Rete.Network
+
   defmodule LenientHelper do
     @moduledoc false
     def ok?(amt), do: amt > 10

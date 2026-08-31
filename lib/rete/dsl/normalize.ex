@@ -1,134 +1,32 @@
 defmodule Rete.DSL.Normalize do
-  # The largest number of disjunctive branches one gate may normalize into.
-  # Declared before the moduledoc so that the documentation can quote it.
+  # Declared before the moduledoc so the documentation can quote it.
   @max_branches 256
 
   @moduledoc """
   Gate normalization: the phase between parsing and binding classification.
 
-  Turns the `Rete.IR.Gate` placeholders left behind by `Rete.DSL.Parser` into
-  the normalized per-condition form of `t:Rete.IR.lhs/0`: either a single
-  condition struct, or a disjunction of conjunctions,
-  `{:or, [[condition, ...], ...]}`.
+  **Internal.** Turns the `Rete.IR.Gate` placeholders `Rete.DSL.Parser` left behind into
+  the per-condition form of `t:Rete.IR.lhs/0`: a single condition struct, or a disjunction
+  of conjunctions `{:or, [[condition, ...], ...]}`.
 
-  Normalization is **per LHS element**. The LHS as a whole is never flattened to
-  DNF (that explodes combinatorially); an element that normalizes to a
-  disjunction fans out from the current parents and re-converges before the next
-  element, exactly as in Clara's `add-production`.
+  Normalization is **per LHS element**. The LHS as a whole is never flattened to DNF,
+  which explodes combinatorially. Three steps: lift into a boolean tree, distribute into
+  DNF, simplify. Author order is preserved and nothing depends on map iteration order, so
+  the same input always produces byte-identical output.
 
-  ## What it does, in order
+  `not(a, b, ...)` and `nand` mean `not(and(...))`, `nor` means `not(or(...))`, n-ary
+  `xor` means **exactly one** holds, and `xnor` is its negation. These expansions are
+  applied literally, which settles the degenerate arities without special casing. A true
+  element becomes `{:or, [[]]}` and a false one `{:or, []}`.
 
-  1. **Lift** the element into a boolean tree, `to_tree/1`.
-  2. **Distribute** that tree into disjunctive normal form, `to_dnf/1`. Gates are
-     rewritten into `and`/`or`/`not` on the way down and the DNF is built bottom
-     up, so nested `and`s and `or`s flatten and single-child gates disappear as a
-     consequence of the distribution itself.
-  3. **Simplify**: drop repeated literals inside a conjunction, drop a
-     conjunction holding both a literal and its negation, collapse the whole
-     disjunction to *true* if any branch is empty, then drop duplicate branches.
+  Negation of a **disjunction** distributes: de Morgan applies there and only there.
+  Negation of a **conjunction** becomes a `Rete.IR.CompoundNegation`, because the
+  conjuncts share existentially quantified variables and the rewrite would be a stronger
+  statement. `Rete.Compiler.Negation` extracts it later.
 
-  Author order is preserved throughout and nothing depends on map iteration
-  order, so the same input always produces byte-identical output.
-
-  ## Gate semantics
-
-  | gate | meaning |
-  |---|---|
-  | `and(a, b, ...)` | all hold |
-  | `or(a, b, ...)` | at least one holds |
-  | `not(a, b, ...)` | `not(and(a, b, ...))` |
-  | `nand(a, b, ...)` | `not(and(a, b, ...))`, identical to `not` |
-  | `nor(a, b, ...)` | `not(or(a, b, ...))` |
-  | `xor(a, b, ...)` | **exactly one** holds |
-  | `xnor(a, b, ...)` | `not(xor(a, b, ...))` |
-
-  n-ary `xor` expands to the "exactly one" disjunction
-
-      or(and(a1, not a2, not a3), and(not a1, a2, not a3), and(not a1, not a2, a3))
-
-  ### Degenerate arities
-
-  The expansions above are applied literally, which settles the empty and
-  single-argument cases without any special casing:
-
-  | gate | 0 arguments | 1 argument |
-  |---|---|---|
-  | `and` | true, the empty conjunction | the argument |
-  | `or` | false, the empty disjunction | the argument |
-  | `not` / `nand` | `not(true)` = false | the negated argument |
-  | `nor` | `not(false)` = true | the negated argument |
-  | `xor` | false, no argument can be the one that holds | the argument |
-  | `xnor` | true | the negated argument |
-
-  A **true** element normalizes to `{:or, [[]]}`: one branch that adds no
-  condition, i.e. the element constrains nothing. A **false** element
-  normalizes to `{:or, []}`: no branch at all, i.e. the production can never
-  fire. Both are legal `t:Rete.IR.lhs/0` elements, and `normalize_lhs/1` splices
-  the former away.
-
-  A disjunction that has *some* empty branch is *true* as a whole - the other
-  branches are absorbed. That matters for more than tidiness: only the variables
-  bound by **every** branch survive a disjunction, and an empty branch binds
-  nothing, so the other branches could not have contributed a binding anyway.
-  `simplify/1` therefore collapses `{:or, [[], [a]]}` to `{:or, [[]]}`, and the
-  network builder never sees a disjunction with an empty branch next to a
-  non-empty one.
-
-  ## Negation
-
-  ### A negation of a single condition
-
-  ...is the normal, supported case and becomes a `Rete.IR.Negation` node.
-
-  ### A negation of a disjunction
-
-  ...distributes. `not(or(a, b))` is `and(not a, not b)` whatever `a` and `b`
-  quantify over, so de Morgan is applied here and only here.
-
-  ### A negation of a conjunction
-
-  ...becomes a `Rete.IR.CompoundNegation` holding the conjunction, and is
-  **never** de Morganed. The propositional rewrite `not(and(a, b))` =
-  `or(not a, not b)` is invalid in a rules engine as soon as the conjuncts share
-  an existentially quantified variable, which is the normal case:
-
-      {:nand, [{:order, x}, {:refund, x}]}
-
-  reads "no `x` has both an order and a refund". Rewritten by de Morgan it would
-  read "there is no order at all, or there is no refund at all", which is a
-  different - and much stronger - statement. With one order for `x = 1` and one
-  refund for `x = 2` the intended reading is true and the de Morganed one is
-  false.
-
-  Clara draws the same line: `get-complex-negation` extracts a negated
-  conjunction into a generated subrule that inserts a marker fact, and negates
-  the marker instead. It runs at `add-production` time, *before* `to-dnf`, which
-  is why Clara's own de-Morgan-over-`and` branch is unreachable. Here the
-  extraction is left to `Rete.Compiler.Negation`, and this phase hands it a
-  `Rete.IR.CompoundNegation` to extract.
-
-  Double negation still collapses, including through a compound:
-  `not(not(and(a, b)))` is `and(a, b)`.
-
-  ## The branch limit
-
-  Distribution is the one step that can explode: a conjunction of `k`
-  disjunctions of `m` branches each yields `m^k` branches, and every branch is a
-  separate join path in the beta network. `to_dnf/1` therefore refuses to build
-  more than #{@max_branches} branches for a single gate and raises an
-  `ArgumentError` naming the gate, its arity and the branch count.
-
-  The limit is set by compile *time*, not by normalization. Normalizing 1024
-  branches takes single digit milliseconds; classifying, generating and escaping
-  them costs super-linearly — measured end to end at 0.4 s for 64 branches,
-  2.1 s for 256 and 32 s for 1024. #{@max_branches} keeps the worst case a
-  single rule can impose on a build to a couple of seconds.
-
-  Negation is not a source of growth: `not` of a DNF of `n` branches is a single
-  branch of `n` literals, each of them a `Rete.IR.CompoundNegation` (or a plain
-  negation, when the branch is one literal wide). That is why `xnor` over eight
-  arguments, which used to distribute into 5282 branches, is now one branch of
-  eight compound negations.
+  Distribution is the one step that can explode, so `to_dnf/1` refuses to build more than
+  #{@max_branches} branches for one gate. Compile time sets that limit: escaping 1024
+  branches costs 32 s. See `docs/design/w1-ir.md` §2.
   """
 
   alias Rete.IR
@@ -136,9 +34,9 @@ defmodule Rete.DSL.Normalize do
   @typedoc """
   The internal boolean tree normalization works on.
 
-  `{:gate, gate, args}` nodes are the `Rete.IR.Gate` placeholders; `to_dnf/1`
-  rewrites them on the way down. `:not` is always unary here - an n-ary `not`
-  gate is the negation of the conjunction of its arguments.
+  `{:gate, gate, args}` nodes are the `Rete.IR.Gate` placeholders, which `to_dnf/1`
+  rewrites on the way down. `:not` is always unary here. An n-ary `not` gate is the
+  negation of the conjunction of its arguments.
   """
   @type tree ::
           {:gate, atom(), [tree()]}
@@ -233,11 +131,9 @@ defmodule Rete.DSL.Normalize do
   condition becomes an opaque `{:lit, condition}` leaf. Lifting an already
   normalized element back into a tree is what makes `normalize/1` idempotent.
   """
-  # A conjunction at LHS level is a list of elements rather than an element, so
-  # a top-level `{:and, _}` is one shape of `tree()` this function cannot
-  # return - `:and` only ever appears nested inside a `:not` or an `:or`. The
-  # declared type stays `tree()`, which is what the rest of the phase consumes;
-  # narrowing it here would only make the reader wonder what is missing.
+  # A conjunction at LHS level is a list of elements, not an element, so a top-level
+  # `{:and, _}` is one shape of `tree()` this cannot return. `:and` only appears nested
+  # inside a `:not` or an `:or`.
   @dialyzer {:no_extra_return, to_tree: 1}
   @spec to_tree(IR.condition() | element()) :: tree()
   def to_tree(%IR.Gate{gate: gate, args: args}), do: {:gate, gate, Enum.map(args, &to_tree/1)}
@@ -286,12 +182,12 @@ defmodule Rete.DSL.Normalize do
             inspect([:and, :or, :not, :nand, :nor, :xor, :xnor])
   end
 
-  # and(a, b, ...): the cartesian join of the branches, the one step that can
-  # explode, so it is the one step that is size checked.
+  # and(a, b, ...): the cartesian join of the branches. The one step that can explode, so
+  # the one step that is size checked.
   defp conjoin(gate, args), do: product(gate, length(args), Enum.map(args, &to_dnf/1))
 
-  # or(a, b, ...): concatenation. It cannot multiply, but it can still
-  # accumulate past the limit, so it is checked too.
+  # or(a, b, ...): concatenation. It cannot multiply, but it can accumulate past the
+  # limit, so it is checked too.
   defp disjoin(gate, args) do
     clauses = args |> Enum.map(&to_dnf/1) |> Enum.concat()
     check_size!(gate, length(args), length(clauses))
@@ -300,8 +196,8 @@ defmodule Rete.DSL.Normalize do
 
   # or( and(a1, !a2, !a3), and(!a1, a2, !a3), and(!a1, !a2, a3) )
   #
-  # Every negated argument contributes exactly one branch, so the result is at
-  # most the sum of the argument branch counts: `xor` does not explode.
+  # Every negated argument contributes one branch, so the result is at most the sum of
+  # the argument branch counts. `xor` does not explode.
   defp exactly_one(gate, args) do
     dnfs = args |> Enum.map(&to_dnf/1) |> Enum.with_index()
     arity = length(dnfs)
@@ -325,8 +221,8 @@ defmodule Rete.DSL.Normalize do
     end)
   end
 
-  # Stops multiplying as soon as the limit is passed, so a pathological input is
-  # rejected instead of being counted exactly.
+  # Stops multiplying once the limit is passed, so a pathological input is rejected
+  # instead of counted exactly.
   defp product_size(dnfs) do
     Enum.reduce_while(dnfs, 1, fn dnf, acc ->
       acc = acc * length(dnf)
@@ -352,9 +248,8 @@ defmodule Rete.DSL.Normalize do
 
   # not(c1 or c2 or ...) = not(c1) and not(c2) and ...
   #
-  # Every negated clause is at most one branch wide - a single literal, or a
-  # single compound negation - so the conjunction of them is at most one branch
-  # too. Negation can therefore never grow the DNF and needs no size check.
+  # Every negated clause is at most one branch wide, so their conjunction is too.
+  # Negation cannot grow the DNF and needs no size check.
   defp negate(clauses) do
     Enum.reduce(clauses, [[]], fn clause, acc ->
       negated = negate_clause(clause)
@@ -362,9 +257,8 @@ defmodule Rete.DSL.Normalize do
     end)
   end
 
-  # The negation of one conjunction of literals, as a DNF of at most one branch.
-  # This is where de Morgan stops: a conjunction of two or more literals is
-  # negated as a whole, not distributed.
+  # The negation of one conjunction of literals, as a DNF of at most one branch. De
+  # Morgan stops here: a conjunction of two or more literals is negated as a whole.
   defp negate_clause(literals) do
     case simplify_clause(literals) do
       # not(false) = true
@@ -401,9 +295,8 @@ defmodule Rete.DSL.Normalize do
     |> dedup_clauses()
   end
 
-  # Drops literals that repeat an earlier literal of the same conjunction, and
-  # rejects the conjunction outright when it holds both a literal and its
-  # negation.
+  # Drops literals repeating an earlier literal of the same conjunction, and rejects the
+  # conjunction outright when it holds both a literal and its negation.
   defp simplify_clause(literals) do
     literals
     |> Enum.reduce_while({[], %{}}, fn literal, {kept, seen} ->
@@ -440,14 +333,12 @@ defmodule Rete.DSL.Normalize do
     Enum.reverse(kept)
   end
 
-  # Identity of a literal, used to spot repetitions and contradictions. It is
-  # derived from what a condition compiles to - its type, its bindings and its
-  # expression codes - and never from `:__ast__`, whose metadata differs between
-  # two occurrences of the same condition written on different lines.
+  # Identity of a literal, used to spot repetitions and contradictions. Derived from what
+  # a condition compiles to, never from `:__ast__`, whose metadata differs between two
+  # occurrences of the same condition written on different lines.
   #
-  # A compound negation keys on its whole inner conjunction. Nothing is the
-  # opposite of it: its complement is a conjunction, not a literal, so it can
-  # only ever match another compound negation over the same conjunction.
+  # A compound negation keys on its whole inner conjunction. Its complement is a
+  # conjunction, not a literal, so nothing is the opposite of it.
   defp literal_key({:cneg, literals}), do: {:cneg, Enum.map(literals, &literal_key/1)}
   defp literal_key({sign, condition}), do: {sign, condition_key(condition)}
 

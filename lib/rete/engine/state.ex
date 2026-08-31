@@ -1,18 +1,13 @@
 defmodule Rete.Engine.State do
   @moduledoc """
-  Everything that changes while rules fire, as one value threaded through the
-  propagation loop.
+  Everything that changes while rules fire, as one value threaded through the loop.
 
-  Clara propagates by mutating a transient memory and calling down the node tree.
-  Here a node is a function of state and returns the state plus the work it
-  produced, and the loop does the walking. That is what removes the need for a
-  transport abstraction and four activation protocols, keeps propagation flat
-  rather than deeply recursive, and leaves one place — the loop — where listener
-  events are emitted.
+  **Internal.** A node is a function of state that returns the state plus the work it
+  produced. The loop does the walking, which keeps propagation flat and leaves one place
+  where listener events are emitted. See `docs/design/w3-engine.md` §1.
 
-  `:listeners` is `[{module, state}]` rather than a map, so that the order they
-  were attached in is the order they see events in, and so that one module can be
-  attached twice with different state.
+  `:listeners` is `[{module, state}]` rather than a map, so listeners see events in
+  attachment order and one module can be attached twice with different state.
   """
 
   alias Rete.Agenda
@@ -24,9 +19,9 @@ defmodule Rete.Engine.State do
 
   `:left` carries tokens from a parent, `:right` carries elements from an alpha.
 
-  The last two are work a node produces but cannot carry out where it happens,
-  so it hands it back for the loop to do: a retraction has to re-enter the alpha
-  network, and telling a listener is not a node's business.
+  The last two are work a node produces but cannot carry out where it happens. A
+  retraction has to re-enter the alpha network, and telling a listener is not a node's
+  business.
   """
   @type op ::
           {:left | :left_retract, term(), [Rete.Token.t()]}
@@ -49,8 +44,8 @@ defmodule Rete.Engine.State do
   @doc """
   A state over a network, with empty memory and nothing pending.
 
-  `:order` is the compile position of each production, so that two activations of
-  equal salience fire in the order the rules were written.
+  `:order` is the compile position of each production, so two activations of equal
+  salience fire in the order the rules were written.
   """
   @spec new(Network.t()) :: t()
   def new(%Network{} = network) do

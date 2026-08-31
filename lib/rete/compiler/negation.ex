@@ -2,72 +2,31 @@ defmodule Rete.Compiler.Negation do
   @moduledoc """
   Turns a `Rete.IR.CompoundNegation` into something a Rete network can express.
 
-  A negation node watches one condition and propagates its token while nothing
-  matches. It cannot watch a *conjunction*: "no `x` has both an order and a
-  refund" is not a statement about orders, nor about refunds, but about pairs.
+  **Internal.** A negation node watches one condition and propagates its token while
+  nothing matches. It cannot watch a *conjunction*, and de Morgan does not rescue it: the
+  conjuncts share existentially quantified variables, so with orders `{1}` and refunds
+  `{2}`, "no `x` has both" is true and the rewrite is false.
 
-  De Morgan does not rescue it either. `not(and(a, b)) = or(not a, not b)` is
-  sound propositionally, but the conjuncts of a rule condition share
-  existentially quantified variables, so with orders `{1}` and refunds `{2}`
-  the original is true and the rewrite is false. `Rete.DSL.Normalize` therefore
-  refuses to apply it and leaves a `CompoundNegation` behind for this module.
-
-  ## The rewrite
-
-  The conjunction is lifted into a generated helper production that inserts a
-  **marker fact** whenever it matches, and the compound negation becomes an
-  ordinary negation of that marker:
+  So the conjunction is lifted into a generated helper that inserts a **marker fact**, and
+  the compound negation becomes an ordinary negation of that marker:
 
       defrule clean({:customer, cid}, {:nand, [{:order, cid}, {:refund, cid}]})
 
       # becomes, in effect
       defrule clean__neg_1({:customer, cid}, {:order, cid}, {:refund, cid}) do
-        {:"clean__neg_1", %{cid: cid}}          # the marker
+        {:"clean__neg_1", %{cid: cid}}
       end
       defrule clean({:customer, cid}, {:not, [{:"clean__neg_1", cid}]})
 
-  Three things make this correct rather than merely plausible.
+  Three things make that correct. The marker **carries the bindings** the conjunction
+  joins on, or one customer with both would suppress the rule for every customer. The
+  helper **repeats the preceding conditions**, which is what binds those variables. And
+  the helper **fires first**, through an `:internal_salience` set to the nesting depth,
+  so extraction chains correctly and the negating rule never observes an absence that had
+  merely not been computed yet.
 
-  ### The marker is scoped to its bindings
-
-  The marker carries the ancestor bindings the negated conjunction actually
-  joins on, and the negation matches on them. Without that, one customer having
-  both an order and a refund would suppress the rule for *every* customer: the
-  negation would be asking "does any match exist at all" instead of "does one
-  exist for this `cid`". Clara hit exactly this as issue 304.
-
-  Only bindings the conjunction *uses* are carried. Including every ancestor
-  binding would split the marker into needlessly many groups and stop it being
-  shared between tokens that the negation cannot tell apart.
-
-  ### The helper repeats the preceding conditions
-
-  Its left hand side is the conditions before the negation, then the
-  conjunction. The prefix is what binds the ancestor variables, so without it
-  the marker would have nothing to carry — and it means the marker is only
-  produced for binding groups that actually reached the negation.
-
-  ### The helper fires first
-
-  A generated production gets a higher `:internal_salience` than anything a user
-  can write. If the rule that negates the marker ran first it would observe an
-  absence that simply had not been computed yet, fire, and then be retracted by
-  truth maintenance once the marker arrived — a visible spurious activation.
-
-  `:internal_salience` is the **nesting depth**, not a flag, because extraction
-  chains. In `{:nand, [b, {:nand, [c, d]}]}` the inner conjunction is extracted
-  first and the outer helper negates *its* marker, so the outer helper stands to
-  the inner one exactly as the user's rule stands to it. Ranking both at 1 would
-  reproduce the bug one level in. Depth orders inner above outer above the rule:
-  2, then 1, then 0.
-
-  ## Why closures
-
-  Extraction runs when the network is built, long after macro expansion, so a
-  helper's expressions cannot be generated as named functions in the ruleset
-  module the way `Rete.DSL.Codegen` does it. They are plain closures instead,
-  wrapped in `Rete.IR.Expr` with deterministic `:code`s so that node sharing and
-  the alpha index treat them like any other expression.
+  A helper's expressions are plain closures, because extraction runs at build time, long
+  after macro expansion. See `docs/design/w2-network.md` §6.
   """
 
   alias Rete.DSL.Codegen
@@ -79,10 +38,9 @@ defmodule Rete.Compiler.Negation do
   @doc """
   Rewrites every compound negation in a production.
 
-  Returns the rewritten production and the helper productions it generated, in
-  the order they must be added to the network. Helpers are extracted depth
-  first, so a compound negation nested inside another is itself extracted and
-  appears before the helper that negates it.
+  Returns the rewritten production and the helpers it generated, in the order they must
+  be added to the network. Helpers are extracted depth first, so a compound negation
+  nested inside another appears before the helper that negates it.
 
   A production with no compound negation is returned unchanged with `[]`.
   """
@@ -92,8 +50,8 @@ defmodule Rete.Compiler.Negation do
     {%IR.Production{production | lhs: lhs}, Enum.reverse(helpers)}
   end
 
-  # Walks the LHS in order, carrying the conditions seen so far (the prefix a
-  # helper needs) and a counter that makes generated names unique and stable.
+  # Carries the conditions seen so far, which is the prefix a helper needs, and a counter
+  # that makes generated names unique and stable.
   defp walk(lhs, production, prefix, helpers, counter, depth) do
     Enum.reduce(lhs, {[], helpers, counter}, fn element, {done, helpers, counter} ->
       prefix = prefix ++ Enum.reverse(done)
@@ -106,8 +64,7 @@ defmodule Rete.Compiler.Negation do
           {[negation | done], helpers, counter}
 
         {:or, branches} ->
-          # Each branch is its own path, so each carries the same prefix and
-          # extracts independently.
+          # Each branch is its own path, so each carries the same prefix.
           {branches, helpers, counter} =
             Enum.reduce(branches, {[], helpers, counter}, fn branch, {acc, helpers, counter} ->
               {branch, helpers, counter} =
@@ -133,8 +90,8 @@ defmodule Rete.Compiler.Negation do
          counter,
          depth
        ) do
-    # A nested compound negation inside the conjunction is extracted first, so
-    # that the helper's own LHS contains only things the network can express.
+    # A nested compound negation is extracted first, so the helper's own LHS holds only
+    # what the network can express.
     {conditions, helpers, counter} =
       walk(conditions, production, prefix, helpers, counter, depth + 1)
 
@@ -156,17 +113,14 @@ defmodule Rete.Compiler.Negation do
     {%IR.Negation{condition: marker_condition(name, carried)}, [helper | helpers], counter + 1}
   end
 
-  # Deterministic across compilations and unique across modules: two rules with
-  # the same name in different modules, and two compound negations in one rule,
-  # all get distinct markers. Nothing here may use make_ref or a time seed —
-  # node sharing depends on these being reproducible.
+  # Must be deterministic across compilations: node sharing depends on it. Never use
+  # make_ref or a time seed here.
   defp helper_name(%IR.Production{module: module, name: name}, counter) do
     :"#{inspect(module)}.#{name}__neg_#{counter}"
   end
 
-  # The ancestor bindings the negated conjunction actually reads. Anything the
-  # conjunction binds for itself is not carried: it is existentially quantified
-  # inside the negation and means nothing outside it.
+  # The ancestor bindings the conjunction reads. What it binds for itself is
+  # existentially quantified inside the negation and means nothing outside it.
   defp carried_bindings(conditions, prefix) do
     available = prefix_bindings(prefix)
     set = MapSet.new(available)
@@ -178,12 +132,9 @@ defmodule Rete.Compiler.Negation do
     |> Enum.sort()
   end
 
-  # An equality key is in `:join_bind`; a variable a cross-condition guard reads
-  # from the token side is **not** (see docs/design/w1-ir.md section 2), and it
-  # is an ancestor binding the conjunction depends on just the same. Missing one
-  # makes the marker global, so a single binding group that has a match
-  # suppresses the rule for every group — Clara's issue 304 again, reached
-  # through a guard instead of through a shared pattern variable.
+  # A variable a cross-condition guard reads from the token side is not in `:join_bind`,
+  # but it is an ancestor binding just the same. Missing one makes the marker global, so
+  # one binding group with a match suppresses the rule for every group.
   defp joined_vars(%IR.Fact{} = fact, available),
     do: (fact.join_bind || []) ++ filter_vars(fact.join_filter, fact.type, available)
 
@@ -203,18 +154,10 @@ defmodule Rete.Compiler.Negation do
 
   defp joined_vars(_element, _available), do: []
 
-  # Extraction runs at build time, long after `Rete.IR.escape/1` dropped the
-  # filter's AST, so the only record of what it reads is its `:code` — whose
-  # shape the front end fixes as `join_<type>_bind_<v1>_<v2>_..._expr_<hash>`, with the
-  # variables of *both* sides sorted (docs/design/w1-ir.md section 5). We ask
-  # which of the ancestor bindings that code mentions.
-  #
-  # Both approximations here are deliberately one sided. A code we cannot read
-  # falls back to every ancestor binding, and the membership test matches on `_`
-  # delimited boundaries, so a variable whose name is a segment of another one
-  # is over-reported. Carrying a binding the conjunction does not read only
-  # splits the marker into more groups than necessary; failing to carry one it
-  # does read is a wrong answer.
+  # `Rete.IR.escape/1` dropped the filter's AST, so the only record of what it reads is
+  # its `:code`. Both approximations here over-report on purpose: carrying a binding the
+  # conjunction does not read only splits the marker into more groups, while missing one
+  # it does read is a wrong answer.
   defp filter_vars(nil, _type, _available), do: []
 
   defp filter_vars(%IR.Expr{code: code}, type, available) do
@@ -245,8 +188,8 @@ defmodule Rete.Compiler.Negation do
     Enum.sort(guaranteed ++ optional)
   end
 
-  # The helper inherits the user's salience so it stays in the same ordering
-  # band as the rule it serves, and outranks it only on the internal tier.
+  # The helper inherits the user's salience, so it stays in the same ordering band and
+  # outranks the rule only on the internal tier.
   defp helper_opts(%IR.Production{opts: opts}, depth) do
     opts
     |> Kernel.||([])
@@ -255,9 +198,8 @@ defmodule Rete.Compiler.Negation do
     |> Keyword.put(:generated, true)
   end
 
-  # `(hash, bindings) -> marker`. The marker's type is the generated name, so
-  # the alpha index routes it to exactly one place and the alpha below needs no
-  # name check of its own.
+  # `(hash, bindings) -> marker`. The marker's type is the generated name, so the alpha
+  # index routes it to exactly one place.
   defp marker_rhs(name, carried) do
     fn _hash, bindings -> {name, Map.take(bindings, carried)} end
   end

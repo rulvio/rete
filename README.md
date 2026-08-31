@@ -282,11 +282,11 @@ Seven modules, and they are the ones the examples above use:
 | `Rete.Listener` (+ `.Collect`, `.Trace`) | watching what a session does |
 
 **Everything else is internal** — the DSL front end, the IR, the compiler, the network,
-the engine, working memory, the agenda, and the value structs. It is documented, and
-generously, because the design is meant to be readable and because durability,
-checkpointing and tooling will eventually need to reach in. But it is not covered by
-semantic versioning and it may change in a patch release. The generated docs group it
-under `Internals:` headings for exactly this reason.
+the engine, working memory, the agenda, and the value structs. It is documented, because
+durability, checkpointing and tooling will eventually need to reach in, and `docs/design/`
+carries the reasoning behind it. But it is not covered by semantic versioning and it may
+change in a patch release. The generated docs group it under `Internals:` headings for
+exactly this reason.
 
 Two internals do reach you through the public API: `Rete.Session.pending/1` returns
 `Rete.Activation` structs, and every listener event carries a `Rete.Token`. **Read their

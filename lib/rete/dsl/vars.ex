@@ -2,22 +2,19 @@ defmodule Rete.DSL.Vars do
   @moduledoc """
   Scope aware variable analysis for DSL fragments.
 
-  Two questions are asked of user written AST, and they have different answers:
+  **Internal.** Two questions with different answers:
 
-    * `pattern_vars/1` — what does this *pattern* bind? Used for the variables a
-      condition contributes to the token.
-    * `read_vars/1` — what does this *expression* read from its enclosing scope?
-      Used to decide whether a guard is local to its condition or needs a join
-      filter.
+    * `pattern_vars/1` — what does this *pattern* bind? The variables a condition
+      contributes to the token.
+    * `read_vars/1` — what does this *expression* read from its enclosing scope? Decides
+      whether a guard is local to its condition or needs a join filter.
 
-  Both are scope aware, which a plain `Macro.prewalk/3` is not. A traversal that
-  simply collects every `{name, meta, nil}` node reports the parameter of
-  `fn v -> v > 0 end`, the generator of a comprehension, the head of a `case`
-  clause and the `binary` in `<<rest::binary>>` as if the rule had bound them.
-  That is not a cosmetic inaccuracy: a spurious name is not in the condition's
-  own bindings, so the guard is judged non local, lifted into a join filter, and
-  destructured from a token that can never carry it — the rule then silently
-  never fires, or fails to compile naming a generated function.
+  Both are scope aware, which a plain `Macro.prewalk/3` is not. A traversal collecting
+  every `{name, meta, nil}` node would report the parameter of `fn v -> v > 0 end`, a
+  comprehension generator, a `case` clause head and the `binary` in `<<rest::binary>>` as
+  bound by the rule. A spurious name is not in the condition's own bindings, so the guard
+  would be judged non-local, lifted into a join filter and destructured from a token that
+  can never carry it. The rule would then never fire.
   """
 
   @typedoc "A variable name."
@@ -53,9 +50,8 @@ defmodule Rete.DSL.Vars do
   @spec pattern_vars(Macro.t()) :: %{name() => Macro.t()}
   def pattern_vars(ast), do: pattern_vars(ast, %{})
 
-  # One clause per quoted form. The branch count is the number of shapes an
-  # Elixir pattern can take, which no amount of restructuring reduces; splitting
-  # it up would only scatter the dispatch across several functions.
+  # One clause per quoted form. The branch count is the number of shapes an Elixir
+  # pattern can take, which restructuring does not reduce.
   # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   defp pattern_vars(ast, acc) do
     case ast do
@@ -66,8 +62,8 @@ defmodule Rete.DSL.Vars do
       {:@, _, _} ->
         acc
 
-      # `rest :: binary` — only the left side binds; the right side is a type
-      # specifier whose atoms are modifier names, not variables.
+      # `rest :: binary` — only the left side binds. The right side is a type specifier
+      # whose atoms are modifier names, not variables.
       {:"::", _, [left, _spec]} ->
         pattern_vars(left, acc)
 
@@ -139,11 +135,9 @@ defmodule Rete.DSL.Vars do
   @spec read_var_names(Macro.t() | nil) :: [name()]
   def read_var_names(ast), do: ast |> read_vars() |> Enum.sort()
 
-  # `bound` is the set of names a construct inside the expression has already
-  # introduced; a read of one of those is not a read of the rule's scope.
-  #
-  # As with `pattern_vars/2`, the branch count is the number of quoted forms
-  # that scope a variable, not accidental complexity.
+  # `bound` is the set of names a construct inside the expression already introduced. A
+  # read of one of those is not a read of the rule's scope. As with `pattern_vars/2`, the
+  # branch count is the number of quoted forms that scope a variable.
   # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   defp free(ast, bound) do
     case ast do
@@ -157,18 +151,16 @@ defmodule Rete.DSL.Vars do
       {:fn, _, clauses} when is_list(clauses) ->
         union(clauses, &clause_free(&1, bound))
 
-      # Comprehensions and `with`: generators bind leftwards to rightwards, and
-      # the bindings are visible to later clauses and to the body.
+      # Comprehensions and `with`: generators bind left to right, and their bindings are
+      # visible to later clauses and to the body.
       {op, _, args} when op in [:for, :with] and is_list(args) ->
         comprehension_free(args, bound)
 
       {:case, _, [subject, blocks]} ->
         MapSet.union(free(subject, bound), blocks_free(blocks, bound))
 
-      # `cond` is the odd one out: its clause heads are conditions, not
-      # patterns, so they read rather than bind. Running them through the
-      # pattern path would treat every name in them as introduced here and
-      # suppress a genuine read.
+      # `cond` clause heads are conditions, not patterns, so they read rather than bind.
+      # The pattern path would treat every name in them as introduced here.
       {:cond, _, [blocks]} ->
         union(clauses_of(blocks), fn
           {:->, _, [head, body]} -> MapSet.union(free(head, bound), free(body, bound))
@@ -194,8 +186,8 @@ defmodule Rete.DSL.Vars do
       {:=, _, [left, right]} ->
         MapSet.union(free_pattern_reads(left, bound), free(right, bound))
 
-      # `rest :: binary` — the modifier side names types, not variables, but a
-      # modifier may still call out to one, as in `x :: size(n)`.
+      # `rest :: binary` — the modifier side names types, but a modifier may still call
+      # out to a variable, as in `x :: size(n)`.
       {:"::", _, [left, spec]} ->
         MapSet.union(free(left, bound), spec_free(spec, bound))
 
@@ -223,8 +215,8 @@ defmodule Rete.DSL.Vars do
     end
   end
 
-  # A `->` clause: the head binds for the body, and a `when` guard in the head
-  # can read both the newly bound names and the enclosing scope.
+  # A `->` clause. The head binds for the body, and a `when` guard in the head reads both
+  # the newly bound names and the enclosing scope.
   defp clause_free({:->, _, [head, body]}, bound) do
     {patterns, guard} = split_when(head)
     introduced = union(patterns, &MapSet.new(Map.keys(pattern_vars(&1))))
@@ -298,8 +290,8 @@ defmodule Rete.DSL.Vars do
 
   defp clauses_of(other), do: [other]
 
-  # A pattern binds rather than reads, but it can still read: `^x` and the
-  # argument of a modifier such as `size(n)`.
+  # A pattern binds rather than reads, but it can still read `^x` and the argument of a
+  # modifier such as `size(n)`.
   defp free_pattern_reads(ast, bound) do
     case ast do
       {:^, _, [inner]} ->
@@ -325,8 +317,8 @@ defmodule Rete.DSL.Vars do
     end
   end
 
-  # A bitstring type specifier: `binary`, `integer-signed`, `size(n)`. Bare
-  # atoms are modifier names; only a call such as `size(n)` reads a variable.
+  # A bitstring type specifier: `binary`, `integer-signed`, `size(n)`. Bare atoms are
+  # modifier names. Only a call such as `size(n)` reads a variable.
   defp spec_free(spec, bound) do
     case spec do
       {:-, _, [left, right]} ->

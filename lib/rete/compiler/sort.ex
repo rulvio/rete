@@ -2,91 +2,26 @@ defmodule Rete.Compiler.Sort do
   @moduledoc """
   Topological ordering of the left hand side of a production.
 
-  A rule reads best in the order the author thought of it; the network needs an
-  order in which every join has its keys already in the token. This phase
-  reconciles the two: it reorders the LHS so that a condition only ever comes
-  after the conditions that bind the variables it needs.
+  **Internal.** A rule reads best in the order the author thought of it. The network needs
+  an order in which every join already has its keys in the token. This phase reorders the
+  LHS so a condition comes after the conditions that bind what it needs, so
 
       defrule r({:order, amt} when amt > t, {:threshold, t})
 
-  is sorted into `{:threshold, t}, {:order, amt} when amt > t` and from there on
-  is indistinguishable from the same rule written that way round.
+  is sorted into `{:threshold, t}, {:order, amt} when amt > t`.
 
-  ## What a condition needs
+  A condition **needs** only what it reads and cannot supply itself. `_`-prefixed names
+  are dropped, since no ordering can satisfy one. What it **binds** comes from
+  `Rete.IR.lhs_bindings/1`, so this phase and the production's `:bind` cannot drift apart.
 
-  Only what it reads and cannot supply itself:
+  Each pass takes every condition satisfiable right now, in author order, so equally
+  satisfiable conditions keep the order they were written in and two rules sharing a
+  prefix still share their nodes. Collections and tests are deferred: a collection placed
+  too early propagates `[]` before the conditions that would have filled it are joined.
 
-    * a `Rete.IR.Fact` or `Rete.IR.Coll` needs the variables of its guard that
-      its own pattern does not bind - exactly the variables that would otherwise
-      become a join filter read of the token side;
-    * a `Rete.IR.Test` needs every variable its guard reads, since it has no
-      fact of its own;
-    * a `Rete.IR.Negation` needs what its inner condition needs. The variables
-      the inner *pattern* binds are existential, not requirements: `{:not,
-      [{:order, x}]}` with no `x` upstream reads "there is no order at all";
-    * a `Rete.IR.CompoundNegation` and each branch of a `{:or, ...}` need the
-      union of their elements' needs minus what those elements bind between
-      them, because their conditions satisfy each other.
-
-  `_`-prefixed names are dropped from every need: the pattern that would bind
-  one discards it, so no ordering can ever satisfy it.
-  `Rete.DSL.Bindings.check_guard_vars!/3` reports that with the hint to rename
-  it, which is the answer the author needs.
-
-  ## What a condition binds
-
-  `Rete.IR.lhs_bindings/1`, so that this phase and the `:bind` of the production
-  cannot drift apart. A negation and a test bind nothing downstream, and a
-  disjunction binds only the *intersection* of its branches - a variable one
-  branch leaves free is not a join key any condition after it can use.
-
-  ## Stability
-
-  Every pass takes **all** the conditions that are satisfiable right now, in
-  author order, and only then moves on. Conditions that are equally satisfiable
-  therefore keep the order they were written in, which matters twice over: a
-  rule behaves the way it reads, and two rules that share a prefix still share
-  their alpha and join nodes. A sort that reshuffled freely would silently
-  degrade node sharing.
-
-  ## Collections and tests are deferred
-
-  A `Rete.IR.Coll` that introduces no new variable propagates `[]` and lets the
-  rule fire with zero matches (see `Rete.IR.Coll`). Placed too early it does
-  that *before* the conditions that would have filled it are joined, so a
-  collection is only taken when no plain condition is satisfiable. Clara defers
-  accumulators in `sort-conditions` for the same reason.
-
-  A `Rete.IR.Test` is deferred with it, for a smaller reason: it binds nothing,
-  so nothing is ever waiting on it, and the parser appends the rule level guard
-  as the last element of the LHS. Deferring it is what keeps it there when a
-  collection is pushed past it.
-
-  ## When nothing can be satisfied
-
-  Ordinarily an `ArgumentError` naming the production, the conditions still
-  unplaced and exactly which variables are unbound - this is what a typo in a
-  variable name looks like, so the message has to say which name.
-
-  Two shapes are handed on instead of reported here, because the phase that runs
-  next has a better answer for them:
-
-    * a `Rete.IR.Test`, which `Rete.DSL.Bindings.check_test_vars!/2` checks once
-      per path through the LHS, so it can say that only *some* branches of a
-      disjunction bind the variable;
-    * a condition whose missing variables are bound by some but not all branches
-      of a disjunction, which `Rete.DSL.Bindings.check_guard_vars!/3` likewise
-      reports per branch.
-
-  Neither can be fixed by reordering, so nothing is lost by leaving them in
-  author order.
-
-  ## Position in the pipeline
-
-  After `Rete.DSL.Normalize`, because a `Rete.IR.Gate` reaching this phase
-  raises - the arguments of a gate do not all bind, and their needs cannot be
-  read off it. Before `Rete.DSL.Bindings`, because `:join_bind` and `:new_bind`
-  have to be computed against the final order.
+  Runs after `Rete.DSL.Normalize`, because a `Rete.IR.Gate` reaching it raises, and before
+  `Rete.DSL.Bindings`, which reads `:join_bind` off the final order. See
+  `docs/design/w1-ir.md` §1.
   """
 
   alias Rete.DSL.Vars
@@ -98,12 +33,18 @@ defmodule Rete.Compiler.Sort do
   @doc """
   Sorts the left hand side of a production topologically.
 
-  Returns the production with its `:lhs` reordered; the conditions themselves
-  are untouched, except that the branches of a disjunction and the conjunction
-  inside a `Rete.IR.CompoundNegation` are sorted the same way, against the
-  variables bound where they sit.
+  Returns the production with its `:lhs` reordered. The conditions themselves are
+  untouched, except that a disjunction's branches and a `Rete.IR.CompoundNegation`'s
+  conjunction are sorted the same way, against the variables bound where they sit.
 
-  Idempotent: sorting an already sorted LHS returns it unchanged.
+  Idempotent. Sorting an already sorted LHS returns it unchanged.
+
+      iex> alias Rete.{Compiler.Sort, IR}
+      iex> order = %IR.Fact{bind: [:amt], __ast__: %{guard: quote(do: amt > t), bind: %{}}}
+      iex> threshold = %IR.Fact{bind: [:t]}
+      iex> production = %IR.Production{name: :r, lhs: [order, threshold]}
+      iex> Sort.sort(production).lhs |> Enum.map(& &1.bind)
+      [[:t], [:amt]]
   """
   @spec sort(IR.Production.t()) :: IR.Production.t()
   def sort(%IR.Production{lhs: lhs} = production) do
@@ -134,18 +75,15 @@ defmodule Rete.Compiler.Sort do
     raise ArgumentError, "unsupported LHS element for condition sorting: " <> inspect(element)
   end
 
-  # The needs of a conjunction of elements that the conjunction itself cannot
-  # satisfy. Its elements bind each other, so only what none of them binds is
-  # asked of the conditions upstream. Only *guaranteed* bindings count, for the
-  # same reason they do at the top level.
+  # What a conjunction cannot satisfy for itself. Its elements bind each other, so only
+  # what none of them binds is asked of the conditions upstream.
   defp residual(elements) do
     {guaranteed, _optional} = IR.lhs_bindings(elements)
     elements |> union(&needs/1) |> MapSet.difference(MapSet.new(guaranteed))
   end
 
-  # A guard variable the condition's own pattern binds is supplied by the fact
-  # itself; everything else has to come out of the token, which is to say from
-  # an earlier condition.
+  # The fact supplies a guard variable the condition's own pattern binds. Everything else
+  # has to come out of the token, which means from an earlier condition.
   defp guard_needs(condition) do
     own = MapSet.new(IR.bound_vars(condition))
 
@@ -157,8 +95,7 @@ defmodule Rete.Compiler.Sort do
     |> MapSet.new()
   end
 
-  # The join filter is read too, so that sorting an already classified LHS - one
-  # whose `:__ast__.guard` is only the alpha half - is still the identity.
+  # The join filter is read too, so sorting an already classified LHS is the identity.
   defp guards(%{__ast__: %{guard: guard}, join_filter: %IR.Expr{__ast__: %{body: body}}}) do
     [guard, body]
   end
@@ -189,9 +126,8 @@ defmodule Rete.Compiler.Sort do
     end
   end
 
-  # All the satisfiable conditions of this pass, in author order - `split_with/2`
-  # preserves the order of both halves, which is the whole of the stability
-  # guarantee. A collection is only reached when nothing else is satisfiable.
+  # Every satisfiable condition of this pass, in author order. `split_with/2` preserves
+  # the order of both halves, which is the whole stability guarantee.
   defp ready(remaining, bound) do
     satisfied? = fn {_element, needs} -> MapSet.subset?(needs, bound) end
 
@@ -213,15 +149,15 @@ defmodule Rete.Compiler.Sort do
     end)
   end
 
-  # A branch is a little LHS of its own, sorted against the variables bound
-  # where the disjunction sits.
+  # A branch is a small LHS of its own, sorted against the variables bound where the
+  # disjunction sits.
   defp place({:or, branches}, bound, optional, production) do
     branches = Enum.map(branches, &sorted(&1, bound, optional, production))
     contribute({:or, branches}, bound, optional)
   end
 
-  # So is the conjunction inside a compound negation, whose conditions bind each
-  # other even though none of them escapes.
+  # So is the conjunction inside a compound negation, whose conditions bind each other
+  # even though none of them escapes.
   defp place(%IR.CompoundNegation{conditions: conditions}, bound, optional, production) do
     conditions = sorted(conditions, bound, optional, production)
     contribute(%IR.CompoundNegation{conditions: conditions}, bound, optional)
@@ -257,9 +193,8 @@ defmodule Rete.Compiler.Sort do
     end
   end
 
-  # `Rete.DSL.Bindings` checks both of these once per path through the LHS, and
-  # so can name the branch the variable is missing on. Reordering cannot help
-  # either way, so they are left where the author put them.
+  # `Rete.DSL.Bindings` checks both once per path through the LHS, so it can name the
+  # branch the variable is missing on. Reordering cannot help either way.
   defp checked_per_path?(%IR.Test{}, _unmet, _optional), do: true
   defp checked_per_path?(_element, unmet, optional), do: MapSet.subset?(unmet, optional)
 
@@ -289,8 +224,8 @@ defmodule Rete.Compiler.Sort do
     """
   end
 
-  # Which condition is waiting for which variable is the whole of the answer, so
-  # every unplaced condition carries its own unmet needs.
+  # Which condition waits for which variable is the whole answer, so every unplaced
+  # condition carries its own unmet needs.
   defp unplaced({element, needs}, bound) do
     case needs |> MapSet.difference(bound) |> Enum.sort() do
       [] -> describe(element)
@@ -300,9 +235,8 @@ defmodule Rete.Compiler.Sort do
 
   defp vars(names), do: Enum.map_join(names, ", ", &"`#{&1}`")
 
-  # The parser keeps a condition's guard beside its source rather than in it, so
-  # a fact is spelled back out with the `when` the author wrote. A collection's
-  # source already carries the guard, inside the brackets where it belongs.
+  # The parser keeps a condition's guard beside its source, so a fact is spelled back out
+  # with the `when` the author wrote. A collection's source already carries its guard.
   defp describe(%IR.Fact{__ast__: %{source: source, guard: nil}}), do: Macro.to_string(source)
 
   defp describe(%IR.Fact{__ast__: %{source: source, guard: guard}}) do
@@ -324,9 +258,8 @@ defmodule Rete.Compiler.Sort do
       end) <> ")"
   end
 
-  # Only reachable for a condition whose `:__ast__` has been dropped, which is
-  # to say for an already escaped production. Nothing calls the sort there, but
-  # an error message must never be the thing that crashes.
+  # Only reachable for an already escaped production, whose `:__ast__` is gone. Nothing
+  # sorts there, but an error message must never be the thing that crashes.
   defp describe(element), do: inspect(element)
 
   defp union(enum, fun), do: Enum.reduce(enum, MapSet.new(), &MapSet.union(fun.(&1), &2))

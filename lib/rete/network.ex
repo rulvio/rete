@@ -2,11 +2,9 @@ defmodule Rete.Network do
   @moduledoc """
   A compiled rulebase: everything the engine needs, and nothing that changes.
 
-  A network is built once from a set of ruleset modules and is then immutable,
-  so any number of sessions can share one. All the per-session state — working
-  memory, the agenda, pending propagations — belongs to the engine, not here.
-
-  ## Shape
+  **Internal.** A network is built once from a set of ruleset modules and is then
+  immutable, so any number of sessions can share one. Working memory, the agenda and
+  pending propagations belong to the engine, not here.
 
       alphas      alpha node id => %Rete.Network.Node.Alpha{}
       alpha_beta  alpha node id => the beta node ids it feeds
@@ -15,25 +13,14 @@ defmodule Rete.Network do
       queries     {module, query name} => query node id
       productions the productions compiled in, including generated helpers
 
-  ## How a fact travels
+  A fact travels in three steps. `Rete.Taxonomy.alpha_ids/2` maps its type to alpha node
+  ids, which is the **only** place the taxonomy is consulted. Each alpha's arity 1
+  function turns the fact into a bindings map or `nil`. Matching elements reach the beta
+  nodes in `alpha_beta`, and the engine propagates along the graph's forward edges.
 
-  1. `Rete.Taxonomy.alpha_ids/2` maps the fact's type to alpha node ids. This is
-     the **only** place the taxonomy is consulted: `derive(:premium, :customer)`
-     is what makes a `:premium` fact reach a condition written against
-     `:customer`.
-  2. Each alpha's arity 1 function turns the fact into a bindings map, or `nil`.
-     It matches a fact of any type on purpose — the type decision was step 1.
-  3. Matching elements go to the beta nodes in `alpha_beta`, and from there the
-     engine propagates along the graph's forward edges.
-
-  Splitting it this way is what lets one alpha serve many rules: conditions are
-  grouped by expression code, so `{:customer, cid}` written in four rules is
-  matched once per fact.
-
-  An alpha node id **is** the expression code of the conditions it was built
-  from, which is why `Rete.Compiler.disambiguate_codes/1` runs first: a code two
-  modules disagree about would otherwise put two different functions under one
-  id and this map would keep whichever it reduced first.
+  An alpha node id **is** the expression code of the conditions it was built from, which
+  is why `Rete.Compiler.disambiguate_codes/1` runs first. See
+  `docs/design/w2-network.md` §2.
   """
 
   alias Rete.Compiler.BetaGraph
@@ -60,11 +47,11 @@ defmodule Rete.Network do
             marker_types: MapSet.new()
 
   @doc """
-  Assembles a network from productions that are already sorted, classified and
-  free of compound negations.
+  Assembles a network from productions already sorted, classified and free of compound
+  negations.
 
-  Most callers want `Rete.Compiler.build/2`, which runs the phases that get a
-  production into that state.
+  Most callers want `Rete.Compiler.build/2`, which runs the phases that get a production
+  into that state.
   """
   @spec new([IR.Production.t()], [Taxonomy.declaration()], keyword()) :: t()
   def new(productions, taxo_data \\ [], opts \\ []) do
@@ -144,8 +131,8 @@ defmodule Rete.Network do
   @doc """
   The modules that contributed a production to the network, sorted.
 
-  What a session was *built from*, which is the difference between "you typoed
-  the query name" and "you forgot to pass that ruleset to `Rete.Session.new/2`".
+  What a session was *built from*. That is the difference between a typo in a query name
+  and a ruleset never passed to `Rete.Session.new/2`.
   """
   @spec modules(t()) :: [module()]
   def modules(%__MODULE__{productions: productions}),
@@ -154,10 +141,8 @@ defmodule Rete.Network do
   @doc """
   Every production terminal, most salient first.
 
-  The ordering is `{salience, internal_salience}` descending. The internal tier
-  is what makes an extracted negation helper run before the rule that negates
-  its marker; without it that rule would fire once against an absence that had
-  simply not been computed yet.
+  Ordered by `{salience, internal_salience}` descending. The internal tier makes an
+  extracted negation helper run before the rule that negates its marker.
   """
   @spec production_nodes(t()) :: [Node.Production.t()]
   def production_nodes(%__MODULE__{graph: graph}) do
@@ -174,15 +159,10 @@ defmodule Rete.Network do
 
   # --- alpha side --------------------------------------------------------------
 
-  # One alpha per distinct expression code, feeding every beta node built from a
-  # condition with that code. The code is the sharing key, so a condition written
-  # in several rules is matched once per fact rather than once per rule.
-  #
-  # Keeping the first condition's function is only safe because every condition
-  # reaching here with the same code came from the same module - see
-  # `Rete.Compiler.disambiguate_codes/1` - and one module compiles one function
-  # per code, guarded by `Module.defines?/2` in `Rete.DSL.Codegen.expr_def/1`.
-  # The code also carries the fact type, so `:type` cannot differ either.
+  # One alpha per distinct expression code, feeding every beta node built from a condition
+  # with that code, so a condition written in several rules is matched once per fact.
+  # Keeping the first condition's function is safe because every condition reaching here
+  # with the same code came from the same module. See `Rete.Compiler.disambiguate_codes/1`.
   defp alpha_network(productions, graph) do
     beta_by_code = beta_ids_by_alpha_code(graph)
 
@@ -221,8 +201,8 @@ defmodule Rete.Network do
     |> Map.new(fn {type, codes} -> {type, Enum.sort(codes)} end)
   end
 
-  # Every condition with an alpha expression, including inside negations and
-  # disjunction branches. A Test has no fact input and therefore no alpha.
+  # Every condition with an alpha expression, including inside negations and disjunction
+  # branches. A Test has no fact input and therefore no alpha.
   defp conditions(%IR.Production{lhs: lhs}), do: Enum.flat_map(lhs, &conditions/1)
   defp conditions(%IR.Fact{} = fact), do: [fact]
   defp conditions(%IR.Coll{} = coll), do: [coll]
@@ -234,11 +214,8 @@ defmodule Rete.Network do
 
   defp conditions(_), do: []
 
-  # The marker facts extracted compound negations insert are engine machinery,
-  # not conclusions the user wrote a rule to reach. They have to be real facts —
-  # the negation node matches on them like anything else — but they have no
-  # business in `Rete.Session.facts/1`, where they would show up as a tuple
-  # named after a generated rule.
+  # Marker facts are real facts, because the negation node matches on them. They are
+  # engine machinery, so `Rete.Session.facts/1` hides them.
   defp marker_types(productions) do
     for production <- productions,
         Rete.Compiler.Negation.generated?(production),
@@ -246,10 +223,7 @@ defmodule Rete.Network do
         do: production.name
   end
 
-  @doc """
-  Whether a fact is an internal marker rather than something the user's rules
-  concluded.
-  """
+  @doc "Whether a fact is an internal marker rather than something a rule concluded."
   @spec marker?(t(), term()) :: boolean()
   def marker?(%__MODULE__{marker_types: markers} = network, fact) do
     MapSet.size(markers) > 0 and

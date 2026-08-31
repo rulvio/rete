@@ -2,46 +2,24 @@ defmodule Rete.Agenda do
   @moduledoc """
   The activations waiting to fire, most salient first.
 
-  **Internal.** Not part of the public API — see the README — but documented
-  rather than hidden, because durability, checkpointing and scheduling work will
-  need to reach in here. Treat its functions as liable to change.
+  **Internal.** Not part of the public API, and documented rather than hidden because
+  durability, checkpointing and scheduling work will need to reach in here. Treat its
+  functions as liable to change.
 
-  Ordering is `{salience, internal_salience}` descending, then compile order
-  ascending. Two rules of equal salience fire in the order they were written
-  rather than in whatever order a map happened to iterate — a rules engine whose
-  output depends on map ordering is impossible to reason about. Two *matches of
-  the same rule* fire in the order they arrived.
+  Ordering is `{salience, internal_salience}` descending, then compile order ascending.
+  Two matches of the same rule fire in the order they arrived.
 
-  ## Why activations are removed as well as added
+  Every activation of one production node shares a sort key, so the agenda is a small
+  number of ordered buckets rather than one sorted list. `add/2` and `pop/1` are O(1).
+  `remove/2` is linear in one bucket, which holds one rule's pending matches. See
+  `docs/design/w3-engine.md` §7.
 
-  An activation is a *pending* match. Before it fires, the facts behind it can be
-  retracted, and then it must not fire at all. So `remove/2` has to find an
-  activation by value and take it out of the middle of the queue — removal is a
-  first-class operation here, not an afterthought, which is what rules out an
-  ordinary heap.
-
-  Removal is by value: the same rule and the same token is the same activation,
-  whether or not it is the same term.
-
-  ## Buckets, not one sorted list
-
-  Every activation of one production node has the *same* sort key — salience,
-  internal salience and compile order all come from the node, none from the
-  match. So the agenda is a small number of ordered buckets, one per key, each
-  holding its activations in arrival order:
-
-      keys     [key]                        sorted, only the non-empty ones
-      buckets  %{key => :queue of activation}
-
-  The number of distinct keys is bounded by the number of production nodes in
-  the ruleset, not by how many facts a session holds. That is what makes this
-  worth the extra structure: inserting into a single sorted list walked past
-  every activation already queued for the same rule, so filling an agenda with n
-  matches of one rule cost O(n²). Here `add/2` is O(1) into the bucket plus at
-  most one insertion into the short key list, and `pop/1` is O(1).
-
-  `remove/2` is still linear in one bucket — a queue has to be searched — but a
-  bucket is one rule's pending matches rather than the whole agenda.
+      iex> alias Rete.{Activation, Agenda}
+      iex> urgent = %Activation{node_id: :n1, salience: 10}
+      iex> normal = %Activation{node_id: :n2, salience: 0}
+      iex> agenda = Agenda.new() |> Agenda.add(normal) |> Agenda.add(urgent)
+      iex> Agenda.to_list(agenda) |> Enum.map(& &1.node_id)
+      [:n1, :n2]
   """
 
   alias Rete.Activation
@@ -63,15 +41,16 @@ defmodule Rete.Agenda do
   @doc """
   How many activations are waiting.
 
-  Counted as they arrive rather than by walking, so that reporting the size of a
-  runaway agenda is not itself expensive — which is what it is for.
+  Counted as they arrive, so that reporting the size of a runaway agenda is cheap.
+
+      iex> alias Rete.{Activation, Agenda}
+      iex> Agenda.new() |> Agenda.add(%Activation{node_id: :n1}) |> Agenda.size()
+      1
   """
   @spec size(t()) :: non_neg_integer()
   def size(%__MODULE__{size: size}), do: size
 
-  @doc """
-  Adds an activation, behind the ones already queued for its rule.
-  """
+  @doc "Adds an activation, behind the ones already queued for its rule."
   @spec add(t(), Activation.t()) :: t()
   def add(%__MODULE__{} = agenda, %Activation{} = activation) do
     key = Activation.key(activation)
@@ -96,10 +75,19 @@ defmodule Rete.Agenda do
   @doc """
   Removes an activation by value.
 
-  Returns `{agenda, :removed}` when it was still pending, `{agenda, :missing}`
-  when it had already fired. The caller needs to tell the two apart: an
-  activation that never fired inserted nothing, so there is nothing to retract,
-  whereas one that did fire has facts that truth maintenance must now take back.
+  Returns `{agenda, :removed}` when it was still pending, `{agenda, :missing}` when it had
+  already fired. The caller must tell the two apart. An activation that never fired
+  inserted nothing, so there is nothing to retract. One that fired has facts that truth
+  maintenance must take back.
+
+      iex> alias Rete.{Activation, Agenda}
+      iex> pending = %Activation{node_id: :n1}
+      iex> {_agenda, verdict} = Agenda.new() |> Agenda.add(pending) |> Agenda.remove(pending)
+      iex> verdict
+      :removed
+      iex> {_agenda, verdict} = Agenda.remove(Agenda.new(), pending)
+      iex> verdict
+      :missing
   """
   @spec remove(t(), Activation.t()) :: {t(), :removed | :missing}
   def remove(%__MODULE__{} = agenda, %Activation{} = activation) do
@@ -115,6 +103,9 @@ defmodule Rete.Agenda do
 
   @doc """
   Takes the most salient activation, or `:empty`.
+
+      iex> Rete.Agenda.pop(Rete.Agenda.new())
+      :empty
   """
   @spec pop(t()) :: {:ok, Activation.t(), t()} | :empty
   def pop(%__MODULE__{keys: []}), do: :empty
@@ -131,13 +122,11 @@ defmodule Rete.Agenda do
     Enum.flat_map(keys, fn key -> buckets |> Map.fetch!(key) |> :queue.to_list() end)
   end
 
-  # Puts a bucket back after one activation left it, dropping the key entirely
-  # when nothing is left — `keys` is the record of which buckets exist, so an
-  # empty one left behind would make `pop/1` reach for a value that is not there.
+  # Drops the key when the bucket empties. `keys` records which buckets exist, so an empty
+  # one left behind would make `pop/1` reach for a value that is not there.
   #
-  # Takes a queue rather than a list on purpose. Round-tripping through
-  # `:queue.to_list/1` here would put an O(bucket) cost on `pop/1`, which is the
-  # one operation on the firing path that has to stay O(1).
+  # Takes a queue, not a list. Round-tripping through `:queue.to_list/1` here would put an
+  # O(bucket) cost on `pop/1`, which has to stay O(1).
   defp store(%__MODULE__{} = agenda, key, remaining) do
     if :queue.is_empty(remaining) do
       %__MODULE__{
@@ -154,18 +143,18 @@ defmodule Rete.Agenda do
     end
   end
 
-  # The key list is as long as the ruleset has production nodes, so a linear
-  # insertion into it costs nothing that grows with the session.
+  # The key list is as long as the ruleset has production nodes, so a linear insertion
+  # costs nothing that grows with the session.
   defp insert_key([], key), do: [key]
 
   defp insert_key([head | tail] = keys, key) do
     if key < head, do: [key | keys], else: [head | insert_key(tail, key)]
   end
 
-  # Two activations are the same when they are the same rule reached by the same
-  # match. `:order` and the salience fields are derived from the node, so they
-  # cannot differ when the node does not — which is also why the activation
-  # being looked for lands in the same bucket as the one stored.
+  # Two activations are the same when they are the same rule reached by the same match.
+  # `:order` and the salience fields come from the node, so they cannot differ when the
+  # node does not. That is also why the one looked for lands in the bucket of the one
+  # stored.
   defp drop_first([], _activation), do: :error
 
   defp drop_first([head | tail], activation) do

@@ -12,8 +12,8 @@ All notable changes to `rete` are recorded here. The format follows
   `fire_rules/2` runs to quiescence and an oscillating ruleset spins rather than raising.
   The old default of 10,000 was reached by 4,000 facts through a three-rule chain — no
   loop in sight — and a count cannot separate a runaway from a large settling pass, so
-  any default eventually fails correct code. Pass an integer to bound a call; the loop
-  guard section of `Rete.Engine` has the numbers for picking one. An unrecognised value
+  any default eventually fails correct code. Pass an integer to bound a call.
+  `docs/design/w5-observability.md` §3 has the numbers for picking one. An unrecognised value
   raises rather than quietly meaning no cap, which is what `max_cycles: nil` used to do
   by accident of Erlang term order.
 * `mix.exs` no longer declares `extra_applications: [:logger]`. Nothing in the engine

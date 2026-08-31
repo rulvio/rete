@@ -5,6 +5,8 @@ defmodule Rete.AgendaTest do
   alias Rete.Agenda
   alias Rete.Token
 
+  doctest Rete.Agenda
+
   defp activation(opts) do
     %Activation{
       node_id: Keyword.get(opts, :node_id, :n),

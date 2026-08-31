@@ -10,6 +10,7 @@ defmodule Rete.MixProject do
       version: @version,
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
+      elixirc_paths: elixirc_paths(Mix.env()),
       deps: deps(),
       aliases: aliases(),
       name: "Rete",
@@ -25,16 +26,15 @@ defmodule Rete.MixProject do
     [preferred_envs: [dialyzer: :dev, docs: :dev]]
   end
 
-  # Run "mix help compile.app" to learn about applications.
-  def application do
-    # No :extra_applications. The engine uses no OTP application beyond the
-    # standard ones — it has no processes, no supervision tree and no Logger
-    # calls; tracing goes through Rete.Listener.Trace, which writes to a device
-    # the caller chooses.
-    []
-  end
+  # No :extra_applications. The engine has no processes, no supervision tree and no
+  # Logger calls. Tracing goes through Rete.Listener.Trace, which writes to a device the
+  # caller chooses.
+  def application, do: []
 
-  # Run "mix help deps" to learn about dependencies.
+  # test/support holds the ruleset the doctests in lib/ run against. It is not shipped.
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_env), do: ["lib"]
+
   defp deps do
     [
       {:taxo, "~> 0.1.0"},
@@ -45,9 +45,8 @@ defmodule Rete.MixProject do
     ]
   end
 
-  # `bench/` is a script rather than a Mix task under `lib/`, so that it is not
-  # compiled into the package and does not add a `mix bench` to every project
-  # that depends on this one.
+  # `bench/` is a script rather than a Mix task under `lib/`, so it is not compiled into
+  # the package and does not add a `mix bench` to every project that depends on this one.
   defp aliases do
     [bench: ["run bench/run.exs"]]
   end
@@ -89,11 +88,8 @@ defmodule Rete.MixProject do
         Design: ~r"docs/design/",
         About: ["CHANGELOG.md", "LICENSE"]
       ],
-      # The first group is the public API; the rest are internals. See "What is
-      # public" in the README. They are documented rather than hidden because
-      # the design is meant to be readable and because durability and tooling
-      # work will need them, but only the first group is covered by semantic
-      # versioning.
+      # Only the first group is covered by semantic versioning. See "What is public" in
+      # the README, and docs/design/ for how the internals work.
       groups_for_modules: [
         "Public API": [
           Rete,

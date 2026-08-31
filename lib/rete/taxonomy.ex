@@ -2,27 +2,15 @@ defmodule Rete.Taxonomy do
   @moduledoc """
   Decides which alpha nodes a fact must be offered to.
 
-  A condition declares the fact type it is written against, but the alpha
-  expression it compiles to never checks that type - it matches a fact of *any*
-  shape (see `Rete.IR`). Type filtering happens here instead, at propagation
-  time, so that `derive/2` and `underive/2` can widen what a condition sees
-  without recompiling a single expression.
+  **Internal.** A condition declares the fact type it is written against, but the alpha
+  expression it compiles to matches a fact of *any* shape. Type filtering happens here
+  instead, at propagation time, so `derive/2` and `underive/2` widen what a condition sees
+  without recompiling an expression.
 
-  ## What it is made of
-
-    * a `Taxo` hierarchy, folded left over the ordered `{:derive, child, parent}`
-      and `{:underive, child, parent}` declarations that `Rete.get_taxo_data/1`
-      returns. Order matters: a later `:underive` undoes an earlier `:derive`.
-    * a **fact type function**, `default_fact_type/1` unless one is given.
-    * an **index**, `fact type => alpha node ids`, precomputed by `index/2`.
-
-  ## The direction of the relation
-
-  `derive(:premium, :customer)` reads "a premium *is a* customer". So a
-  `:premium` fact must reach every condition written against `:customer`, and a
-  `:customer` fact must **not** reach a condition written against `:premium` -
-  not every customer is premium. The types a fact of type `t` is offered to are
-  therefore `t` itself plus `Taxo.ancestors/2` of `t`, never its descendants.
+  `derive(:premium, :customer)` reads "a premium *is a* customer". A `:premium` fact
+  reaches every condition written against `:customer`. A `:customer` fact must **not**
+  reach a condition written against `:premium`. So a fact of type `t` is offered to `t`
+  plus its ancestors, never its descendants.
 
       iex> taxonomy =
       ...>   Rete.Taxonomy.new([{:derive, :premium, :customer}],
@@ -33,20 +21,10 @@ defmodule Rete.Taxonomy do
       iex> Rete.Taxonomy.alpha_ids(taxonomy, {:customer, 1})
       [:a1]
 
-  ## Why the index is precomputed
-
-  `alpha_ids/2` runs for every inserted fact, and walking an ancestor set per
-  fact would dominate insertion. A session's taxonomy is immutable once built,
-  so `index/2` computes the whole `type => ids` map up front, for every type the
-  taxonomy mentions and every type a condition is written against. That is the
-  complete set of types with a non-empty answer: a type nobody declared has no
-  ancestors and matches no condition, so `Map.get(index, type, [])` is both the
-  correct answer for it and a lookup that cannot grow the index. An unseen type
-  is answered without allocating anything, which is what keeps a session that
-  inserts arbitrary foreign facts from leaking.
-
-  Entries that would be empty are dropped for the same reason, so the index
-  holds only types that actually reach a node.
+  `alpha_ids/2` runs for every inserted fact, so `index/2` precomputes the whole
+  `type => ids` map. Empty entries are dropped, and a type absent from the index is
+  answered `[]` without allocating. That keeps a session that inserts foreign facts from
+  leaking. See `docs/design/w2-network.md` §2.
   """
 
   @typedoc "A fact type: an atom tag, or a module for a struct fact."
@@ -83,11 +61,11 @@ defmodule Rete.Taxonomy do
 
     * `:fact_type_fn` - a one-argument function returning a fact's type,
       `default_fact_type/1` by default.
-    * `:alphas` - the `condition type => alpha node ids` map to `index/2` right
-      away; `%{}` by default, which makes every lookup answer `[]`.
+    * `:alphas` - the `condition type => alpha node ids` map to `index/2` right away.
+      `%{}` by default, which makes every lookup answer `[]`.
 
-  Raises if a declaration is neither a `:derive` nor an `:underive` tuple, and
-  lets `Taxo` raise on a cyclic derivation.
+  Declarations are folded in order, so a later `:underive` undoes an earlier `:derive`.
+  Raises if a declaration is neither tuple, and lets `Taxo` raise on a cyclic derivation.
 
       iex> taxonomy = Rete.Taxonomy.new([{:derive, :dog, :mammal}, {:derive, :mammal, :animal}])
       iex> Rete.Taxonomy.ancestors(taxonomy, :dog)
@@ -162,8 +140,8 @@ defmodule Rete.Taxonomy do
   @doc """
   The ids of the alpha nodes `fact` must be offered to.
 
-  Answers `[]` for a fact whose type no condition is written against, directly
-  or through a derivation.
+  Answers `[]` for a fact whose type no condition is written against, directly or through
+  a derivation.
   """
   @spec alpha_ids(t(), term()) :: [term()]
   def alpha_ids(%__MODULE__{} = taxonomy, fact) do
@@ -185,11 +163,10 @@ defmodule Rete.Taxonomy do
   def fact_type(%__MODULE__{fact_type_fn: fact_type_fn}, fact), do: fact_type_fn.(fact)
 
   @doc """
-  The condition types a fact of type `type` must be matched against: `type`
-  itself, followed by its ancestors.
+  The condition types a fact of type `type` must be matched against.
 
-  `type` comes first, the ancestors are sorted, so the order is deterministic
-  and does not depend on the order the derivations were declared in.
+  `type` first, then its ancestors, sorted. The order does not depend on the order the
+  derivations were declared in.
 
       iex> taxonomy = Rete.Taxonomy.new([{:derive, :dog, :mammal}, {:derive, :mammal, :animal}])
       iex> Rete.Taxonomy.expand(taxonomy, :dog)
@@ -212,12 +189,15 @@ defmodule Rete.Taxonomy do
   @doc """
   Whether a fact of type `child` reaches a condition written against `parent`.
 
-  True when the two are the same type, and when `child` derives from `parent`
-  directly or transitively.
+  True when the two are the same type, and when `child` derives from `parent` directly or
+  transitively.
+
+      iex> taxonomy = Rete.Taxonomy.new([{:derive, :dog, :mammal}])
+      iex> {Rete.Taxonomy.is_a?(taxonomy, :dog, :mammal), Rete.Taxonomy.is_a?(taxonomy, :mammal, :dog)}
+      {true, false}
   """
-  # Named after `Taxo.is_a?/3`, which it wraps, and after Clojure's `isa?`
-  # before that. Renaming it to satisfy the convention would leave the wrapper
-  # and the thing it wraps with different names, which is worse.
+  # Named after `Taxo.is_a?/3`, which it wraps. Renaming it to satisfy the credo
+  # convention would leave the wrapper and the wrapped with different names.
   @spec is_a?(t(), fact_type(), fact_type()) :: boolean()
   # credo:disable-for-next-line Credo.Check.Readability.PredicateFunctionNames
   def is_a?(%__MODULE__{taxo: taxo}, child, parent) do
@@ -231,8 +211,8 @@ defmodule Rete.Taxonomy do
     * a tagged tuple `{:type, ...}` of any arity by its first element,
     * a tagged map `%{__type__: type}` by that value.
 
-  Anything else raises: typing a fact by accident would make it match nothing,
-  silently and with no way to tell that from a rule that simply does not apply.
+  Anything else raises. Typing a fact by accident would make it match nothing, silently,
+  with no way to tell that from a rule that does not apply.
 
       iex> Rete.Taxonomy.default_fact_type({:order, 1, 99})
       :order

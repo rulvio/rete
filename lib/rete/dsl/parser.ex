@@ -3,22 +3,13 @@ defmodule Rete.DSL.Parser do
   Turns the quoted arguments of `Rete.Ruleset.defrule/2` and
   `Rete.Ruleset.defquery/2` into `Rete.IR` structs.
 
-  This is the first phase of the DSL front end. It does parsing and nothing
-  else:
+  **Internal.** The first phase of the DSL front end. It records each LHS element's type,
+  bindings and guard, builds the alpha and test `Rete.IR.Expr` descriptors, and keeps the
+  raw pattern and guard AST in `:__ast__` for the later phases.
 
-    * it recognises every LHS element form and records its type, bindings,
-      fact/collection binding, and guard,
-    * it builds the alpha and test `Rete.IR.Expr` descriptors (name, stable
-      code, argument pattern, body), and
-    * it keeps the raw pattern and guard AST on each condition, in `:__ast__`,
-      so that the later phases can rebuild expressions.
-
-  It deliberately does **not** normalize gates, classify bindings into
-  join/new, or split guards into an alpha part and a beta join filter. Gates
-  become `Rete.IR.Gate` placeholders and `:join_filter`, `:join_bind` and
-  `:new_bind` are left `nil`.
-
-  ## Accepted LHS element forms
+  It deliberately does **not** normalize gates, classify bindings or split guards. Gates
+  become `Rete.IR.Gate` placeholders, and `:join_filter`, `:join_bind` and `:new_bind`
+  are left `nil`.
 
       {:type, a, b, ...}              fact pattern of any arity, including {:type}
       %Mod{f: v}                      struct fact pattern, type is the module
@@ -26,28 +17,16 @@ defmodule Rete.DSL.Parser do
       f = <pattern>                   bind the whole fact to f
       <pattern> when <guard>          per condition guard
       [<pattern>]                     collection binding (collect all), anonymous
-      [<pattern> when <guard>]        collection binding with a guard
-      c = [<pattern>]                 collection binding bound to c
+      c = [<pattern> when <guard>]    collection binding, bound, with a guard
       {gate, [element, ...]}          gate, gate in #{inspect([:and, :or, :not, :nand, :nor, :xor, :xnor])}
 
-  A leading `%{...}` literal in the declaration is the options map, not a fact
-  pattern. A rule level guard, `defrule r(...) when <guard> do`, becomes a
-  trailing `Rete.IR.Test`.
+  A leading `%{...}` literal is the options map, not a fact pattern. A rule level guard
+  becomes a trailing `Rete.IR.Test`.
 
-  ## Expression naming
-
-  Expression codes are stable across compilations of the same source, which is
-  what lets the network builder share nodes between rules:
-
-      fact_<type>_bind_<vars ...>_expr_<hash>          alpha, no guard
-      test_fact_<type>_bind_<vars ...>_expr_<hash>     alpha, with guard
-      test_bind_<vars ...>_expr_<hash>                 test over bindings only
-
-  `<vars ...>` are the bound variables sorted and joined with `_`, and `<hash>`
-  is `:erlang.phash2/1` of the meta-stripped `{pattern_ast, body_ast}` pair. The
-  generated function is named `:"__<code>__"`. Because module attributes are
-  qualified with the defining module before hashing, the same pattern in two
-  modules with different attribute values yields different codes.
+  Expression codes are stable across compilations of the same source, which is what lets
+  the network share nodes. Module attributes are qualified with the defining module before
+  hashing, so the same pattern in two modules with different attribute values gets
+  different codes. See `docs/design/w1-ir.md` §5.
   """
 
   alias Rete.DSL.Codegen
@@ -62,12 +41,10 @@ defmodule Rete.DSL.Parser do
   @doc """
   Parses a production declaration and body into a `Rete.IR.Production`.
 
-  `decl` is the quoted call, e.g. `r(%{salience: 1}, {:foo, id}) when id > 0`,
-  and `body` is the quoted `do` block (or `nil`). `type` is `:rule` or
-  `:query`.
+  `decl` is the quoted call, e.g. `r(%{salience: 1}, {:foo, id}) when id > 0`. `body` is
+  the quoted `do` block, or `nil`. `type` is `:rule` or `:query`.
 
-  The returned production has `:rhs` set to `nil`; it is captured when the
-  production is escaped into its module.
+  `:rhs` is `nil` on the result. It is captured when the production is escaped.
   """
   @spec parse_production(env(), Macro.t(), Macro.t(), :rule | :query) :: IR.Production.t()
   def parse_production(env, decl, body, type) do
@@ -361,37 +338,22 @@ defmodule Rete.DSL.Parser do
   @doc """
   Replaces compile time constants in the AST with their values.
 
-  Two forms are resolved, both because an LHS condition is compiled into a
-  standalone function in the ruleset module and neither form survives being
-  moved there:
+  Both forms are resolved because an LHS condition is compiled into a standalone function
+  in the ruleset module, and neither survives being moved there.
 
-    * `@attr` — qualified with the defining module, so that the same pattern in
-      two modules with different attribute values does not share an expression.
+  `@attr` is qualified with the defining module, so the same pattern in two modules with
+  different attribute values does not share an expression. The value itself cannot be
+  resolved here: `@attr` expands to a call that only runs once the module body is
+  evaluated, which is after every macro in it has expanded. What distinguishes two uses of
+  one attribute is therefore their *line*, which `Rete.DSL.Codegen.ast_hash/1` keeps for
+  attribute nodes alone. Without it, `@limit 5` and a later `@limit 100` over the same
+  pattern hashed identically and shared one generated function.
 
-      The value itself cannot be resolved here. `@attr` expands to a
-      hidden `Module.__get_attribute__` call that only runs when the module body is
-      evaluated, which is after every macro in it has expanded; at this point
-      `Module.get_attribute/3` still reports the default. What distinguishes two
-      uses of one attribute is therefore their *line*, which
-      `Rete.DSL.Codegen.ast_hash/1` deliberately keeps for attribute nodes
-      alone. Without that, `@limit 5` and a later `@limit 100` over the same
-      pattern hashed identically, shared one generated function, and the second
-      rule silently used the first value.
-
-    * `^value` — every condition becomes its own function, so a pin has no
-      enclosing scope to refer to and none of the three spellings compiled
-      before. Each is unwrapped to something that means the same thing:
-
-      `^@limit` and `^5` become the literal, because the attribute substitution
-      above has already turned the former into the latter, and matching on `^5`
-      and on `5` are the same match.
-
-      `^amt` becomes `amt`. Sharing a variable between two conditions is already
-      how this DSL spells a join — `{:threshold, amt}, {:order, amt}` joins on
-      `amt` — so the pin is just the explicit spelling of that same join, and
-      dropping it lets the ordinary binding classification turn it into a join
-      key. If nothing upstream binds the name, it is a new binding, exactly as
-      if the pin had not been written.
+  `^value` has no enclosing scope to refer to once the condition is its own function, so
+  each spelling is unwrapped. `^@limit` and `^5` become the literal, since matching on
+  `^5` and on `5` are the same match. `^amt` becomes `amt`, because sharing a variable
+  between two conditions is already how this DSL spells a join, so dropping the pin lets
+  ordinary binding classification turn it into a join key.
   """
   @spec resolve_constants(Macro.t(), env()) :: Macro.t()
   def resolve_constants(ast, env) do
