@@ -138,7 +138,15 @@ the bindings it matched with:
 }
 ```
 
+`salience` is firing priority: a rule declared `defrule urgent(%{salience: 10}, ...)`
+fires before one at the default of `0`, and every activation at one salience level fires
+before any activation at a lower one. See
+[docs/dsl.md#options-salience](docs/dsl.md#options-salience).
+
 ### Fire
+
+`fire_rules/2` also takes `:max_cycles`, `:concurrency` and `:timeout` — see its doc and
+[docs/design/engine.md](docs/design/engine.md) §11.
 
 ```elixir
 session = Rete.Session.fire_rules(session)
@@ -303,16 +311,29 @@ design docs under `docs/design/` record why.
 * **Logical inserts only.** A rule's body returns facts to insert and they are truth-maintained.
   There is no unconditional insert and no retract from a rule. Session-level
   `Rete.Session.retract/2` exists and truth maintenance cascades from it.
-* **Firing is synchronous.** `fire_rules/2` runs to quiescence in the calling process. No parallel
-  or async rule evaluation.
-* **No durability.** A session is an in-memory value. It is not serialized, checkpointed or
-  distributed; nothing here is a database.
+* **Firing is a blocking call.** `fire_rules/2` runs to quiescence in the calling process and
+  returns the settled session — there is no async variant that hands back a `Task`. Within that
+  call, the bodies of one salience group *can* run concurrently: pass `:concurrency` (and
+  optionally `:timeout`) to run them on tasks instead of one at a time. Worth it only for a body
+  that does real work — see [docs/design/engine.md](docs/design/engine.md) §11 for the ~5 µs
+  break-even.
+* **No checkpoint or migration API, but a session is trivially serializable.** There is no
+  `Session.dump/1`, no versioned migration and no distributed sync built in. But a session holds
+  no PID, ETS table or other process-local handle — it is plain data all the way down, plus
+  function references into the ruleset and listener modules that built it — so
+  `:erlang.term_to_binary/1` and `:erlang.binary_to_term/1` round-trip a whole session as-is,
+  including its compiled network, with no wrapper needed. The one real requirement is that the
+  process on the receiving end has the same compiled ruleset and listener modules loaded, since
+  that is what the function references resolve against.
 * **Performance is untuned.** The algorithm is the right one — alpha and beta node sharing, hash
   joins, incremental retraction — but no profiling pass has been done and no benchmark suite
   exists. Expect it to be fast enough long before it is fast.
-* **Per-group firing over a collection is awkward.** Grouping falls out of a collection
-  introducing a new variable, and reaching that in practice needs two collections. Collect
-  everything and `Enum.group_by/2` instead.
+* **Per-group firing *within* a collection is awkward.** This is distinct from `salience`, which
+  already groups the *agenda* — every activation at one salience tier fires before any activation
+  at a lower one. What is awkward is grouping the *facts inside one rule's own collection* (one
+  activation per customer's orders, say): that falls out of a collection introducing a new
+  variable, and reaching it in practice needs two collections. Collect everything and
+  `Enum.group_by/2` instead.
 * **No rule subsumption or suffix sharing.** Two rules sharing a condition prefix share nodes; two
   sharing only a suffix do not.
 
