@@ -12,7 +12,7 @@ defmodule Rete.Memory.Bucket do
   per value and `:dead` holds retracted ones still in the stack. Removing tombstones
   instead of rebuilding, and `to_list/1` skips the first `dead[value]` occurrences of each
   value in arrival order, so the **oldest** occurrence is the one that went. Tombstones
-  are compacted once they outnumber the living. See `docs/design/w3-engine.md` §7.
+  are compacted once they outnumber the living. See `docs/design/engine.md` §7.
 
       iex> alias Rete.Memory.Bucket
       iex> {:ok, bucket} = Bucket.new([:a, :b, :a]) |> Bucket.take(:a)
@@ -130,7 +130,7 @@ defmodule Rete.Memory do
       insertions  node_id => token => [[fact]]               truth maintenance
       facts       fact => count                              what it was told
 
-  Three properties are load bearing. See `docs/design/w3-engine.md` §4.
+  Three properties are load bearing. See `docs/design/engine.md` §4.
 
     * **Arrival order.** It decides the order tokens propagate, and so the order two
       matches of one rule fire. A bucket that gave items back in another order would
@@ -142,7 +142,7 @@ defmodule Rete.Memory do
       present. Two rules may each have concluded it.
 
   `root_seeded?` is not a memory. It records that the beta root's empty token has been
-  planted, which must happen exactly once per session. See `docs/design/w3-engine.md` §6.
+  planted, which must happen exactly once per session. See `docs/design/engine.md` §6.
 
       iex> alias Rete.Memory
       iex> {memory, :new} = Memory.add_fact(Memory.new(), {:order, 1})

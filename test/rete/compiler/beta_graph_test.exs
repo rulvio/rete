@@ -371,7 +371,7 @@ defmodule Rete.Compiler.BetaGraphTest do
       end
     end
 
-    # Rete.IR.Negation's own type is Fact | Coll, and w1-ir says the same, so
+    # Rete.IR.Negation's own type is Fact | Coll, and `ir.md` says the same, so
     # this shape is legal all the way down. Collections are collect-all, so an
     # element is in the collection exactly when it matches the token: "the
     # collection is empty" is literally "no element matches", with nothing to

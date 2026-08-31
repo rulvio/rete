@@ -78,7 +78,7 @@ defmodule Rete.Compiler.NegationTest do
       use Rete.Ruleset
 
       # The conjunction reaches `limit` through a cross-condition guard rather
-      # than a shared pattern variable, so w1-ir puts it in the join filter and
+      # than a shared pattern variable, so `ir.md` puts it in the join filter and
       # explicitly *not* in :join_bind.
       defrule under(
                 {:limit, limit},

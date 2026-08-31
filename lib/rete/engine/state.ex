@@ -4,7 +4,7 @@ defmodule Rete.Engine.State do
 
   **Internal.** A node is a function of state that returns the state plus the work it
   produced. The loop does the walking, which keeps propagation flat and leaves one place
-  where listener events are emitted. See `docs/design/w3-engine.md` §1.
+  where listener events are emitted. See `docs/design/engine.md` §1.
 
   `:listeners` is `[{module, state}]` rather than a map, so listeners see events in
   attachment order and one module can be attached twice with different state.

@@ -38,7 +38,7 @@ defmodule Rete.Listener do
   without changing the shape every listener matches on. `{:propagated, ...}` is the
   exception and carries the bare id, because a join has no user-facing name. `origin` is
   `:asserted` or `{:derived, source}`, which is what lets a listener reconstruct
-  provenance without reading memory. See `docs/design/w5-observability.md` §1.
+  provenance without reading memory. See `docs/design/observability.md` §1.
   """
 
   @typedoc "Anything a listener chooses to carry between events."

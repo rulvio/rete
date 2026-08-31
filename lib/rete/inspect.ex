@@ -18,7 +18,7 @@ defmodule Rete.Inspect do
 
   Marker facts and the empty root token are engine machinery. An explanation describes
   them rather than presenting them as matched facts. See
-  `docs/design/w5-observability.md` §2.
+  `docs/design/observability.md` §2.
   """
 
   alias Rete.Compiler.BetaGraph
@@ -195,7 +195,7 @@ defmodule Rete.Inspect do
 
   Neither count is "matches that got through", and the two mean different things per node
   kind, so `0` in one column is not by itself a failure. Compare a node with the one
-  before it. See `docs/design/w5-observability.md` §2.
+  before it. See `docs/design/observability.md` §2.
   """
   @spec why_not(Session.t(), {module(), atom()}) :: [map()]
   def why_not(%Session{state: state}, {module, name} = ref)

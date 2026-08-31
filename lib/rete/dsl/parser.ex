@@ -26,7 +26,7 @@ defmodule Rete.DSL.Parser do
   Expression codes are stable across compilations of the same source, which is what lets
   the network share nodes. Module attributes are qualified with the defining module before
   hashing, so the same pattern in two modules with different attribute values gets
-  different codes. See `docs/design/w1-ir.md` §5.
+  different codes. See `docs/design/ir.md` §5.
   """
 
   alias Rete.DSL.Codegen

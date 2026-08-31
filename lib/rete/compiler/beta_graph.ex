@@ -20,7 +20,7 @@ defmodule Rete.Compiler.BetaGraph do
   **`{:or, []}` is false**, and nothing is built for a path through one. A keyless
   condition after a false element would otherwise become an entry point the alpha index
   feeds, and an unsatisfiable rule would fire on every fact. See
-  `docs/design/w2-network.md` §4.
+  `docs/design/network.md` §4.
   """
 
   alias Rete.IR

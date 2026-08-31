@@ -24,7 +24,7 @@ defmodule Rete.Taxonomy do
   `alpha_ids/2` runs for every inserted fact, so `index/2` precomputes the whole
   `type => ids` map. Empty entries are dropped, and a type absent from the index is
   answered `[]` without allocating. That keeps a session that inserts foreign facts from
-  leaking. See `docs/design/w2-network.md` §2.
+  leaking. See `docs/design/network.md` §2.
   """
 
   @typedoc "A fact type: an atom tag, or a module for a struct fact."

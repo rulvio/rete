@@ -19,7 +19,7 @@ defmodule Rete.Compiler do
   `{:bar, amt} when ok?(amt)`. A code more than one module contributed is therefore
   qualified as `<code>@<module>` before anything is built from it. Sharing within a
   module is untouched. Sharing across modules is only an optimisation, and getting it
-  wrong is silent corruption. See `docs/design/w1-ir.md` §5.
+  wrong is silent corruption. See `docs/design/ir.md` §5.
   """
 
   alias Rete.Compiler.BetaGraph

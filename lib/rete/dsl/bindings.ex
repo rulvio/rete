@@ -25,7 +25,7 @@ defmodule Rete.DSL.Bindings do
 
   Raises at compile time for a guard variable no condition binds on a path, a collection
   guard reading its own collection binding, and a right hand side reading a
-  collection-local variable. See `docs/design/w1-ir.md` §7.
+  collection-local variable. See `docs/design/ir.md` §7.
   """
 
   alias Rete.DSL.Codegen
@@ -128,7 +128,7 @@ defmodule Rete.DSL.Bindings do
   `{:holiday, day}`, or collect everything and use `Enum.group_by/2` in the body.
 
   A variable an *earlier* condition bound is a join key and is never inert. See
-  `docs/design/w1-ir.md` §2.
+  `docs/design/ir.md` §2.
   """
   @spec mark_inert(IR.Production.t()) :: IR.Production.t()
   def mark_inert(%IR.Production{lhs: lhs} = production) do

@@ -12,7 +12,7 @@ defmodule Rete.Network.Node do
 
   **`:id` is `nil` until the node is in a graph.** A node is described first and inserted
   second, so `nil` means "a description, not yet a node". Every node reachable from a
-  built `Rete.Network` has an id. See `docs/design/w2-network.md` §3.
+  built `Rete.Network` has an id. See `docs/design/network.md` §3.
   """
 
   defmodule Alpha do

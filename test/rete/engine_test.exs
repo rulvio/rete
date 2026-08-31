@@ -507,7 +507,7 @@ defmodule Rete.EngineTest do
     # else's, so both are *inert*: local to the collection, grouping nothing.
     # The node's `:new_bind` is therefore `[]` and it gathers one list per
     # `cid`, filtered by the join guard — not one singleton group per `ref`.
-    # See the `Rete.IR.Coll` section of docs/design/w1-ir.md.
+    # See the `Rete.IR.Coll` section of docs/design/ir.md.
     test "the filter decides membership per token" do
       session =
         run([GuardedColl], [

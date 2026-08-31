@@ -1,7 +1,7 @@
 # Observability
 
-Listeners, inspection and the loop guard. The companion to `w1-ir.md` (the DSL
-front end), `w2-network.md` (the compiled network) and `w3-engine.md` (the
+Listeners, inspection and the loop guard. The companion to `ir.md` (the DSL
+front end), `network.md` (the compiled network) and `engine.md` (the
 propagation loop the events are emitted from).
 
 Status: implemented, end to end.

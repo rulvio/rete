@@ -77,10 +77,10 @@ defmodule Rete.MixProject do
         "README.md",
         "docs/dsl.md": [title: "Writing rules"],
         "CHANGELOG.md": [title: "Changelog"],
-        "docs/design/w1-ir.md": [title: "Design: the IR and the DSL front end"],
-        "docs/design/w2-network.md": [title: "Design: the compiled network"],
-        "docs/design/w3-engine.md": [title: "Design: the engine"],
-        "docs/design/w5-observability.md": [title: "Design: observability"],
+        "docs/design/ir.md": [title: "The IR and the DSL front end"],
+        "docs/design/network.md": [title: "The compiled network"],
+        "docs/design/engine.md": [title: "The engine"],
+        "docs/design/observability.md": [title: "Observability"],
         LICENSE: [title: "License"]
       ],
       groups_for_extras: [

@@ -35,7 +35,7 @@ defmodule Rete.Session do
       iex> Rete.Doc.Orders.flagged_for(session, cid: 1)
       [{1, 250}]
 
-  See `docs/dsl.md` for writing rules and `docs/design/w3-engine.md` §8 for truth
+  See `docs/dsl.md` for writing rules and `docs/design/engine.md` §8 for truth
   maintenance.
   """
 
@@ -111,7 +111,7 @@ defmodule Rete.Session do
       engine runs to quiescence, and an oscillating ruleset spins rather than raising.
       Give it an integer to bound the call. A ruleset that exceeds it raises with the
       rules that fired most. One that fires the whole allowance and then settles is fine.
-      See `docs/design/w5-observability.md` §3 for how to pick a number.
+      See `docs/design/observability.md` §3 for how to pick a number.
 
   Inserting queues activations. Firing runs them and leaves the agenda empty.
 

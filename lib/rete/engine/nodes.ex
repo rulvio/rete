@@ -14,7 +14,7 @@ defmodule Rete.Engine.Nodes do
 
   Two kinds of work are returned as ops rather than done here.
   `{:retract_facts, node_id, facts}` has to re-enter the alpha network, and
-  `{:event, event}` is not a node's business. See `docs/design/w3-engine.md` §5.
+  `{:event, event}` is not a node's business. See `docs/design/engine.md` §5.
   """
 
   alias Rete.Activation
@@ -46,7 +46,7 @@ defmodule Rete.Engine.Nodes do
   receive the match it is entitled to.
 
   Does nothing after the first call. A second root token would give every such rule a
-  second support that no retraction clears. See `docs/design/w3-engine.md` §6.
+  second support that no retraction clears. See `docs/design/engine.md` §6.
   """
   @spec seed_root(State.t()) :: {State.t(), [State.op()]}
   def seed_root(%State{memory: %Memory{root_seeded?: true}} = state), do: {state, []}

@@ -20,7 +20,7 @@ defmodule Rete.Network do
 
   An alpha node id **is** the expression code of the conditions it was built from, which
   is why `Rete.Compiler.disambiguate_codes/1` runs first. See
-  `docs/design/w2-network.md` §2.
+  `docs/design/network.md` §2.
   """
 
   alias Rete.Compiler.BetaGraph

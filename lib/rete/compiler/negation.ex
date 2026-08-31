@@ -26,7 +26,7 @@ defmodule Rete.Compiler.Negation do
   merely not been computed yet.
 
   A helper's expressions are plain closures, because extraction runs at build time, long
-  after macro expansion. See `docs/design/w2-network.md` §6.
+  after macro expansion. See `docs/design/network.md` §6.
   """
 
   alias Rete.DSL.Codegen

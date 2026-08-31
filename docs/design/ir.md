@@ -14,7 +14,7 @@ Modules:
 | `Rete.Ruleset` | `lib/rete/ruleset.ex` | the macros that drive all of it |
 
 This document is the contract between the compile phases, and between the front
-end and the network builder, which is `docs/design/w2-network.md`.
+end and the network builder, which is `docs/design/network.md`.
 
 ---
 
@@ -27,7 +27,7 @@ quoted DSL
   |> Rete.DSL.Bindings.classify/2         # W2b join_bind / new_bind / join_filter
   |> Rete.IR.lhs_bindings/1               # W2c recompute the production's :bind
   |> Rete.DSL.Codegen.compile/1           # W3  emit functions, escape into the module
-  |> Rete.Compiler.build/2                # build time, see w2-network.md
+  |> Rete.Compiler.build/2                # build time, see network.md
 ```
 
 The first three steps take a `%Rete.IR.Production{}` and return a
@@ -231,7 +231,7 @@ The order of the list a rule receives is **unspecified**; sort in the right hand
 side if it matters. The engine keeps collections deterministically ordered so
 that order independence holds even for a rule that returns its collection, but
 that is an implementation guarantee rather than a contract. See
-`docs/design/w2-network.md`.
+`docs/design/network.md`.
 
 #### Empty-collection semantics, decided by `:new_bind`
 

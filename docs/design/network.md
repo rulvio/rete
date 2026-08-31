@@ -1,8 +1,8 @@
 # The compiled network
 
-What the build phase produces and the engine runs. The companion to `w1-ir.md`,
+What the build phase produces and the engine runs. The companion to `ir.md`,
 which covers everything up to a classified `Rete.IR.Production`, and to
-`w3-engine.md`, which covers what happens to a network once it exists.
+`engine.md`, which covers what happens to a network once it exists.
 
 Status: implemented, end to end.
 
@@ -81,7 +81,7 @@ The locked empty-collection rule, precomputed. Note that `:new_bind` for a
 collection counts only *participating* variables: one that no other condition's
 pattern matches on is local to the collection and excluded, so a guarded
 collection over otherwise-local variables is ungrouped and does propagate `[]`.
-See the `Rete.IR.Coll` section of `w1-ir.md`.
+See the `Rete.IR.Coll` section of `ir.md`.
 
 * `true` when the pattern introduces **no** new variables. Every variable it uses
   is already fixed by the token, so there is exactly one group and the node

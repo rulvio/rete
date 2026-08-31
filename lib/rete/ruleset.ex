@@ -31,7 +31,7 @@ defmodule Rete.Ruleset do
       build/4              recompute the production's :bind from the result
       Rete.DSL.Codegen     emit the expression functions and the RHS
 
-  See `docs/design/w1-ir.md` §1 for the contract between the phases.
+  See `docs/design/ir.md` §1 for the contract between the phases.
   """
 
   alias Rete.Compiler.Sort
@@ -85,7 +85,7 @@ defmodule Rete.Ruleset do
   # `:bind` is a product of the pipeline, not a pre-pass. To the parser every variable of
   # every element looks like a binding. Only the classified LHS knows that a negation
   # binds nothing downstream, that a rule level guard only reads, and that a disjunction
-  # binds the union of its branches. See `docs/design/w1-ir.md` §2.
+  # binds the union of its branches. See `docs/design/ir.md` §2.
   defp resolve_bindings(%IR.Production{lhs: lhs, __ast__: ast} = production) do
     {guaranteed, optional} = IR.lhs_bindings(lhs)
     bind = Enum.sort(guaranteed ++ optional)

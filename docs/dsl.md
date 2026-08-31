@@ -285,7 +285,7 @@ conclusions collapse into one entry — so this is only visible in the support c
 when something is retracted and refuses to go.
 
 The rewrite is sound propositionally and wrong existentially, which is the same family
-of mistake as de Morgan over a conjunction (see `docs/design/w1-ir.md`). The difference
+of mistake as de Morgan over a conjunction (see `docs/design/ir.md`). The difference
 is that de Morgan over a conjunction is caught by the compiler and this is not.
 
 ## Collections

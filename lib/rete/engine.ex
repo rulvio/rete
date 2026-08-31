@@ -12,8 +12,8 @@ defmodule Rete.Engine do
   `fire_rules/2` returns at quiescence. Every rule whose left hand side holds has fired,
   and nothing whose support has gone is still asserting anything.
 
-  See `docs/design/w3-engine.md` §2 for the loops, §8 for truth maintenance, and
-  `docs/design/w5-observability.md` §3 for the loop guard.
+  See `docs/design/engine.md` §2 for the loops, §8 for truth maintenance, and
+  `docs/design/observability.md` §3 for the loop guard.
   """
 
   alias Rete.Activation
@@ -34,7 +34,7 @@ defmodule Rete.Engine do
 
   Plants the root token now rather than on the first propagation. A rule whose whole left
   hand side is an absence or an empty collection is true of the empty session, and must
-  be able to fire before a fact arrives. See `docs/design/w3-engine.md` §6.
+  be able to fire before a fact arrives. See `docs/design/engine.md` §6.
   """
   @spec new(Network.t()) :: State.t()
   def new(%Network{} = network) do
@@ -107,7 +107,7 @@ defmodule Rete.Engine do
     * `:max_cycles` — how many activations one call may fire. `:infinity` by default, so
       an oscillating ruleset spins rather than raising. Firing that many and still having
       work pending raises with the rules that fired most. Firing that many and settling is
-      fine. See `docs/design/w5-observability.md` §3.
+      fine. See `docs/design/observability.md` §3.
   """
   @spec fire_rules(State.t(), keyword()) :: State.t()
   def fire_rules(%State{} = state, opts \\ []) do
@@ -343,7 +343,7 @@ defmodule Rete.Engine do
 
   # Drops a conclusion the match already rests on, so it cannot support itself. Runs only
   # when the fact is already present, which is the only way the cycle can close. See
-  # `docs/design/w3-engine.md` §8.
+  # `docs/design/engine.md` §8.
   defp well_founded(facts, %State{} = state, token) do
     if Enum.any?(facts, &Map.has_key?(state.memory.facts, &1)) do
       support = support_closure(state, token)

@@ -35,7 +35,7 @@ defmodule Rete do
   This is not how a network decides what to share. `Rete.Compiler.build/2` reads
   `get_rule_data/1`, where every expression still carries the function of the module that
   wrote it, and qualifies any code more than one module contributed. See
-  `docs/design/w1-ir.md` §5.
+  `docs/design/ir.md` §5.
 
       iex> Rete.get_expr_data([Rete.Doc.Orders]) |> length()
       3

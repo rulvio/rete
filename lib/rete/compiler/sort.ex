@@ -21,7 +21,7 @@ defmodule Rete.Compiler.Sort do
 
   Runs after `Rete.DSL.Normalize`, because a `Rete.IR.Gate` reaching it raises, and before
   `Rete.DSL.Bindings`, which reads `:join_bind` off the final order. See
-  `docs/design/w1-ir.md` §1.
+  `docs/design/ir.md` §1.
   """
 
   alias Rete.DSL.Vars

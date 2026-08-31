@@ -21,7 +21,7 @@ defmodule Rete.IR do
 
   A condition's `:type` is the *declared* fact type. It is never a runtime check baked
   into the alpha expression, which matches a fact of any type on purpose. The alpha index
-  applies the taxonomy. See `docs/design/w1-ir.md` §2.
+  applies the taxonomy. See `docs/design/ir.md` §2.
   """
 
   defmodule Expr do
@@ -66,7 +66,7 @@ defmodule Rete.IR do
         The engine adds it when it builds a token.
       * `:bind` excludes `_`-prefixed names, pinned values and module attributes.
       * `:join_filter`, `:join_bind` and `:new_bind` are `nil` after parsing.
-        `Rete.DSL.Bindings` fills them in. See `docs/design/w1-ir.md` §2.
+        `Rete.DSL.Bindings` fills them in. See `docs/design/ir.md` §2.
     """
 
     @typedoc """

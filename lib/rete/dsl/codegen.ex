@@ -28,7 +28,7 @@ defmodule Rete.DSL.Codegen do
   The RHS destructures a **guaranteed** binding in the head and reads an **optional** one
   with `Map.get/2`. Only variables the body reads are bound, so an ignored one becomes
   `%{name: _name}` and the rule compiles under `--warnings-as-errors`. The map keys are
-  untouched. See `docs/design/w1-ir.md` §5.
+  untouched. See `docs/design/ir.md` §5.
   """
 
   alias Rete.DSL.Vars

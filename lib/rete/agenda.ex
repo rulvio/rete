@@ -12,7 +12,7 @@ defmodule Rete.Agenda do
   Every activation of one production node shares a sort key, so the agenda is a small
   number of ordered buckets rather than one sorted list. `add/2` and `pop/1` are O(1).
   `remove/2` is linear in one bucket, which holds one rule's pending matches. See
-  `docs/design/w3-engine.md` §7.
+  `docs/design/engine.md` §7.
 
       iex> alias Rete.{Activation, Agenda}
       iex> urgent = %Activation{node_id: :n1, salience: 10}

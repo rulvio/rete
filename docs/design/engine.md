@@ -1,7 +1,7 @@
 # The engine
 
-What runs the network `w2-network.md` describes. The companion to `w1-ir.md` (the
-DSL front end) and `w5-observability.md` (listeners, inspection, the loop guard).
+What runs the network `network.md` describes. The companion to `ir.md` (the
+DSL front end) and `observability.md` (listeners, inspection, the loop guard).
 
 Status: implemented, end to end.
 
@@ -161,7 +161,7 @@ Elements are kept in term order rather than appended on arrival, so the same fac
 always produces the same list whatever order the facts arrived in, and a
 retract-and-reinsert round trip restores it exactly. That is an implementation
 guarantee — without it a rule that *returns* its collection would break order
-independence — and not a contract. See `w2-network.md` §3.
+independence — and not a contract. See `network.md` §3.
 
 ## 6. The root token
 
@@ -295,7 +295,7 @@ to remove**.
 * **The loop guard counts activations, not activation-group transitions.** Clara's signal
   is better in principle — a ruleset that legitimately fires 50,000 activations in one
   settling pass is fine — but it misses a loop confined to a single salience level, which
-  is the common runaway. See `w5-observability.md` §3.
+  is the common runaway. See `observability.md` §3.
 
   Resolved by not guessing. The default was 10,000 until `mix bench` reached it with
   4,000 facts through a three-rule chain — 12,000 activations, not a loop in sight — and
@@ -303,7 +303,7 @@ to remove**.
   cannot separate a runaway from a large settling pass, so any default eventually fails
   correct code, and stopping part way through settling returns an answer that is wrong
   rather than late. The cost is that an oscillating ruleset now spins until interrupted.
-  `w5-observability.md` §3 carries the numbers for choosing a cap where that matters.
+  `observability.md` §3 carries the numbers for choosing a cap where that matters.
 * **No partial firing.** `fire_rules/2` runs to quiescence in the calling process. There
   is no fire-one-activation, no async, and no way to interrupt a settling pass other than
   the cycle cap.

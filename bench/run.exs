@@ -316,7 +316,7 @@ Bench.scenario(
   note: "members are kept in term order, inserted one at a time",
   expect:
     {:known,
-     "Rete.Engine.Nodes.insert_ordered/2 is O(k) per member — see the known gaps in docs/design/w3-engine.md"}
+     "Rete.Engine.Nodes.insert_ordered/2 is O(k) per member — see the known gaps in docs/design/engine.md"}
 )
 
 IO.puts("")

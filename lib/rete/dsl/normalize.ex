@@ -26,7 +26,7 @@ defmodule Rete.DSL.Normalize do
 
   Distribution is the one step that can explode, so `to_dnf/1` refuses to build more than
   #{@max_branches} branches for one gate. Compile time sets that limit: escaping 1024
-  branches costs 32 s. See `docs/design/w1-ir.md` §2.
+  branches costs 32 s. See `docs/design/ir.md` §2.
   """
 
   alias Rete.IR
