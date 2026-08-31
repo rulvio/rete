@@ -96,12 +96,6 @@ defmodule Bench do
   defp fmt(float), do: :erlang.float_to_binary(float * 1.0, decimals: 2)
   defp pad(value, width), do: String.pad_leading(to_string(value), width)
 
-  # Every scenario fires with the cap lifted. A benchmark that tripped
-  # `:max_cycles` would be measuring the loop guard, and the guard's default of
-  # 10,000 is reached by perfectly ordinary work here — 4,000 facts through a
-  # three-rule chain is 12,000 activations and none of it is a loop.
-  def fire(session), do: Rete.Session.fire_rules(session, max_cycles: 100_000_000)
-
   # The network is compiled once and each run gets an empty session over it.
   # Otherwise every measurement would include compiling the ruleset, which is
   # constant work that has nothing to do with the thing being measured.
@@ -204,7 +198,7 @@ Bench.scenario(
   fn n ->
     facts = [{:a, 1} | for(i <- 1..n, do: {:b, i})]
 
-    one_key |> Bench.session() |> Rete.Session.insert(facts) |> Bench.fire()
+    one_key |> Bench.session() |> Rete.Session.insert(facts) |> Rete.Session.fire_rules()
   end,
   note: "every element under one key — was O(n²) in the bucket's append"
 )
@@ -219,7 +213,7 @@ Bench.scenario(
     many_keys
     |> Bench.session()
     |> Rete.Session.insert(facts ++ orders)
-    |> Bench.fire()
+    |> Rete.Session.fire_rules()
   end,
   note: "the well-keyed case: n buckets of one, so it exercises grouping instead"
 )
@@ -233,7 +227,7 @@ Bench.scenario(
 
     session
     |> Rete.Session.retract(Enum.take(facts, 100))
-    |> Bench.fire()
+    |> Rete.Session.fire_rules()
   end,
   note: "a fixed 100 retractions, so time must not grow with the bucket at all"
 )
@@ -247,7 +241,7 @@ Bench.scenario(
 
     session
     |> Rete.Session.retract(Enum.take(facts, -100))
-    |> Bench.fire()
+    |> Rete.Session.fire_rules()
   end,
   note: "the other end of the same bucket — a list makes one of these two slow"
 )
@@ -258,7 +252,7 @@ Bench.scenario(
   fn n ->
     facts = for i <- 1..n, do: {:seed, i}
 
-    agenda |> Bench.session() |> Rete.Session.insert(facts) |> Bench.fire()
+    agenda |> Bench.session() |> Rete.Session.insert(facts) |> Rete.Session.fire_rules()
   end,
   note: "every match shares a sort key — was O(n²) inserting into a sorted list"
 )
@@ -270,7 +264,7 @@ Bench.scenario(
     cascade
     |> Bench.session()
     |> Rete.Session.insert([{:limit, n}, {:n, 0}])
-    |> Bench.fire()
+    |> Rete.Session.fire_rules()
   end,
   note: "one activation at a time, each concluding the next; a depth test, not a width one"
 )
@@ -282,9 +276,9 @@ Bench.scenario(
     facts = for i <- 1..n, do: {:a, i}
 
     session =
-      chain |> Bench.session() |> Rete.Session.insert(facts) |> Bench.fire()
+      chain |> Bench.session() |> Rete.Session.insert(facts) |> Rete.Session.fire_rules()
 
-    session |> Rete.Session.retract(facts) |> Bench.fire()
+    session |> Rete.Session.retract(facts) |> Rete.Session.fire_rules()
   end,
   note: "retracting n facts that each support three conclusions"
 )
@@ -297,13 +291,13 @@ Bench.scenario(
     orders = for i <- 1..n, do: {:order, i}
 
     session =
-      negation |> Bench.session() |> Rete.Session.insert(custs) |> Bench.fire()
+      negation |> Bench.session() |> Rete.Session.insert(custs) |> Rete.Session.fire_rules()
 
     session
     |> Rete.Session.insert(orders)
-    |> Bench.fire()
+    |> Rete.Session.fire_rules()
     |> Rete.Session.retract(orders)
-    |> Bench.fire()
+    |> Rete.Session.fire_rules()
   end,
   note: "n conclusions suppressed and then released"
 )
@@ -317,7 +311,7 @@ Bench.scenario(
     collection
     |> Bench.session()
     |> Rete.Session.insert([{:cust, 1} | orders])
-    |> Bench.fire()
+    |> Rete.Session.fire_rules()
   end,
   note: "members are kept in term order, inserted one at a time",
   expect:

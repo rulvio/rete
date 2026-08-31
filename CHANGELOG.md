@@ -6,6 +6,19 @@ All notable changes to `rete` are recorded here. The format follows
 
 ## Unreleased
 
+### Changed
+
+* **The loop guard is opt-in.** `:max_cycles` now defaults to `:infinity`, so
+  `fire_rules/2` runs to quiescence and an oscillating ruleset spins rather than raising.
+  The old default of 10,000 was reached by 4,000 facts through a three-rule chain — no
+  loop in sight — and a count cannot separate a runaway from a large settling pass, so
+  any default eventually fails correct code. Pass an integer to bound a call; the loop
+  guard section of `Rete.Engine` has the numbers for picking one. An unrecognised value
+  raises rather than quietly meaning no cap, which is what `max_cycles: nil` used to do
+  by accident of Erlang term order.
+* `mix.exs` no longer declares `extra_applications: [:logger]`. Nothing in the engine
+  logs; tracing goes through `Rete.Listener.Trace`.
+
 ### Added
 
 * **CI** (`.github/workflows/ci.yml`) running the project's six verification commands on

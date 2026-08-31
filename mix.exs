@@ -27,9 +27,11 @@ defmodule Rete.MixProject do
 
   # Run "mix help compile.app" to learn about applications.
   def application do
-    [
-      extra_applications: [:logger]
-    ]
+    # No :extra_applications. The engine uses no OTP application beyond the
+    # standard ones — it has no processes, no supervision tree and no Logger
+    # calls; tracing goes through Rete.Listener.Trace, which writes to a device
+    # the caller chooses.
+    []
   end
 
   # Run "mix help deps" to learn about dependencies.

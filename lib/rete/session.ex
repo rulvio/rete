@@ -99,9 +99,12 @@ defmodule Rete.Session do
 
   Options:
 
-    * `:max_cycles` — how many activations one call may fire. A ruleset that
-      oscillates raises instead of spinning; one that fires the whole allowance
-      and then settles is fine.
+    * `:max_cycles` — how many activations one call may fire. `:infinity` by
+      default: the engine runs to quiescence, and an oscillating ruleset spins
+      rather than raising. Give it an integer to bound the call — a ruleset that
+      exceeds it raises with the rules that fired most, and one that fires the
+      whole allowance and then settles is fine. See the loop guard section of
+      `Rete.Engine` for how to pick one and what it costs.
   """
   @spec fire_rules(t(), keyword()) :: t()
   def fire_rules(session, opts \\ []), do: update(session, &Engine.fire_rules(&1, opts))

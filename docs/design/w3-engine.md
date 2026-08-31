@@ -297,11 +297,14 @@ to remove**.
   settling pass is fine — but it misses a loop confined to a single salience level, which
   is the common runaway. See `w5-observability.md` §3.
 
-  The default of 10,000 has become the more pressing half of this. `mix bench` reached it
-  with 4,000 facts through a three-rule chain — 12,000 activations, not a loop in sight —
-  and the engine is roughly thirty times faster than it was when that number was chosen,
-  so the cap is now likelier to interrupt real work than to catch anything. Raising it,
-  or counting something other than activations, wants deciding before 1.0.
+  Resolved by not guessing. The default was 10,000 until `mix bench` reached it with
+  4,000 facts through a three-rule chain — 12,000 activations, not a loop in sight — and
+  the guard is now `:infinity` by default, the same opt-in call Clara makes. A count
+  cannot separate a runaway from a large settling pass, so any default eventually fails
+  correct code, and stopping part way through settling returns an answer that is wrong
+  rather than late. The cost is that an oscillating ruleset now spins until interrupted;
+  `Rete.Engine`'s loop guard section carries the numbers for choosing a cap where that
+  matters.
 * **No partial firing.** `fire_rules/2` runs to quiescence in the calling process. There
   is no fire-one-activation, no async, and no way to interrupt a settling pass other than
   the cycle cap.

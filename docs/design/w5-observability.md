@@ -142,32 +142,49 @@ node 11 production         elements=0 tokens=0 activations=1
 
 ## 3. The loop guard
 
-`fire_rules/2` caps activations per call (`:max_cycles`, default 10,000) and
-raises when it is hit. **The existing cap was kept rather than replaced**, and
-the reasoning is worth recording.
+`fire_rules/2` runs to quiescence. It caps activations only when asked —
+`:max_cycles`, `:infinity` by default — and raises when the cap is hit.
 
-Clara counts transitions between *activation groups* instead. That is a better
-signal in principle — a ruleset that legitimately fires 50,000 activations in one
-settling pass is fine, while one oscillating between two salience levels forever
-is not — but it also has a failure mode this does not: a loop confined to a single
-salience level produces no group transitions at all. Given that the common
-runaway is a rule concluding something its own LHS matches on, at one salience,
-the activation cap catches the realistic case and the group-transition count
-would not.
+**Opt in rather than on by default**, which is the same call Clara makes: its
+`clara.tools.loop-detector/with-loop-detection` wraps a session and takes
+`max-cycles` as a required argument, with no default anywhere.
 
-What was improved is the **message**. Pending activations describe whatever
-happened to be queued when the cap hit, which for a loop is arbitrary. The error
-now leads with which rules fired most, which is what identifies the loop:
+The reasoning is that a count cannot tell the two cases apart. Twelve thousand
+activations is four thousand facts through a three-rule chain, and it is also a
+loop that has gone round twelve thousand times. So a default is a guess about how
+much legitimate work is too much, and it fails on the session that outgrows it —
+returning an answer that is not late but *wrong*, because the engine stopped part
+way through settling. An uncapped run has the opposite failure: an oscillating
+ruleset spins with no output until it is interrupted. Between a wrong answer and
+a visible hang, this engine takes the hang and hands the judgement to the caller,
+who knows whether they are in a test suite or a batch job.
+
+`Rete.Engine`'s loop guard section carries the numbers for choosing one: the
+worst runaway grows working memory by a fact per activation, at roughly 3.5 ms
+and 0.46 MB per thousand.
+
+Clara counts transitions between *activation groups* rather than activations.
+That is a better signal in principle, but it has a failure mode this does not: a
+loop confined to a single salience level produces no group transitions at all,
+and the common runaway — a rule concluding something its own LHS matches — sits
+at one salience.
+
+What the cap does well is the **message**. Pending activations describe whatever
+happened to be queued when it hit, which for a loop is arbitrary. The error leads
+with which rules fired most, which is what identifies the loop:
 
 ```
 Fired most:
-  20x  grow
+  20x  MyRules.grow
 
-Still pending:
-  grow %{n: 20}
+Still pending (5 of 12 activations):
+  MyRules.grow %{n: 20}
 
 A rule that concludes something its own left hand side matches on will do this.
 ```
+
+Both lists are cut to five and say so when they cut, because a truncation that
+says nothing reads as the whole story.
 
 A configurable action (Clara's `:throw-exception` / `:standard-out-warning`) was
 **not** added. Nothing needs it yet, and a caller who wants to log and continue

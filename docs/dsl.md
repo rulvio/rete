@@ -508,7 +508,8 @@ Two consequences that surprise people:
   really does empty the session. `symmetric({:edge, a, b}) -> {:edge, b, a}` does not
   leave two immortal facts behind;
 * **a rule that concludes something its own left hand side matches on will loop.**
-  `fire_rules/2` caps activations per call (`:max_cycles`, 10,000 by default) and raises,
+  `fire_rules/2` runs to quiescence and does not cap activations unless you ask
+  (`:max_cycles`, `:infinity` by default). Give it an integer and it raises,
   leading with which rules fired most.
 
 The body may read only the variables the left hand side binds on the path that reached
@@ -543,7 +544,7 @@ conditions it could not place and exactly which variables are unbound.
 | limit | value | what happens |
 |---|---|---|
 | branches from one gate | 256 | `ArgumentError` at compile time, naming the gate |
-| activations per `fire_rules/2` | 10,000, `:max_cycles` | `RuntimeError` leading with the rules that fired most |
+| activations per `fire_rules/2` | uncapped; `:max_cycles` to bound it | `RuntimeError` leading with the rules that fired most |
 
 The branch limit is about compile time: distribution is the one step that can explode, a
 conjunction of `k` disjunctions of `m` branches being `m^k`. Negation is linear and is

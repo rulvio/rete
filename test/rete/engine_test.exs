@@ -1513,6 +1513,58 @@ defmodule Rete.EngineTest do
       |> Enum.count(&String.starts_with?(&1, "  Rete.EngineTest.Fanout."))
     end
 
+    defmodule Bounded do
+      use Rete.Ruleset
+
+      # Bound by a fact rather than a literal, so the depth can be set per test.
+      defrule step({:limit, limit}, {:n, i} when i < limit) do
+        {:n, i + 1}
+      end
+    end
+
+    # The guard is opt-in. A count cannot separate a runaway from a large
+    # settling pass, so any default eventually raises on correct code — and a
+    # rules engine that stops part way through settling has returned an answer
+    # that is wrong, not late. 20,000 activations would have tripped both of the
+    # defaults this has had.
+    test "a long settling pass is not capped by default" do
+      session =
+        [Bounded]
+        |> Session.new()
+        |> Session.insert([{:limit, 20_000}, {:n, 0}])
+        |> Session.fire_rules()
+
+      assert {:n, 20_000} in Session.facts(session)
+    end
+
+    test "max_cycles: :infinity says the default out loud" do
+      session =
+        [Bounded]
+        |> Session.new()
+        |> Session.insert([{:limit, 5_000}, {:n, 0}])
+        |> Session.fire_rules(max_cycles: :infinity)
+
+      assert {:n, 5_000} in Session.facts(session)
+    end
+
+    # `fired >= nil` is false for every integer under Erlang term order, so an
+    # unrecognised value would quietly mean :infinity — the guard silently off,
+    # which is worse than either setting.
+    test "an unrecognised max_cycles is rejected rather than read as no cap" do
+      for bad <- [nil, -1, 1.5, "100"] do
+        error =
+          assert_raise ArgumentError, fn ->
+            [Oscillate]
+            |> Session.new()
+            |> Session.insert({:counter, 0})
+            |> Session.fire_rules(max_cycles: bad)
+          end
+
+        assert error.message =~ "must be a non-negative integer or :infinity"
+        assert error.message =~ inspect(bad)
+      end
+    end
+
     # And says nothing when there is nothing to say.
     test "a short list is reported without a count" do
       error =
