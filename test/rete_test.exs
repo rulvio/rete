@@ -146,27 +146,32 @@ defmodule ReteTest do
       lhs_expr =
         rule
         |> Map.get(:lhs)
-        |> Enum.map(& &1.expr)
+        |> Enum.map(&(Rete.IR.exprs(&1) |> hd() |> Map.get(:fun)))
 
       [bind1 | [bind2 | [bind3 | [bind4 | [bind5 | [bind6 | [bind7 | [test1]]]]]]]] = lhs_expr
 
+      # the two collections are written fourth and sixth and end up last:
+      # `Rete.Compiler.Sort` takes a collection only once no plain condition is
+      # left to take, and the rule level test after that
       assert %{id: 1} == bind1.({:foo, 1})
       assert nil == bind1.({:foo, 0})
       assert %{id: 1} == bind2.({:bar, 1})
       assert nil == bind2.({:bar, 0})
       assert %{id: 1} == bind3.({:foo, 1})
-      assert %{id: 1} == bind4.({:bar, 1})
-      assert %{id: 1} == bind5.({:foo, 1})
-      assert %{id: 1} == bind6.({:bar, 1})
-      # bind7 tests that the fact matches any fact type, because the expr do not validate taxonomy
+      assert %{id: 1} == bind4.({:foo, 1})
+      # bind5 tests that the fact matches any fact type, because the expr do not validate taxonomy
       # as it would not be efficient to do so in the rete network, instead the taxonomy is validated
       # not when evaluating the lhs conditions but when deciding if a fact should be propagated to a node
-      assert %{name: "Foo"} == bind7.({:living_thing, "Foo"})
-      assert %{name: "Fido"} == bind7.({:dog, "Fido"})
-      assert %{name: "Whiskers"} == bind7.({:cat, "Whiskers"})
-      assert %{name: "Oregano"} == bind7.({:plant, "Oregano"})
-      assert %{name: "Thing"} == bind7.({:any, "Thing"})
-      assert nil == bind6.({:bar, 0})
+      assert %{name: "Foo"} == bind5.({:living_thing, "Foo"})
+      assert %{name: "Fido"} == bind5.({:dog, "Fido"})
+      assert %{name: "Whiskers"} == bind5.({:cat, "Whiskers"})
+      assert %{name: "Oregano"} == bind5.({:plant, "Oregano"})
+      assert %{name: "Thing"} == bind5.({:any, "Thing"})
+      # the anonymous collection is unguarded, the bound one keeps its id > 0
+      assert %{id: 1} == bind6.({:bar, 1})
+      assert %{id: 0} == bind6.({:bar, 0})
+      assert %{id: 1} == bind7.({:bar, 1})
+      assert nil == bind7.({:bar, 0})
       assert true == test1.(%{id: 1})
       assert false == test1.(%{id: 0})
     end
@@ -185,14 +190,14 @@ defmodule ReteTest do
 
       expected_rhs =
         case rule.name do
-          :foo1_rule -> &ReteTest.ExampleFooRuleset.foo1_rule/2
-          :foo2_rule -> &ReteTest.ExampleFooRuleset.foo2_rule/2
+          :foo1_rule -> &ReteTest.ExampleFooRuleset.__rhs_foo1_rule__/2
+          :foo2_rule -> &ReteTest.ExampleFooRuleset.__rhs_foo2_rule__/2
         end
 
       assert expected_rhs == rhs
 
       assert [salience: 100] == Map.get(rule, :opts)
-      assert [:id, :name, :foo, :bar, :bars] == Map.get(rule, :bind)
+      assert [:bar, :bars, :foo, :id, :name] == Map.get(rule, :bind)
       assert is_integer(Map.get(rule, :hash))
       assert :rule == Map.get(rule, :type)
 
@@ -202,15 +207,28 @@ defmodule ReteTest do
 
       [bind1 | [bind2 | [bind3 | [bind4 | [bind5 | [bind6 | [bind7 | [test1]]]]]]]] = lhs
 
-      assert %{fact: :_, type: :foo, bind: [:id]} == Map.take(bind1, [:type, :fact, :bind])
-      assert %{fact: :bar, type: :bar, bind: [:id]} == Map.take(bind2, [:type, :fact, :bind])
-      assert %{fact: :_, type: :foo, bind: [:id]} == Map.take(bind3, [:type, :fact, :bind])
-      assert %{coll: :_, type: :bar, bind: [:id]} == Map.take(bind4, [:type, :bind, :coll])
-      assert %{fact: :foo, type: :foo, bind: [:id]} == Map.take(bind5, [:type, :fact, :bind])
-      assert %{coll: :bars, type: :bar, bind: [:id]} == Map.take(bind6, [:type, :bind, :coll])
+      assert %{fact_binding: nil, type: :foo, bind: [:id]} ==
+               Map.take(bind1, [:type, :fact_binding, :bind])
 
-      assert %{fact: :_, type: :living_thing, bind: [:name]} ==
-               Map.take(bind7, [:type, :fact, :bind])
+      assert %{fact_binding: :bar, type: :bar, bind: [:id]} ==
+               Map.take(bind2, [:type, :fact_binding, :bind])
+
+      assert %{fact_binding: nil, type: :foo, bind: [:id]} ==
+               Map.take(bind3, [:type, :fact_binding, :bind])
+
+      assert %{fact_binding: :foo, type: :foo, bind: [:id]} ==
+               Map.take(bind4, [:type, :fact_binding, :bind])
+
+      assert %{fact_binding: nil, type: :living_thing, bind: [:name]} ==
+               Map.take(bind5, [:type, :fact_binding, :bind])
+
+      # both collections are deferred behind every plain condition, keeping the
+      # order they were written in
+      assert %{coll_binding: nil, type: :bar, bind: [:id]} ==
+               Map.take(bind6, [:type, :bind, :coll_binding])
+
+      assert %{coll_binding: :bars, type: :bar, bind: [:id]} ==
+               Map.take(bind7, [:type, :bind, :coll_binding])
 
       assert %{bind: [:id]} == Map.take(test1, [:bind])
     end
@@ -233,7 +251,7 @@ defmodule ReteTest do
       lhs_expr =
         rule
         |> Map.get(:lhs)
-        |> Enum.map(& &1.expr)
+        |> Enum.map(&(Rete.IR.exprs(&1) |> hd() |> Map.get(:fun)))
 
       [bind1 | [bind2 | [bind3 | [bind4 | [bind5 | [bind6 | [bind7 | [test1]]]]]]]] = lhs_expr
 
@@ -242,11 +260,13 @@ defmodule ReteTest do
       assert %{id: 1} == bind2.({:bar, 1})
       assert nil == bind2.({:bar, 0})
       assert %{id: 1} == bind3.({:foo, 1})
-      assert %{id: 1} == bind4.({:bar, 1})
-      assert %{id: 1} == bind5.({:foo, 1})
+      assert %{id: 1} == bind4.({:foo, 1})
+      assert %{name: "Bar"} == bind5.({:mammal, "Bar"})
+      # the anonymous collection is unguarded, the bound one keeps its id > 0
       assert %{id: 1} == bind6.({:bar, 1})
-      assert %{name: "Bar"} == bind7.({:mammal, "Bar"})
-      assert nil == bind6.({:bar, 0})
+      assert %{id: 0} == bind6.({:bar, 0})
+      assert %{id: 1} == bind7.({:bar, 1})
+      assert nil == bind7.({:bar, 0})
       assert true == test1.(%{id: 1})
       assert false == test1.(%{id: 0})
     end
@@ -265,14 +285,14 @@ defmodule ReteTest do
 
       expected_rhs =
         case rule.name do
-          :bar1_query -> &ReteTest.ExampleBarRuleset.bar1_query/2
-          :bar2_query -> &ReteTest.ExampleBarRuleset.bar2_query/2
+          :bar1_query -> &ReteTest.ExampleBarRuleset.__rhs_bar1_query__/2
+          :bar2_query -> &ReteTest.ExampleBarRuleset.__rhs_bar2_query__/2
         end
 
       assert expected_rhs == rhs
 
       assert [] == Map.get(rule, :opts)
-      assert [:id, :name, :foo, :bar, :bars] == Map.get(rule, :bind)
+      assert [:bar, :bars, :foo, :id, :name] == Map.get(rule, :bind)
       assert is_integer(Map.get(rule, :hash))
       assert :query == Map.get(rule, :type)
 
@@ -282,13 +302,29 @@ defmodule ReteTest do
 
       [bind1 | [bind2 | [bind3 | [bind4 | [bind5 | [bind6 | [bind7 | [test1]]]]]]]] = lhs
 
-      assert %{fact: :_, type: :foo, bind: [:id]} == Map.take(bind1, [:type, :fact, :bind])
-      assert %{fact: :bar, type: :bar, bind: [:id]} == Map.take(bind2, [:type, :fact, :bind])
-      assert %{fact: :_, type: :foo, bind: [:id]} == Map.take(bind3, [:type, :fact, :bind])
-      assert %{coll: :_, type: :bar, bind: [:id]} == Map.take(bind4, [:type, :bind, :coll])
-      assert %{type: :foo, fact: :foo, bind: [:id]} == Map.take(bind5, [:type, :fact, :bind])
-      assert %{coll: :bars, type: :bar, bind: [:id]} == Map.take(bind6, [:type, :bind, :coll])
-      assert %{fact: :_, type: :mammal, bind: [:name]} == Map.take(bind7, [:type, :fact, :bind])
+      assert %{fact_binding: nil, type: :foo, bind: [:id]} ==
+               Map.take(bind1, [:type, :fact_binding, :bind])
+
+      assert %{fact_binding: :bar, type: :bar, bind: [:id]} ==
+               Map.take(bind2, [:type, :fact_binding, :bind])
+
+      assert %{fact_binding: nil, type: :foo, bind: [:id]} ==
+               Map.take(bind3, [:type, :fact_binding, :bind])
+
+      assert %{type: :foo, fact_binding: :foo, bind: [:id]} ==
+               Map.take(bind4, [:type, :fact_binding, :bind])
+
+      assert %{fact_binding: nil, type: :mammal, bind: [:name]} ==
+               Map.take(bind5, [:type, :fact_binding, :bind])
+
+      # both collections are deferred behind every plain condition, keeping the
+      # order they were written in
+      assert %{coll_binding: nil, type: :bar, bind: [:id]} ==
+               Map.take(bind6, [:type, :bind, :coll_binding])
+
+      assert %{coll_binding: :bars, type: :bar, bind: [:id]} ==
+               Map.take(bind7, [:type, :bind, :coll_binding])
+
       assert %{bind: [:id]} == Map.take(test1, [:bind])
     end
   end
@@ -316,8 +352,8 @@ defmodule ReteTest do
              :fact_foo_bind_id_expr_51194764,
              :test_fact_bar_bind_id_expr_32016514,
              :fact_foo_bind_id_expr_25092275,
-             :fact_bar_bind_id_expr_44631555,
              :fact_living_thing_bind_name_expr_122732082,
+             :fact_bar_bind_id_expr_44631555,
              :test_bind_id_expr_72899215
            ] ==
              [ExampleFooRuleset]
@@ -349,16 +385,18 @@ defmodule ReteTest do
              |> Enum.map(&Map.get(&1, :name))
   end
 
+  # The modules are merged in the order they are given, and an expression the
+  # second module shares with the first is deduplicated onto the first.
   test "get expr data from combined modules" do
     assert [
-             :fact_foo_bind_id_expr_59925075,
+             :fact_foo_bind_id_expr_51194764,
              :test_fact_bar_bind_id_expr_32016514,
              :fact_foo_bind_id_expr_25092275,
+             :fact_living_thing_bind_name_expr_122732082,
              :fact_bar_bind_id_expr_44631555,
-             :fact_mammal_bind_name_expr_41148079,
              :test_bind_id_expr_72899215,
-             :fact_foo_bind_id_expr_51194764,
-             :fact_living_thing_bind_name_expr_122732082
+             :fact_foo_bind_id_expr_59925075,
+             :fact_mammal_bind_name_expr_41148079
            ] ==
              [ExampleFooRuleset, ExampleBarRuleset]
              |> Rete.get_expr_data()

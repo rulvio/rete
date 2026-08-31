@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A push that supersedes an in-flight run makes that run irrelevant, and the
+# dialyzer job is slow enough to be worth not paying for twice.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # The declared floor and the current release. The floor is what `elixir: "~> 1.18"`
+  # in mix.exs promises, and nothing enforces that promise except running it.
+  # Versions are partial on purpose: setup-beam resolves the latest matching patch,
+  # so a patch release cannot break the build by not existing.
+  test:
+    name: test (elixir ${{ matrix.elixir }} / otp ${{ matrix.otp }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - elixir: "1.18"
+            otp: "27"
+          - elixir: "1.20"
+            otp: "29"
+
+    env:
+      MIX_ENV: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        id: beam
+        with:
+          elixir-version: ${{ matrix.elixir }}
+          otp-version: ${{ matrix.otp }}
+
+      - name: Restore deps and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-${{ steps.beam.outputs.elixir-version }}-${{ steps.beam.outputs.otp-version }}-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-${{ steps.beam.outputs.elixir-version }}-${{ steps.beam.outputs.otp-version }}-
+
+      - run: mix deps.get
+
+      # Warnings are errors here for the same reason they are locally: the DSL
+      # generates functions, and an unused-variable warning in generated code is
+      # usually a binding that was classified wrong.
+      - run: mix compile --warnings-as-errors
+
+      - run: mix test
+
+  # Format, lint and types do not vary with the Elixir version in any way worth
+  # paying for, so they run once on the current release.
+  quality:
+    name: quality
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        id: beam
+        with:
+          elixir-version: "1.20"
+          otp-version: "29"
+
+      - name: Restore deps and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-dev-${{ steps.beam.outputs.elixir-version }}-${{ steps.beam.outputs.otp-version }}-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-dev-${{ steps.beam.outputs.elixir-version }}-${{ steps.beam.outputs.otp-version }}-
+
+      - run: mix deps.get
+
+      # A lock file holding something mix.exs no longer asks for is a dependency
+      # nobody decided to have.
+      - run: mix deps.unlock --check-unused
+
+      - run: mix compile --warnings-as-errors
+
+      - run: mix format --check-formatted
+
+      - run: mix credo --strict
+
+      # The PLT is the expensive part and only changes when the dependencies or
+      # the Erlang version do, so it is cached on its own key. Built as a
+      # separate step so that "the PLT could not be built" and "dialyzer found
+      # something" are different red crosses.
+      - name: Restore dialyzer PLT
+        uses: actions/cache@v4
+        with:
+          path: priv/plts
+          key: ${{ runner.os }}-plt-${{ steps.beam.outputs.elixir-version }}-${{ steps.beam.outputs.otp-version }}-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-plt-${{ steps.beam.outputs.elixir-version }}-${{ steps.beam.outputs.otp-version }}-
+
+      - run: mix dialyzer --plt
+
+      - run: mix dialyzer --format github

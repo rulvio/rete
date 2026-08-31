@@ -1,110 +1,45 @@
 defmodule Rete.Ruleset do
   @moduledoc """
-  Provides macros and structures for defining rulesets in a Rete network.
+  Macros for defining rulesets in a Rete network.
 
-  This module allows users to define rules and queries using `defrule/2` and
-  `defquery/2` macros, which parse the provided expressions and generate the
-  necessary internal representations. The module also supports taxonomy definitions through
-  `derive/2` and `underive/2` macros.
-
-  ## Usage
+  A rule reads as a function. Its **arguments are the left hand side** and its **body is
+  the right hand side**. Pattern matching in the argument list gives destructuring,
+  variable binding and join-variable identification for free, and what the body returns
+  is the facts to insert. `docs/dsl.md` is the guide.
 
       defmodule MyRuleset do
         use Rete.Ruleset
 
         derive(:dog, :mammal)
-        derive(:mammal, :animal)
 
-        defrule process_animal({:animal, name}) do
-          IO.puts("Found animal: \#{name}")
+        defrule loyalty(%{salience: 100}, {:customer, cid, name}, orders = [{:order, cid, _amt}]) do
+          {:loyalty, cid, name, length(orders)}
         end
       end
+
+  Using this module makes the ruleset expose `get_rule_data/0`, `get_expr_data/0`,
+  `get_taxo_data/0` and `get_version/0`, which `Rete` aggregates across modules. It also
+  defines `<query_name>/1,2` per query, which is the public face of a query, plus the
+  `__rhs_<name>__/2` and `__<expr_code>__/1,2` machinery the engine calls.
+
+  Every `defrule` and `defquery` expands by running the front end pipeline:
+
+      Rete.DSL.Parser      parse the quoted declaration into Rete.IR
+      Rete.DSL.Normalize   rewrite gates into conditions, negations and :or
+      Rete.Compiler.Sort   order the conditions so every join has its keys
+      Rete.DSL.Bindings    classify join/new bindings, split guards
+      build/4              recompute the production's :bind from the result
+      Rete.DSL.Codegen     emit the expression functions and the RHS
+
+  See `docs/design/ir.md` §1 for the contract between the phases.
   """
 
-  defmodule BindTestExprNode do
-    @moduledoc """
-    Represents a binding test expression node in a Rete network.
-
-    Used for `when` clauses that test conditions on already-bound variables
-    (e.g., `when id > 0`).
-
-    ## Fields
-
-    - `:code` - Unique code identifier for the test expression
-    - `:bind` - List of variable names used in the test expression
-    - `:expr` - The test expression function reference
-    """
-    defstruct [:code, :bind, :expr]
-  end
-
-  defmodule FactTypeExprNode do
-    @moduledoc """
-    Represents a fact type expression node in a Rete network.
-
-    Matches individual facts against a pattern and extracts bound variables.
-
-    ## Fields
-
-    - `:code` - Unique code identifier for the fact type expression
-    - `:fact` - Variable name the matched fact is bound to (or `:_` if not bound)
-    - `:type` - The fact type atom to match against
-    - `:bind` - List of variable names bound by this pattern
-    - `:expr` - The fact matching expression function reference
-    """
-    defstruct [:code, :fact, :type, :bind, :expr]
-  end
-
-  defmodule CollTypeExprNode do
-    @moduledoc """
-    Represents a collection type expression node in a Rete network.
-
-    Matches collections of facts (specified with `[{:type, var}]` syntax).
-
-    ## Fields
-
-    - `:code` - Unique code identifier for the collection pattern
-    - `:coll` - Variable name the collection is bound to (or `:_` if not bound)
-    - `:type` - The fact type atom to match against
-    - `:bind` - List of variable names bound by this pattern
-    - `:expr` - The collection matching expression function reference
-    """
-    defstruct [:code, :coll, :type, :bind, :expr]
-  end
-
-  defmodule BindTestGateNode do
-    @moduledoc """
-    Represents a logical gate node (AND, OR, NOT, etc.) in a Rete network.
-
-    Combines multiple binding test expressions using logical operations.
-
-    ## Fields
-
-    - `:code` - Unique code identifier for the gate node
-    - `:gate` - The logical gate type (`:and`, `:or`, `:not`, `:nand`, `:nor`, `:xor`, `:xnor`)
-    - `:args` - List of condition nodes (FactTypeExprNode, CollTypeExprNode, BindTestExprNode, or nested BindTestGateNode)
-    """
-    defstruct [:code, :gate, :args]
-  end
-
-  defmodule ProductionNode do
-    @moduledoc """
-    Represents a production node (rule or query) in a Rete network.
-
-    Contains the complete definition of a rule or query including its conditions
-    and action.
-
-    ## Fields
-
-    - `:name` - The rule/query name (atom)
-    - `:type` - Either `:rule` or `:query`
-    - `:hash` - Unique hash identifying this production based on its declaration and body
-    - `:opts` - Options keyword list (e.g., `[salience: 100]`)
-    - `:bind` - List of all variable names bound across all LHS conditions
-    - `:lhs` - List of condition nodes (FactTypeExprNode, CollTypeExprNode, BindTestExprNode, or BindTestGateNode)
-    - `:rhs` - Captured function reference with signature `(hash, bindings_map) -> result`
-    """
-    defstruct [:name, :type, :hash, :opts, :bind, :lhs, :rhs]
-  end
+  alias Rete.Compiler.Sort
+  alias Rete.DSL.Bindings
+  alias Rete.DSL.Codegen
+  alias Rete.DSL.Normalize
+  alias Rete.DSL.Parser
+  alias Rete.IR
 
   @doc false
   defmacro __using__(_opts) do
@@ -114,433 +49,202 @@ defmodule Rete.Ruleset do
       @rule_data []
       @taxo_data []
 
+      # name => {:rule | :query, line}, for the duplicate name check. Separate from
+      # @rule_data, which holds escaped IR with the compile-time AST already dropped.
+      @rete_productions %{}
+
+      # The module attribute values behind each generated expression, so two identically
+      # written conditions reading different values do not share one compiled function.
+      # See `Rete.DSL.Codegen.check_attr_values!/3`.
+      @rete_expr_attrs %{}
+
       @before_compile Rete.Ruleset
     end
   end
 
-  # Generates a hash for an expression based on its arguments and body.
-  # Strips metadata, escapes the AST, serializes to binary, then hashes with :erlang.phash2/1.
-  # Returns an integer hash value.
-  defp expr_hash(args, body) do
-    {args, body}
-    |> Macro.postwalk(&Macro.update_meta(&1, fn _ -> [] end))
-    |> Macro.escape()
-    |> :erlang.term_to_binary()
-    |> :erlang.phash2()
+  @doc """
+  Runs the front end pipeline over a quoted production declaration.
+
+  Returns the fully classified `Rete.IR.Production`, ready for
+  `Rete.DSL.Codegen.compile/1`. Exposed so a test can inspect the IR of a declaration
+  without compiling a module for it.
+
+  The last step recomputes `:bind` from the classified LHS, so it is exactly the set of
+  variables a token reaching the right hand side can carry.
+  """
+  @spec build(Macro.Env.t(), Macro.t(), Macro.t(), :rule | :query) :: IR.Production.t()
+  def build(env, decl, body, type) do
+    production = Parser.parse_production(env, decl, body, type)
+    production = %IR.Production{production | lhs: Normalize.normalize_lhs(production.lhs)}
+
+    env
+    |> Bindings.classify(Sort.sort(production))
+    |> resolve_bindings()
   end
 
-  # Parses the binding variables from an expression.
-  # Returns a map of variable names to their AST representations.
-  # Excludes pinned variables (prefixed with ^) from the binding map.
-  defp parse_bind(expr) do
-    {_, bind} =
-      Macro.prewalk(expr, %{}, fn
-        {:^, _, _}, acc ->
-          {nil, acc}
+  # `:bind` is a product of the pipeline, not a pre-pass. To the parser every variable of
+  # every element looks like a binding. Only the classified LHS knows that a negation
+  # binds nothing downstream, that a rule level guard only reads, and that a disjunction
+  # binds the union of its branches. See `docs/design/ir.md` §2.
+  defp resolve_bindings(%IR.Production{lhs: lhs, __ast__: ast} = production) do
+    {guaranteed, optional} = IR.lhs_bindings(lhs)
+    bind = Enum.sort(guaranteed ++ optional)
 
-        {var, meta, nil}, acc when is_atom(var) ->
-          {{var, meta, nil}, Map.put(acc, var, {var, meta, nil})}
-
-        bind, acc ->
-          {bind, acc}
-      end)
-
-    bind
+    %IR.Production{production | bind: bind, __ast__: %{ast | bind: bind_ast(ast.bind, bind)}}
   end
 
-  # Parses the arguments of a fact expression.
-  # Returns a tuple of the fact type and the arguments expression.
-  defp parse_args_expr(fact_expr) do
-    case fact_expr do
-      {fact_type, fact_args} ->
-        fact_expr = quote do: {_, unquote(fact_args)}
-        {fact_type, fact_expr}
-
-      {:=, _, [fact, {fact_type, fact_args}]} ->
-        {fact_type, quote(do: unquote(fact) = {_, unquote(fact_args)})}
-    end
+  # Keeps the variable AST the parser collected, so the RHS pattern carries the source
+  # metadata, and drops the entries that turned out not to bind.
+  defp bind_ast(parsed, bind) do
+    Map.new(bind, fn var -> {var, Map.get(parsed, var) || {var, [], nil}} end)
   end
 
-  # Parses a binding expression without an associated test expression.
-  # Returns a map containing the expression name, id, arguments, and body.
-  defp parse_bind_expr(fact_expr, fact_bind) do
-    {fact_type, args_expr} = parse_args_expr(fact_expr)
-    bind_keys = Map.keys(fact_bind) |> Enum.sort()
-    bind_expr = {:%{}, [], Map.to_list(fact_bind)}
-
-    expr_hash = expr_hash(fact_expr, bind_expr)
-
-    expr_code =
-      [:fact, fact_type, :bind]
-      |> Enum.concat(bind_keys)
-      |> Enum.concat([:expr, expr_hash])
-      |> Enum.join("_")
-      |> String.to_atom()
-
-    expr_name = String.to_atom("__#{expr_code}__")
-
-    %{code: expr_code, name: expr_name, args: args_expr, body: bind_expr}
-  end
-
-  # Parses a binding expression with an associated test expression.
-  # Returns a map containing the expression name, id, arguments, and body.
-  defp parse_bind_expr(fact_expr, test_expr, fact_bind) do
-    {fact_type, args_expr} = parse_args_expr(fact_expr)
-    bind_keys = Map.keys(fact_bind) |> Enum.sort()
-
-    bind_expr =
-      quote do
-        if unquote(test_expr) do
-          unquote({:%{}, [], Map.to_list(fact_bind)})
-        end
-      end
-
-    expr_hash = expr_hash(fact_expr, bind_expr)
-
-    expr_code =
-      [:test, :fact, fact_type, :bind]
-      |> Enum.concat(bind_keys)
-      |> Enum.concat([:expr, expr_hash])
-      |> Enum.join("_")
-      |> String.to_atom()
-
-    expr_name = String.to_atom("__#{expr_code}__")
-
-    %{code: expr_code, name: expr_name, args: args_expr, body: bind_expr}
-  end
-
-  # Parses a test expression with associated bindings.
-  # Returns a map containing the expression name, id, arguments, and body.
-  defp parse_test_expr(test_expr, test_bind) do
-    bind_expr = {:%{}, [], Map.to_list(test_bind)}
-    bind_keys = Map.keys(test_bind) |> Enum.sort()
-
-    expr_hash = expr_hash(bind_expr, test_expr)
-
-    expr_code =
-      [:test, :bind]
-      |> Enum.concat(bind_keys)
-      |> Enum.concat([:expr, expr_hash])
-      |> Enum.join("_")
-      |> String.to_atom()
-
-    expr_name = String.to_atom("__#{expr_code}__")
-
-    %{code: expr_code, name: expr_name, args: bind_expr, body: test_expr}
-  end
-
-  # Parses the left-hand side (LHS) of a rule or query.
-  # Returns a map containing the fact or collection, type, arguments, bindings, and expression
-  defp parse_lhs(lhs_expr) do
-    case lhs_expr do
-      {gate, args} when is_list(args) and gate in [:and, :or, :not, :nand, :nor, :xor, :xnor] ->
-        %{gate: gate, args: Enum.map(args, &parse_lhs/1)}
-
-      {type, args} ->
-        bind = parse_bind(lhs_expr)
-        expr = parse_bind_expr(lhs_expr, bind)
-        %{ast: lhs_expr, fact: :_, type: type, args: args, bind: bind, expr: expr}
-
-      {:when, _, [lhs_expr = {_, _}, lhs_test]} ->
-        lhs = parse_lhs(lhs_expr)
-        expr = parse_bind_expr(lhs.ast, lhs_test, lhs.bind)
-        Map.put(lhs, :expr, expr)
-
-      {:when, _, [lhs_expr = {:=, _, [_, {_, _}]}, lhs_test]} ->
-        lhs = parse_lhs(lhs_expr)
-        expr = parse_bind_expr(lhs.ast, lhs_test, lhs.bind)
-        Map.put(lhs, :expr, expr)
-
-      [lhs_expr = {:when, _, [{_, _}, _]}] ->
-        parse_lhs(lhs_expr)
-        |> Map.put(:coll, :_)
-
-      [lhs_expr = {_, _}] ->
-        parse_lhs(lhs_expr)
-        |> Map.put(:coll, :_)
-
-      {:=, _, [{bind, _, nil}, bind_expr]} when is_atom(bind) ->
-        lhs = parse_lhs(bind_expr)
-        if Map.get(lhs, :coll), do: Map.put(lhs, :coll, bind), else: Map.put(lhs, :fact, bind)
-    end
-  end
-
-  # Parses the arguments of a rule declaration.
-  # Returns a tuple of rule options and the left-hand side expressions.
-  defp parse_args(rule_args) do
-    case rule_args do
-      [{:%{}, _, rule_opts} | rule_lhs] -> {rule_opts, rule_lhs}
-      rule_lhs -> {[], rule_lhs}
-    end
-  end
-
-  # Parses a rule declaration and body.
-  # Returns a map containing the rule name, hash, options, bindings, LHS, and RHS.
-  defp parse_rule(rule_hash, rule_decl, rule_body) do
-    case rule_decl do
-      {:when, _, [rule_decl, rule_test]} ->
-        bind = parse_bind(rule_test)
-        expr = parse_test_expr(rule_test, bind)
-
-        parse_rule(rule_hash, rule_decl, rule_body)
-        |> Map.update(
-          :lhs,
-          [],
-          &Enum.concat(&1, [
-            %{bind: bind, expr: expr}
-          ])
-        )
-
-      {rule_name, _, rule_args} ->
-        {rule_opts, rule_lhs} = parse_args(rule_args)
-
-        %{
-          name: rule_name,
-          hash: rule_hash,
-          opts: rule_opts,
-          bind: parse_bind(rule_lhs),
-          lhs: Enum.map(rule_lhs, &parse_lhs/1),
-          rhs: rule_body
-        }
-    end
-  end
-
-  defp cond_code(%{expr: expr}), do: expr.code
-  defp cond_code(%{gate: gate, args: args}), do: Enum.concat([gate], Enum.map(args, &cond_code/1))
-
-  defp escape_cond(cond) do
-    case cond do
-      %{coll: coll, type: type, bind: bind, expr: expr} ->
-        struct_alias = {:__aliases__, [alias: false], [:Rete, :Ruleset, :CollTypeExprNode]}
-        bind_keys = Map.keys(bind)
-
-        node_ast =
-          {:%{}, [],
-           [
-             code: expr.code,
-             coll: coll,
-             type: type,
-             bind: bind_keys,
-             expr: expr.name
-           ]}
-
-        {:%, [], [struct_alias, node_ast]}
-
-      %{fact: fact, type: type, bind: bind, expr: expr} ->
-        struct_alias = {:__aliases__, [alias: false], [:Rete, :Ruleset, :FactTypeExprNode]}
-        bind_keys = Map.keys(bind)
-
-        node_ast =
-          {:%{}, [],
-           [
-             code: expr.code,
-             fact: fact,
-             type: type,
-             bind: bind_keys,
-             expr: expr.name
-           ]}
-
-        {:%, [], [struct_alias, node_ast]}
-
-      %{bind: bind, expr: expr} ->
-        struct_alias = {:__aliases__, [alias: false], [:Rete, :Ruleset, :BindTestExprNode]}
-        bind_keys = Map.keys(bind)
-
-        node_ast =
-          {:%{}, [],
-           [
-             code: expr.code,
-             bind: bind_keys,
-             expr: expr.name
-           ]}
-
-        {:%, [], [struct_alias, node_ast]}
-
-      %{gate: gate, args: args} ->
-        struct_alias = {:__aliases__, [alias: false], [:Rete, :Ruleset, :BindTestGateNode]}
-        code = cond_code(cond)
-        node_ast = {:%{}, [], [code: code, gate: gate, args: Enum.map(args, &escape_cond/1)]}
-        {:%, [], [struct_alias, node_ast]}
-    end
-  end
-
-  # Escapes a rule structure into an AST representation.
-  defp escape_rule(
-         %{
-           name: rule_name,
-           hash: rule_hash,
-           opts: rule_opts,
-           bind: rule_bind,
-           lhs: rule_lhs
-         },
-         type: rule_type
-       ) do
-    {:%{}, [],
-     [
-       name: rule_name,
-       hash: rule_hash,
-       opts: rule_opts,
-       type: rule_type,
-       bind: Map.keys(rule_bind),
-       lhs: Enum.map(rule_lhs, &escape_cond/1)
-     ]}
-  end
-
-  # Qualifies module attributes in the AST with the given module context.
-  # This ensures that module attributes (@) are correctly referenced within the module scope
-  # when used in rule definitions.
-  defp qualify_special(ast, module) do
-    Macro.prewalk(
-      ast,
-      fn
-        {:@, m1, [{x, m2, nil}]} when is_atom(x) ->
-          {:@, m1, [{x, m2, module}]}
-
-        expr ->
-          expr
-      end
-    )
-  end
-
-  defp cond_data(module, cond = %{expr: expr_name}) do
-    expr_func = Function.capture(module, expr_name, 1)
-    Map.put(cond, :expr, expr_func)
-  end
-
-  defp cond_data(module, cond = %{args: args}) do
-    args = Enum.map(args, &cond_data(module, &1))
-    Map.put(cond, :args, args)
-  end
-
-  @doc false
-  def rule_data(module, rule = %{name: rule_name, lhs: rule_lhs}) do
-    rule_lhs = Enum.map(rule_lhs, &cond_data(module, &1))
-
-    rule_rhs = Function.capture(module, rule_name, 2)
-
-    struct(
-      Rete.Ruleset.ProductionNode,
-      Map.merge(rule, %{lhs: rule_lhs, rhs: rule_rhs})
-    )
-  end
-
-  defp rule_cond(cond = %{expr: _}), do: [cond]
-  defp rule_cond(%{gate: _, args: args}), do: Enum.flat_map(args, &rule_cond/1)
-
-  @doc false
-  defp defproduction(rule_module, rule_decl, rule_body, rule_attr) do
-    rule_decl = qualify_special(rule_decl, rule_module)
-    rule_body = qualify_special(rule_body, rule_module)
-    rule_hash = :erlang.phash2([rule_decl, rule_body])
-    rule = parse_rule(rule_hash, rule_decl, rule_body)
-    %{name: rule_name, bind: rule_bind, lhs: rule_lhs} = rule
-    rule_args = [rule_hash, {:%{}, [], Map.to_list(rule_bind)}]
-    rule_head = {rule_name, [], rule_args}
-    rule_ast = escape_rule(rule, rule_attr)
-
-    rule_lhs =
-      rule_lhs
-      |> Enum.flat_map(&rule_cond/1)
-      |> Enum.uniq_by(fn cond -> cond.expr.name end)
-
-    lhs_func =
-      for %{expr: expr} <- rule_lhs do
-        quote do
-          if not Module.defines?(__MODULE__, {unquote(expr.name), 1}) do
-            def unquote(expr.name)(args) do
-              case args do
-                unquote(expr.args) -> unquote(expr.body)
-                _ -> nil
-              end
-            end
-          end
-        end
-      end
+  # The name check is spliced in ahead of the codegen, so the first thing to fail on a
+  # repeated name is the check that can explain it. Two queries of one name would
+  # otherwise collide as two definitions of the same function.
+  defp defproduction(env, decl, body, type) do
+    production = build(env, decl, body, type)
 
     quote do
-      unquote_splicing(lhs_func)
+      unquote(name_check(env, production.name, type))
+      unquote(Codegen.compile(production))
+    end
+  end
 
-      @rule_data @rule_data ++ [rule_data(__MODULE__, unquote(rule_ast))]
-      Kernel.def(unquote(rule_head), unquote(rule_body))
+  defp name_check(env, name, type) do
+    quote do
+      # Fully qualified: this is spliced into the user's module, which has no alias for
+      # this one.
+      # credo:disable-for-next-line Credo.Check.Design.AliasUsage
+      Rete.Ruleset.check_name!(
+        __MODULE__,
+        unquote(name),
+        unquote(type),
+        unquote(Path.relative_to_cwd(env.file)),
+        unquote(env.line)
+      )
     end
   end
 
   @doc """
-  Allows defining a rule within a ruleset.
+  Rejects a production name the module has already used, and records it.
 
-  The `defrule/2` macro takes a rule declaration and an optional rule body,
-  parses them, and generates the necessary internal representation for the rule.
+  Called from the module body, not at macro expansion. A module body is expanded in full
+  **before** any of it is evaluated, so at expansion time the attribute recording earlier
+  declarations is still empty and every declaration would look like the first.
 
-  ## Examples
-
-      # Simple rule
-      defrule process_user({:user, id, name}) do
-        IO.puts("User \#{id}: \#{name}")
-      end
-
-      # Rule with salience and multiple conditions
-      defrule high_priority_rule(
-        %{salience: 100},
-        {:user, id},
-        {:order, id, total} when total > 1000
-      ) do
-        IO.puts("High value order for user \#{id}")
-      end
-
-      # Rule with bound facts and collections
-      defrule process_orders(
-        user = {:user, id},
-        orders = [{:order, id, amount}]
-      ) do
-        total = Enum.sum(Enum.map(orders, fn {_, _, amt} -> amt end))
-        {user, total}
-      end
+  Rules and queries share one namespace.
   """
-  defmacro defrule(rule_decl, rule_body \\ nil) do
-    defproduction(__CALLER__.module, rule_decl, rule_body, type: :rule)
+  @spec check_name!(module(), atom(), :rule | :query, String.t(), pos_integer()) :: :ok
+  def check_name!(module, name, type, file, line) do
+    declared = Module.get_attribute(module, :rete_productions) || %{}
+
+    case Map.fetch(declared, name) do
+      {:ok, {first_type, first_line}} ->
+        raise ArgumentError, """
+        #{file}:#{line}: def#{type} #{name} repeats a name already declared in \
+        #{inspect(module)} — def#{first_type} #{name}, #{file}:#{first_line}.
+
+        A production name identifies a rule to attribute an activation to and a \
+        query to run, so it has to be unique within its module, and rules and \
+        queries share one namespace. Across modules it need not be unique: a \
+        production is identified by `{module, name}`.
+
+        A production is not a function clause. Every rule whose left hand side \
+        holds fires, and a query answers from every match, so two of one name \
+        would both apply rather than the first winning. Write one production \
+        over a disjunction, `{:or, [...]}`, if that is what you meant.
+        """
+
+      :error ->
+        Module.put_attribute(module, :rete_productions, Map.put(declared, name, {type, line}))
+        :ok
+    end
   end
 
+  # A production written without a `do` block. Emitting its RHS would define a bodiless
+  # function head, and the module would fail to compile with "implementation not provided
+  # for predefined def", naming the generated function rather than the rule.
+  @spec no_body!(Macro.t(), :rule | :query) :: no_return()
+  defp no_body!(decl, type) do
+    raise ArgumentError,
+          "`def#{type} #{decl_name(decl)}` has no body. The body of a rule is its right " <>
+            "hand side, the facts to logically insert; the body of a query is the result " <>
+            "computed for the caller. Write it as `def#{type} #{decl_name(decl)}(...) do " <>
+            "... end`."
+  end
+
+  defp decl_name({:when, _, [decl, _guard]}), do: decl_name(decl)
+  defp decl_name({name, _, _args}) when is_atom(name), do: name
+  defp decl_name(decl), do: Macro.to_string(decl)
+
   @doc """
-  Allows defining a query within a ruleset.
+  Defines a rule.
 
-  The `defquery/2` macro takes a query declaration and an optional query body,
-  parses them, and generates the necessary internal representation for the query.
+  The declaration is the left hand side and the body is the right hand side. What the
+  body returns is logically inserted and truth maintained. `nil` or `[]` inserts nothing.
 
-  ## Examples
+      {:user, id}                      fact pattern, any arity, including {:tick}
+      %User{id: id}                    struct fact pattern, the type is the module
+      %{__type__: :user, id: id}       tagged map fact pattern
+      user = {:user, id}               bind the whole fact
+      {:order, total} when total > 10  per condition guard
+      orders = [{:order, id}]          collect all matching facts, bound or anonymous
+      {:not, [{:order, id}]}           gate: :and :or :not :nand :nor :xor :xnor
 
-      # Simple query
+  A `%{...}` literal in **first** position is the rule's options, not a condition. A
+  `when` after the argument list is a guard over all bindings. See `docs/dsl.md`.
+
+      defrule high_value(%{salience: 100}, {:user, id}, {:order, id, t} when t > 1000) do
+        {:high_value, id, t}
+      end
+  """
+  defmacro defrule(decl, body) do
+    defproduction(__CALLER__, decl, body, :rule)
+  end
+
+  @doc false
+  defmacro defrule(decl), do: no_body!(decl, :rule)
+
+  @doc """
+  Defines a query.
+
+  A query has the same left hand side as a rule but never fires. It holds the matches
+  that reached it, and its **body is what the caller gets**, one result per match.
+
+  **The query is a function.** `defquery find_user(...)` also defines `find_user/1,2` in
+  the same module, so it is run by calling it. That is what makes a query addressable, and
+  why two rulesets may each define one of the same name. Use `Rete.Session.query/3` with
+  `{MyRuleset, :find_user}` when the query is decided at runtime.
+
+  There is nothing to declare about parameters. The caller may constrain any variable the
+  left hand side binds. Filtering happens on the bindings, before the body runs. A filter
+  naming something the query does not bind raises rather than answering `[]`.
+
       defquery find_user({:user, id, name}) do
         {id, name}
       end
-
-      # Query with multiple conditions
-      defquery find_high_value_customers(
-        {:user, id, name},
-        orders = [{:order, id, total} when total > 1000]
-      ) do
-        {id, name, length(orders)}
-      end
+      #=> MyRuleset.find_user(session)         [{1, "Ada"}]
+      #=> MyRuleset.find_user(session, id: 1)  [{1, "Ada"}]
   """
-  defmacro defquery(rule_decl, rule_body \\ nil) do
-    defproduction(__CALLER__.module, rule_decl, rule_body, type: :query)
+  defmacro defquery(decl, body) do
+    defproduction(__CALLER__, decl, body, :query)
   end
 
+  @doc false
+  defmacro defquery(decl), do: no_body!(decl, :query)
+
   @doc """
-  Allows defining a derivation relationship between two types in the taxonomy.
+  Declares that `child` *is a* kind of `parent`.
 
-  The `derive/2` macro takes a child type and a parent type, and records the derivation
-  in the ruleset's taxonomy data.
-
-  ## Examples
+  A `child` fact then reaches every condition written against `parent`. The reverse does
+  not hold. Derivation is transitive.
 
       derive(:dog, :mammal)
-      derive(:cat, :mammal)
       derive(:mammal, :animal)
 
-      # Now rules matching :animal will also match :dog and :cat facts
-      defrule process_animal({:animal, name}) do
-        IO.puts("Found animal: \#{name}")
-      end
+      # a {:dog, "Rex"} fact now matches this rule
+      defrule process_animal({:animal, name}), do: {:seen, name}
   """
   defmacro derive(child, parent) do
     quote do
@@ -549,20 +253,13 @@ defmodule Rete.Ruleset do
   end
 
   @doc """
-  Allows removing a derivation relationship between two types in the taxonomy.
+  Removes a derivation declared earlier.
 
-  The `underive/2` macro takes a child type and a parent type, and records the removal
-  of the derivation in the ruleset's taxonomy data.
+  Declarations are folded in module order, so a module can only undo what a module before
+  it declared.
 
-  ## Examples
-
-      derive(:dog, :mammal)
       derive(:cat, :mammal)
-
-      # Later, remove one of the derivations
       underive(:cat, :mammal)
-
-      # Now :cat facts will no longer match rules looking for :mammal
   """
   defmacro underive(child, parent) do
     quote do
@@ -573,17 +270,9 @@ defmodule Rete.Ruleset do
   @doc false
   defmacro __before_compile__(_env) do
     quote do
-      defp get_expr_data(%{code: code, expr: expr}) do
-        [{code, expr}]
-      end
-
-      defp get_expr_data(%{args: args}) do
-        Enum.flat_map(args, &get_expr_data/1)
-      end
-
       def get_expr_data do
         @rule_data
-        |> Enum.flat_map(&Enum.flat_map(&1.lhs, fn cond -> get_expr_data(cond) end))
+        |> Enum.flat_map(&Rete.IR.expr_data/1)
         |> Enum.uniq()
       end
 
