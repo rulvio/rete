@@ -26,7 +26,7 @@ defmodule Rete.MixProject do
     [preferred_envs: [dialyzer: :dev, docs: :dev]]
   end
 
-  # No :extra_applications. The engine has no processes, no supervision tree and no
+  # No :extra_applications. The engine has no supervision tree and no
   # Logger calls. Tracing goes through Rete.Listener.Trace, which writes to a device the
   # caller chooses.
   def application, do: []

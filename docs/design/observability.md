@@ -142,8 +142,13 @@ node 11 production         elements=0 tokens=0 activations=1
 
 ## 3. The loop guard
 
-`fire_rules/2` runs to quiescence. It caps activations only when asked —
-`:max_cycles`, `:infinity` by default — and raises when the cap is hit.
+`fire_rules/2` runs to quiescence. It caps cycles only when asked — `:max_cycles`,
+`:infinity` by default — and raises when the cap is hit.
+
+A **cycle** is one pass of the fire loop, which takes one activation at the default
+concurrency and one whole activation group above it. The cap bounds passes rather than
+activations, so raising `:concurrency` fires the same work in fewer, larger cycles instead
+of consuming the allowance faster. See `engine.md` §11.
 
 **Opt in rather than on by default**, which is the same call Clara makes: its
 `clara.tools.loop-detector/with-loop-detection` wraps a session and takes
@@ -176,10 +181,10 @@ measured at about 3.5 ms and 0.46 MB per thousand:
 Against that, the cost of setting it too low is a `RuntimeError` on work that was fine.
 The error says to raise it, so that mistake announces itself. A hang does not.
 
-Clara counts transitions between *activation groups* rather than activations.
-That is a better signal in principle, but it has a failure mode this does not: a
-loop confined to a single salience level produces no group transitions at all,
-and the common runaway — a rule concluding something its own LHS matches — sits
+Clara counts transitions between *activation groups* rather than activations, and above
+`concurrency: 1` this counts groups too. Clara's signal is better in principle, but it has
+a failure mode this does not: a loop confined to a single salience level produces no group
+*transitions* at all, and the common runaway — a rule concluding something its own LHS matches — sits
 at one salience.
 
 What the cap does well is the **message**. Pending activations describe whatever

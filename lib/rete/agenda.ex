@@ -123,6 +123,8 @@ defmodule Rete.Agenda do
   key, so it spans the rules that would fire before any less salient one. Activations come
   back in firing order, exactly as repeated `pop/1` would yield them.
 
+  One group is one cycle of the fire loop, however many activations it holds.
+
       iex> alias Rete.{Activation, Agenda}
       iex> agenda =
       ...>   Agenda.new()

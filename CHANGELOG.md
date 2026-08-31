@@ -18,9 +18,26 @@ All notable changes to `rete` are recorded here. The format follows
   by accident of Erlang term order.
 * `mix.exs` no longer declares `extra_applications: [:logger]`. Nothing in the engine
   logs; tracing goes through `Rete.Listener.Trace`.
+* **`:max_cycles` counts cycles, not activations.** A cycle is one pass of the fire loop:
+  one activation at the default concurrency, one whole activation group above it. The two
+  coincide at `concurrency: 1`, so nothing changes unless you raise it. The runaway error
+  now says "fired n cycles".
 
 ### Added
 
+* **`:concurrency` and `:timeout` on `fire_rules/2`.** `concurrency: 1` by default, which
+  is the sequential path unchanged. Above `1`, the rule bodies of one activation group run
+  on tasks and their conclusions are applied in group order. Worth raising only when a
+  body does I/O or real computation — a body that builds a tuple is 1.5% of firing and
+  costs more than that to hand to a task, so break-even is about 5 µs. Sixty-four bodies
+  sleeping 5 ms go from 385 ms to 7 ms.
+
+  It preserves the resulting session, asserted by a property over the every-node-kind
+  ruleset. It does **not** preserve firing order, because popping a group freezes it while
+  firing one at a time re-sorts the agenda after every activation. A body may also run for
+  a match another activation in the same group then invalidates — conclusions are still
+  retracted, side effects are not. `docs/dsl.md` states the at-least-once contract, and
+  `docs/design/engine.md` §11 has the measurements.
 * **CI** (`.github/workflows/ci.yml`) running the project's six verification commands on
   the declared floor, Elixir 1.18, and on the current release. The floor was a promise
   `mix.exs` made and nothing checked.

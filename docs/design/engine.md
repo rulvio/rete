@@ -349,6 +349,60 @@ for an activation that another in the same group invalidates. Its conclusions ar
 retracted, but a side effect it performed is not undone. Clara documents the same for
 `fire-rules-async`. `docs/dsl.md` states the at-least-once contract this implies.
 
+### What a body runs in
+
+A body runs on a `Task`, which means the usual process-boundary rules apply:
+
+* `$callers` **is** set, so `Ecto`'s SQL sandbox and anything else that walks the caller
+  chain keeps working;
+* `Logger.metadata` is **not** inherited. A body that logs loses the request metadata of
+  the process that called `fire_rules/2`. Read it before firing and pass it in a fact, or
+  set it inside the body;
+* the bindings are **copied** into the task. That is nothing for scalars, but a collection
+  binding copies the whole gathered list. Measured on 20 collections of 2,000 elements
+  each: 0.1 ms at `concurrency: 1`, 1.6 ms at `concurrency: 8`. A collection rule looks
+  cheap while being expensive to hand over, so it needs a genuinely slow body before
+  raising `:concurrency` pays.
+
+### The result buffer is not chunked, deliberately
+
+`Task.async_stream` with `ordered: true` does **not** bound its buffer: with a slow first
+item, every later one completes and is held until the first can be emitted. So a whole
+group's results can be in memory at once.
+
+Chunking the stream would bound that, and was measured rather than assumed. It is not
+worth it. A group of 50,000 activations peaks at 66 MB sequentially and 79 MB at
+`concurrency: 8` — the group itself dominates, and the buffer is ~20% on top of a cost
+both paths already pay. Against that, chunking costs throughput badly, because every chunk
+waits for its slowest member. On 256 bodies at `concurrency: 8` with 10% stragglers, where
+perfect scheduling is 296 ms:
+
+| | wall clock |
+|---|---|
+| unchunked | 360 ms |
+| chunks of 8 (1× concurrency) | 1224 ms |
+| chunks of 32 (4×) | 551 ms |
+| chunks of 128 (16×) | 399 ms |
+
+Paying 3.4× throughput to save 20% memory is the wrong trade for the workload
+`:concurrency` exists for. If a group ever grows large enough for the buffer to matter, a
+bounded-window pipeline — spawn ahead, apply in order as results land — gets both, at the
+cost of hand-rolling what `Task.async_stream` does.
+
+### A cycle is a group, not an activation
+
+`:max_cycles` counts passes of the fire loop. One pass takes one activation at the default
+concurrency and one whole activation group above it, so a group is a single cycle however
+many activations it holds.
+
+That is the point rather than a leak: raising `:concurrency` does not consume the
+allowance faster, it fires the same work in fewer, larger cycles. 500 pending matches of
+one rule are 500 cycles one at a time and one cycle as a group. An oscillating ruleset is
+still caught either way, because each round trip of the oscillation is its own cycle.
+
+It also narrows the known gap below. Clara counts transitions between activation groups;
+above `concurrency: 1` so does this.
+
 ### Errors
 
 A body's error is caught on the task and reraised in the caller with its original

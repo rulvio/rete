@@ -1699,6 +1699,12 @@ defmodule Rete.EngineTest do
       defrule thrown({:toss, n}), do: throw({:nope, n})
     end
 
+    defmodule Spin do
+      use Rete.Ruleset
+
+      defrule grow({:counter, n}), do: {:counter, n + 1}
+    end
+
     defp jobs(n), do: Enum.map(1..n, &{:job, &1})
 
     test "the bodies of one group run at once" do
@@ -1811,6 +1817,33 @@ defmodule Rete.EngineTest do
 
       assert error.message =~ "Rete.EngineTest.Slow.work did not finish"
       assert error.message =~ ":timeout"
+    end
+
+    # A cycle is one pass of the fire loop, so a group is one cycle however many
+    # activations it holds. Raising :concurrency must not consume the allowance faster —
+    # it fires the same work in fewer, larger cycles.
+    test "max_cycles counts cycles, so a whole group is one of them" do
+      base = [Chained] |> Session.new() |> Session.insert(Enum.map(1..500, &{:other, &1}))
+
+      # 500 activations of one rule: 500 cycles one at a time, a single cycle as a group.
+      assert_raise RuntimeError, ~r/fired 10 cycles/, fn ->
+        Session.fire_rules(base, max_cycles: 10, concurrency: 1)
+      end
+
+      session = Session.fire_rules(base, max_cycles: 10, concurrency: 8)
+
+      assert length(derived(session, :tail)) == 500
+    end
+
+    test "a runaway is still caught under concurrency" do
+      for concurrency <- [1, 8] do
+        assert_raise RuntimeError, ~r/fired 20 cycles/, fn ->
+          [Spin]
+          |> Session.new()
+          |> Session.insert({:counter, 0})
+          |> Session.fire_rules(max_cycles: 20, concurrency: concurrency)
+        end
+      end
     end
 
     test "an unusable concurrency or timeout is rejected rather than coerced" do

@@ -107,16 +107,20 @@ defmodule Rete.Session do
 
   Options:
 
-    * `:max_cycles` — how many activations one call may fire. `:infinity` by default: the
-      engine runs to quiescence, and an oscillating ruleset spins rather than raising.
-      Give it an integer to bound the call. A ruleset that exceeds it raises with the
-      rules that fired most. One that fires the whole allowance and then settles is fine.
-      See `docs/design/observability.md` §3 for how to pick a number.
+    * `:max_cycles` — how many **cycles** one call may fire. A cycle is one pass of the
+      fire loop: one activation at the default concurrency, one whole activation group
+      above it. `:infinity` by default: the engine runs to quiescence, and an oscillating
+      ruleset spins rather than raising. Give it an integer to bound the call. A ruleset
+      that exceeds it raises with the rules that fired most. One that fires the whole
+      allowance and then settles is fine. See `docs/design/observability.md` §3 for how to
+      pick a number.
     * `:concurrency` — how many rule bodies of one activation group run at once. `1` by
       default, which fires them one at a time. Raise it when a body does I/O or real
       computation: the bodies of a group then run on tasks, and their conclusions are
       applied in group order. A body that only builds a tuple is about 1.5% of firing and
-      costs more than that to hand to a task, so the default suits ordinary rules.
+      costs more than that to hand to a task, so the default suits ordinary rules. Above
+      `1` a body runs on a task, so it does not inherit `Logger.metadata`, and its bindings
+      are copied — which is expensive for a collection binding.
     * `:timeout` — milliseconds one body may take, or `:infinity`, the default. Applies
       only when `:concurrency` is above `1`.
 

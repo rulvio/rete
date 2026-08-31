@@ -532,7 +532,12 @@ writes to a database or calls a service should be idempotent and expect at-least
 
 Raising `:concurrency` above its default of `1` is worth it only when the body is
 expensive — I/O, or real computation. A body that builds a tuple is about 1.5% of firing
-and costs more than that to hand to a task. See `docs/design/engine.md` §11.
+and costs more than that to hand to a task.
+
+Two things follow from a body running on a task. `Logger.metadata` is not inherited, so
+read it before firing if the body logs. And the bindings are copied, which is free for
+scalars but not for a **collection binding**: handing a 2,000-element list to each task
+made one benchmark 16× slower. See `docs/design/engine.md` §11.
 
 ## Condition order
 

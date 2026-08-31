@@ -106,10 +106,12 @@ defmodule Rete.Engine do
 
   Options:
 
-    * `:max_cycles` — how many activations one call may fire. `:infinity` by default, so
-      an oscillating ruleset spins rather than raising. Firing that many and still having
-      work pending raises with the rules that fired most. Firing that many and settling is
-      fine. See `docs/design/observability.md` §3.
+    * `:max_cycles` — how many **cycles** one call may fire. A cycle is one pass of the
+      fire loop: one activation at the default concurrency, one whole activation group
+      above it. `:infinity` by default, so an oscillating ruleset spins rather than
+      raising. Firing that many and still having work pending raises with the rules that
+      fired most. Firing that many and settling is fine. See
+      `docs/design/observability.md` §3.
     * `:concurrency` — how many rule bodies of one activation group run at once. `1` by
       default, which is the sequential path. Above `1`, the bodies of a group run on tasks
       and their conclusions are applied in group order. Worth raising only when a body is
@@ -290,11 +292,13 @@ defmodule Rete.Engine do
       {:ok, activations, agenda} ->
         %State{state | agenda: agenda}
         |> fire_all(activations, cfg)
-        |> fire_loop(cfg, fired + length(activations), tally(tally, activations))
+        |> fire_loop(cfg, fired + 1, tally(tally, activations))
     end
   end
 
-  # One activation at the default concurrency, a whole activation group above it.
+  # One activation at the default concurrency, a whole activation group above it. Either
+  # way what comes back is one cycle: `:max_cycles` counts these, not the activations
+  # inside them, so raising `:concurrency` does not consume the allowance faster.
   defp pop_next(agenda, concurrency) when concurrency <= 1 do
     case Agenda.pop(agenda) do
       :empty -> :empty
@@ -328,7 +332,7 @@ defmodule Rete.Engine do
       |> Enum.map_join("\n", &"  #{describe(state, &1)}")
 
     """
-    fired #{fired} activations without the agenda emptying, which suggests rules \
+    fired #{fired} cycles without the agenda emptying, which suggests rules \
     that keep re-triggering each other.
 
     Fired most#{of_total(map_size(tally), "rules")}:
@@ -338,7 +342,7 @@ defmodule Rete.Engine do
     #{pending}
 
     A rule that concludes something its own left hand side matches on will do \
-    this. If the ruleset genuinely needs more activations than this to settle, \
+    this. If the ruleset genuinely needs more cycles than this to settle, \
     raise :max_cycles.
     """
   end
