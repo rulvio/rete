@@ -362,9 +362,14 @@ docs under `docs/design/` record why.
   whole session as-is, including its compiled network, with no wrapper needed. The one real
   requirement: the receiving process must have the same compiled ruleset and listener
   modules loaded, since the function references resolve against them.
-* **Performance is untuned.** The algorithm is the right one: alpha and beta node sharing,
-  hash joins, incremental retraction. But no profiling pass has been done, and no benchmark
-  suite exists. Expect it to be fast enough long before it is fast.
+* **Performance is measured by shape, not tuned for a number.** The algorithm is the right
+  one: alpha and beta node sharing, hash joins, incremental retraction. Two profiling
+  passes have run, and `mix bench` keeps their results honest by reporting the empirical
+  exponent of each scenario rather than a wall-clock figure. Every scenario in the suite is
+  linear except one, which is left in deliberately and named in
+  [docs/design/engine.md](docs/design/engine.md) §12 along with what it would take to fix.
+  What has *not* been done is tuning for absolute throughput, or measuring wide
+  disjunctions, many rules over one fact type, or memory rather than time.
 * **Per-group firing *within* a collection is awkward.** This differs from `salience`,
   which already groups the *agenda* — every activation at one salience tier fires before
   any activation at a lower one. What is awkward is grouping the *facts inside one rule's

@@ -171,6 +171,9 @@ defmodule Rete.PropertyTest do
       tokens: sort_leaves(dump.tokens),
       accum: Map.new(dump.accum, fn {id, by_key} -> {id, sort_leaves(by_key)} end),
       insertions: Map.new(dump.insertions, fn {id, by_token} -> {id, batches(by_token)} end),
+      # A multiset keyed on `{node_id, token}`, so it needs no canonicalising — which is
+      # why it is one, rather than a list of tokens per fact.
+      inserters: dump.inserters,
       facts: dump.facts,
       root_seeded?: dump.root_seeded?
     }
@@ -485,6 +488,46 @@ defmodule Rete.PropertyTest do
       end
     end
 
+    property "the inserters index says exactly what the insertion records say" do
+      # `inserters` is `insertions` turned around. It is maintained in step rather
+      # than derived, which means it can drift in a way nothing else notices: the
+      # engine reads it only for a conclusion that is already present, so a stale
+      # entry stays invisible until the one ruleset that re-concludes something
+      # trips over it. Rebuild it the slow way and compare, after retractions have
+      # had a chance to leave one behind.
+      check all(facts <- multiset(), facts != [], max_runs: 60) do
+        session = build(facts)
+
+        for dropped <- Enum.uniq(facts) do
+          memory =
+            session
+            |> Session.retract(dropped)
+            |> Session.fire_rules()
+            |> Map.fetch!(:state)
+            |> Map.fetch!(:memory)
+
+          assert rebuilt_inserters(memory) == memory.inserters,
+                 "the index disagrees with the records after retracting #{inspect(dropped)}"
+        end
+      end
+    end
+
+    # What `Rete.Memory.inserters/2` used to do on every call: one entry per
+    # occurrence of a fact in a batch, so a rule that concluded the same fact twice
+    # in one activation counts twice.
+    defp rebuilt_inserters(memory) do
+      for {node_id, by_token} <- memory.insertions,
+          {token, batches} <- by_token,
+          batch <- batches,
+          fact <- batch,
+          reduce: %{} do
+        acc ->
+          Map.update(acc, fact, %{{node_id, token} => 1}, fn refs ->
+            Map.update(refs, {node_id, token}, 1, &(&1 + 1))
+          end)
+      end
+    end
+
     test "two supports need two retractions, and the first leaves the fact standing" do
       # `{:premium, 1}` and `{:customer, 1}` are two distinct facts, both of
       # which reach `{:customer, cid}` through the taxonomy, so the collection
@@ -733,13 +776,13 @@ defmodule Rete.PropertyTest do
   end
 
   # A bucket does not remove anything when it is asked to: it marks the
-  # occurrence dead and leaves it in the stack, which is what makes retraction
+  # occurrence dead and leaves it in the queue, which is what makes retraction
   # O(1) whatever the bucket holds. The debt is only bounded because compaction
   # clears it once the dead outnumber the living — so that bound is the contract,
-  # and without it a long-lived session would grow a stack of tombstones that
+  # and without it a long-lived session would grow a queue of tombstones that
   # nothing above `to_list/1` could see.
   describe "a bucket's tombstones" do
-    alias Rete.Memory.Bucket
+    alias Rete.Bucket
 
     property "never outnumber the living by more than one" do
       check all(ops <- list_of(one_of([{:push, element()}, {:take, element()}]), max_length: 60)) do
@@ -756,9 +799,10 @@ defmodule Rete.PropertyTest do
           end)
 
         live = length(Bucket.to_list(bucket))
+        held = :queue.len(bucket.queue)
 
-        assert length(bucket.stack) <= 2 * live + 1,
-               "stack of #{length(bucket.stack)} holding #{live} live items has not compacted"
+        assert held <= 2 * live + 1,
+               "queue of #{held} holding #{live} live items has not compacted"
       end
     end
 
@@ -773,7 +817,7 @@ defmodule Rete.PropertyTest do
 
       assert Bucket.empty?(emptied)
       assert [] == Bucket.to_list(emptied)
-      assert [] == emptied.stack, "a fully drained bucket still holds tombstones"
+      assert [] == :queue.to_list(emptied.queue), "a fully drained bucket still holds tombstones"
     end
 
     # The subtle one. Equal items are interchangeable in a set and are not in a
@@ -784,6 +828,50 @@ defmodule Rete.PropertyTest do
       {:ok, bucket} = Bucket.take(bucket, el(:c))
 
       assert [el(:b), el(:c)] == Bucket.to_list(bucket)
+    end
+
+    # `pop/1` is the agenda's read. It has to agree with `to_list/1` about which
+    # occurrence is next, or a cancelled activation would fire and a live one would
+    # not — and it has to discard the tombstones it steps over, or skipping one
+    # would be paid for again on the next pop.
+    property "popping drains a bucket in exactly the order to_list reports" do
+      check all(ops <- list_of(one_of([{:push, element()}, {:take, element()}]), max_length: 60)) do
+        bucket =
+          Enum.reduce(ops, Bucket.new(), fn
+            {:push, item}, bucket ->
+              Bucket.push(bucket, [item])
+
+            {:take, item}, bucket ->
+              case Bucket.take(bucket, item) do
+                {:ok, bucket} -> bucket
+                :error -> bucket
+              end
+          end)
+
+        assert Bucket.to_list(bucket) == drain_bucket(bucket)
+      end
+    end
+
+    test "popping everything leaves no tombstone behind" do
+      bucket = Bucket.new([el(:a), el(:b), el(:c)])
+      {:ok, bucket} = Bucket.take(bucket, el(:b))
+
+      drained =
+        Enum.reduce(1..2, bucket, fn _, bucket ->
+          {:ok, _item, rest} = Bucket.pop(bucket)
+          rest
+        end)
+
+      assert :empty == Bucket.pop(drained)
+      assert 0 == Bucket.size(drained)
+      assert [] == :queue.to_list(drained.queue)
+    end
+  end
+
+  defp drain_bucket(bucket, acc \\ []) do
+    case Rete.Bucket.pop(bucket) do
+      :empty -> Enum.reverse(acc)
+      {:ok, item, rest} -> drain_bucket(rest, [item | acc])
     end
   end
 

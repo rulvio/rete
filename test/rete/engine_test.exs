@@ -168,6 +168,47 @@ defmodule Rete.EngineTest do
     end
   end
 
+  describe "arrival order across two parents" do
+    defmodule TwoParents do
+      use Rete.Ruleset
+
+      # Both branches match every `{:n, _}` here, and they are different alpha
+      # expressions, so one fact produces two elements that re-converge on one
+      # terminal. This is the only shape where a rule's matches reach the agenda
+      # by more than one route within a single insert call.
+      defrule hit({:or, [{:n, x} when x > 0, {:n, x} when x < 100]}) do
+        {:hit, x}
+      end
+    end
+
+    # `Rete.Engine.coalesce/1` merges the ops of one call that go the same way to
+    # the same node, so a node sees a batch rather than one element per call.
+    # That fixes the order here: all of one branch, then all of the other. Before
+    # it was fact-major — both branches of the first fact, then both of the
+    # second — which is just as defensible, and is the order this used to have.
+    #
+    # This is pinned rather than left to the suite because the suite stayed green
+    # through the change: nothing else looks at the sequence, only at what the
+    # session settles to, and both orders settle to the same facts.
+    test "one fact reaching a rule twice fires branch by branch, not fact by fact" do
+      fired =
+        [TwoParents]
+        |> Session.new()
+        |> Session.with_listener(Collect, [])
+        |> Session.insert([{:n, 5}, {:n, 6}])
+        |> Session.fire_rules()
+        |> Collect.by_tag(:activation_fired)
+        |> Enum.map(fn {:activation_fired, _source, token, _facts} -> token.bindings.x end)
+
+      assert [5, 6, 5, 6] == fired
+    end
+
+    # The promise that did not change, and the one rules actually rest on.
+    test "a rule's own matches still arrive in fact order" do
+      assert Enum.to_list(1..40) == fired_order(40)
+    end
+  end
+
   # --- taxonomy -----------------------------------------------------------------------
 
   describe "taxonomy" do
@@ -382,7 +423,12 @@ defmodule Rete.EngineTest do
         |> Session.fire_rules()
 
       assert derived(base, :seq) == derived(cycled, :seq)
-      assert base.state.memory == cycled.state.memory
+
+      # Through the dump, not the struct. A collection group is a tree, and a member
+      # removed and put back can leave it balanced differently while holding exactly the
+      # same members in exactly the same order. The dump renders every group as a list,
+      # which is the view the round trip is a claim about.
+      assert Rete.Memory.dump(base.state.memory) == Rete.Memory.dump(cycled.state.memory)
     end
   end
 
@@ -902,7 +948,7 @@ defmodule Rete.EngineTest do
   describe "self supporting conclusions" do
     defp memories(session) do
       memory = session.state.memory
-      Map.take(memory, [:facts, :elements, :tokens, :accum, :insertions])
+      Map.take(memory, [:facts, :elements, :tokens, :accum, :insertions, :inserters])
     end
 
     defmodule Symmetric do
@@ -929,7 +975,14 @@ defmodule Rete.EngineTest do
 
       assert [] == Session.facts(session)
 
-      assert %{facts: %{}, elements: %{}, tokens: %{}, accum: %{}, insertions: %{}} ==
+      assert %{
+               facts: %{},
+               elements: %{},
+               tokens: %{},
+               accum: %{},
+               insertions: %{},
+               inserters: %{}
+             } ==
                memories(session)
     end
 
@@ -978,7 +1031,14 @@ defmodule Rete.EngineTest do
 
       assert [] == Session.facts(session)
 
-      assert %{facts: %{}, elements: %{}, tokens: %{}, accum: %{}, insertions: %{}} ==
+      assert %{
+               facts: %{},
+               elements: %{},
+               tokens: %{},
+               accum: %{},
+               insertions: %{},
+               inserters: %{}
+             } ==
                memories(session)
     end
 
@@ -1021,7 +1081,14 @@ defmodule Rete.EngineTest do
 
       assert [] == Session.facts(session)
 
-      assert %{facts: %{}, elements: %{}, tokens: %{}, accum: %{}, insertions: %{}} ==
+      assert %{
+               facts: %{},
+               elements: %{},
+               tokens: %{},
+               accum: %{},
+               insertions: %{},
+               inserters: %{}
+             } ==
                memories(session)
     end
   end

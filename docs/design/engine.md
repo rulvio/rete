@@ -90,13 +90,14 @@ matches.
 **`Rete.Activation`** — a production node plus the token that satisfied it, plus the
 salience and compile order it will be sorted by.
 
-## 4. The five memories
+## 4. The six memories
 
 ```
-elements    node_id => join_key => [Element]           right side of a beta node
-tokens      node_id => join_key => [Token]             left side of a beta node
-accum       node_id => join_key => group_key => [fact] what a collection gathered
+elements    node_id => join_key => Bucket of Element   right side of a beta node
+tokens      node_id => join_key => Bucket of Token     left side of a beta node
+accum       node_id => join_key => group_key => tree   what a collection gathered
 insertions  node_id => token => [[fact]]               truth maintenance
+inserters   fact => {node_id, token} => count          the same, read backwards
 facts       fact => count                              what the session holds
 ```
 
@@ -115,7 +116,23 @@ for the same reason. The engine retracts them one occurrence at a time.
 
 **`insertions` is the provenance graph.** "This match at this production inserted these
 facts" — read backwards, this is exactly the edge that `Rete.Inspect.explain/2` walks. No
-separate bookkeeping exists for explanation. There is nothing else to keep in sync.
+separate bookkeeping exists for explanation.
+
+`inserters` is that same relation, indexed the other way, and it is the one derived thing
+in here. Both its readers ask "which matches inserted *this fact*": `well_founded/3` on
+every conclusion that turns out to be already present, and `Rete.Inspect.derivations/2`
+per fact. Answering that from `insertions` costs a pass over every insertion record in the
+session, which made two rules concluding one fact quadratic in the number of conclusions —
+and two rules concluding one fact is the ordinary shape of truth maintenance, not a
+pathology. It is maintained in `Rete.Memory.add_insertion/4` and `take_insertion/3`, the
+only two places `insertions` is written, and a property rebuilds it the slow way and
+compares. It is a multiset keyed on `{node_id, token}`, rather than a list of tokens, so
+that two memories holding the same matches compare equal whatever order they reached them
+in.
+
+Keeping it costs about 13% of a settling pass that never re-concludes anything, measured
+on 4,000 facts through a three-rule chain. That is the trade: a constant on every
+conclusion, against a quadratic on the conclusions that repeat.
 
 `root_seeded?` is the one field that is not a memory — see §6.
 
@@ -213,7 +230,7 @@ instead, would walk past every match already queued for the same rule, on every 
 Two matches of one rule fire in **arrival order**. That guarantee runs deeper than the
 agenda. It holds because each of these steps preserves arrival order, in turn:
 
-* a bucket hands its items back in the order they were pushed (`Rete.Memory.Bucket`).
+* a bucket hands its items back in the order they were pushed (`Rete.Bucket`).
 * a batch of items arriving at a node splits into join groups in the order each key first
   appeared, not in map order. `Enum.group_by/2` returns a map. Elixir iterates a map of up
   to 32 keys in term order, and a larger map in an internal hash order — so taking that
@@ -223,6 +240,30 @@ agenda. It holds because each of these steps preserves arrival order, in turn:
 None of this changes what a session *concludes*. That outcome is order-independent, and
 the property suite confirms it. What arrival order does decide is the order
 `:activation_fired` events arrive in — and that is what anyone reading a trace relies on.
+
+### What arrival order does not promise
+
+**Order within one parent, not across parents.** `Rete.Engine.coalesce/1` merges the ops of
+one insert or retract call that go the same way to the same node, so a node is handed a
+whole batch at once instead of one element per call. Ops keep the position of the first
+fact that produced one for a given child, so a rule's own matches still arrive in fact
+order — which is the guarantee above, and the one rules rest on.
+
+What changed with it: a rule reachable by **two different routes** within a single call now
+sees all of one route's matches before any of the other's, where it used to see them
+interleaved fact by fact. Inserting `{:n, 5}` and `{:n, 6}` into a rule whose two
+disjunction branches both match them fires `5, 6, 5, 6` and used to fire `5, 5, 6, 6`. Both
+are arrival orders. Only the first is stable when one fact type feeds several conditions,
+and the settled facts are identical either way.
+
+That is pinned by a test rather than left to the suite, because the suite stayed green
+through the change: nothing else reads the sequence, only what the session settles to.
+
+Batching is not a micro-optimisation. A node's per-call work is not all per item — it
+dispatches, groups by join key, and at a negation or a collection reads back what it
+already holds. Paying that once per fact is what made an unkeyed negation and a live
+collection quadratic. The `{:propagated, op, node_id, count}` event coarsens with it:
+fewer events, larger counts, same shape.
 
 ## 8. Truth maintenance
 
@@ -435,10 +476,22 @@ the rule instead.
 
 ## 12. Known gaps
 
-* **`well_founded/3` costs a pass over the insertion records.** This only happens when the
-  concluded fact is already present, since that is the only way the cycle can close. But a
-  rule that keeps re-concluding what another rule concluded pays this cost on every
-  activation. Indexing this away was deferred.
+* **A collection binding is rebuilt on every change.** The binding *is* the gathered list,
+  so a member joining or leaving means building the list twice: one to retract the old
+  match by value, one to send the new one. Filling a collection of k members therefore
+  costs O(k) per change, and O(k²) overall.
+
+  Batching hides this whenever the members arrive together — `Rete.Engine.coalesce/1`
+  merges them into one op, so the group is read back twice for the batch rather than twice
+  per member, and `mix bench` measures `~n^1.1` for 1,000 members in one call. Feed the
+  same 1,000 through 1,000 calls and it is `~n^1.8`. Both scenarios are in the suite, so
+  neither the win nor the floor can be read as the whole story.
+
+  Clara escapes the floor rather than lowering it: `acc/all` is
+  `{:initial-value [] :reduce-fn conj}` over a persistent vector, and the reduced value is
+  cached per binding group, so adding a member is O(1) with structural sharing and the
+  token holds a reference. Matching that needs a reduce/combine/retract accumulator
+  abstraction, which is a change to what `defrule` accepts, not a change to a node.
 * **A dropped circular support is not reconsidered.** See §8.
 * **The loop guard counts activations, not activation-group transitions.** Clara's signal
   is better in principle — a ruleset that legitimately fires 50,000 activations in one
@@ -464,30 +517,67 @@ the rule instead.
   checkpoint API, versioned migration, and distributed sync. The receiving process also
   needs the same compiled ruleset and listener modules loaded, since the function
   references resolve against them.
-* **Performance has been measured in one dimension only.** A profiling pass found three
-  quadratics in the size of a single join key's bucket, and fixed all three.
-  `Rete.Agenda` is now bucketed by sort key, instead of held as one sorted list.
-  `Rete.Memory.Bucket` now uses an ordered multiset, instead of a list, behind each key.
-  `insert/3` and `retract/3` no longer append to their op accumulator once per fact.
-  Inserting 4,000 facts under one key went from 250 ms to under 10 ms. Retracting 200 of
-  them, from a bucket of 8,000, went from 108 ms to under 1 ms.
+* **Performance is measured by shape, and only along the axes the suite covers.**
+  `mix bench` (`bench/run.exs`) reports the empirical exponent rather than a wall-clock
+  number, so a reintroduced quadratic shows up as `~n^2` instead of as a figure nobody has
+  a baseline for.
 
-  `mix bench` (`bench/run.exs`) proves this, and keeps proving it. It runs nine scenarios
-  at three sizes each, and reports the empirical exponent, instead of a wall-clock number.
-  Because of this, a reintroduced quadratic shows up as `~n^2`, instead of as a figure
-  nobody has a baseline for.
+  A first profiling pass found three quadratics in the size of a single join key's bucket
+  and fixed all three: `Rete.Agenda` became buckets by sort key instead of one sorted list,
+  each bucket became an ordered multiset instead of a list, and `insert/3` and `retract/3`
+  stopped appending to their op accumulator once per fact. Inserting 4,000 facts under one
+  key went from 250 ms to under 10 ms.
 
-  Eight scenarios come out linear. The ninth does not, and it is left in deliberately:
-  filling one collection measures `~n^1.94`, because the private `insert_ordered/2` in
-  `Rete.Engine.Nodes` is O(k) per member. A suite that only reported the good news would be
-  worth less.
+  A second pass added the scenarios that pass could not see, and found five more. All five
+  are fixed:
+
+  | scenario | was | now | fix |
+  |---|---|---|---|
+  | two rules concluding the same fact | `~n^1.93`, 193 ms | `~n^0.9`, 6 ms | the `inserters` index, §4 |
+  | filling one collection behind a live token | `~n^2.37`, 48 ms | `~n^1.1`, 2 ms | member tree + batching |
+  | filling one collection, no token yet | `~n^1.99`, 14 ms | `~n^1.1`, 2 ms | member tree; a group with no token is never read back |
+  | an unkeyed negation taking n blockers | `~n^1.72`, 30 ms | `~n^1.1`, 5 ms | a plain negation is an emptiness edge, §5 |
+  | cancel n pending activations of one rule | `~n^1.51`, 17 ms | `~n^1.1`, 8 ms | `Rete.Agenda` over `Rete.Bucket`, §7 |
+
+  Each has a **control** beside it in the suite, because an exponent alone does not say
+  which half of a scenario is slow. Two rules concluding the same fact used to run 37× the
+  *disjoint* conclusion of the same two rules over the same fact count, and now runs level
+  with it. The unkeyed negation runs against the keyed one; the collection runs at both
+  fact orderings and both batch shapes.
+
+  Two of the fixes are indexes, and an index is a trade, not a free lunch. Maintaining
+  `inserters` costs about 13% of a settling pass that never re-concludes anything, and
+  making `Rete.Agenda.remove/2` O(1) costs about another 13% of one that never cancels
+  anything. Both were measured by disabling the maintenance and re-running, not inferred.
+  Firing 4,000 activations went from 10.5 ms to 13.9 ms across the two. That is the price
+  of the table above.
 
   Still unmeasured: wide disjunctions, many rules over one fact type, and sessions large
-  enough to matter for memory, not just time. The fact-to-token index behind well-founded
-  support is also still rebuilt on demand.
+  enough to matter for memory, not just time. Working-memory cost also grows with the
+  **size** of a fact, not only the count: a bucket keys its multiset on the whole item, so
+  every push and take hashes it. 500 facts at a 1-field payload cost 1.4 ms; the same 500
+  at 512 fields cost 4.2 ms.
 
   One method note worth keeping: the first attempt fixed the **wrong** quadratic. Beta
   memory's append was real, and it had to go, but it was not what dominated. The agenda
   dominated instead, and an earlier version of this list had already named it. The tell: a
   query terminal, which has no agenda, was near-linear, while a production terminal was
   not. Split the measurement, before you believe an attribution.
+
+  That mistake has now been made twice, in the other direction. This list previously read
+  "filling one collection measures `~n^1.94`, because `insert_ordered/2` is O(k) per
+  member" — a since-removed function that walked the group list to find where an arriving
+  member sorted. A probe seemed to confirm it: feed the members in descending term order,
+  making that walk a prepend, and the scenario goes linear. The attribution was still
+  wrong. The fixture inserted `{:cust, 1}` **first**, which puts that token's `:left` op
+  *behind* all n order ops in the queue, so every member arrived at a node with no tokens
+  under the key and the collection was never read back. The scenario was not reaching the
+  incremental path at all. Settle the token first and a second, independent quadratic
+  appears. A control that agrees with the hypothesis is not a control; vary the thing the
+  hypothesis says is irrelevant.
+
+  A third variant of the same error, from the pass that fixed these: the member tree was
+  supposed to make filling a collection cheap, and on its own it made both collection
+  scenarios **slower** — because reading a group back materialises it, which a list did not
+  need to do. What made them fast was not the tree but batching, which cut the number of
+  read-backs from two per member to two per call. Measure the fix, not just the bug.

@@ -99,7 +99,40 @@ defmodule Rete.Engine do
 
   # Batches are collected newest first. Appending per fact would be quadratic in the size
   # of one insert. Propagation order decides the order matches reach the agenda.
-  defp ordered_ops(batches), do: batches |> Enum.reverse() |> Enum.concat()
+  defp ordered_ops(batches) do
+    batches |> Enum.reverse() |> Enum.concat() |> coalesce()
+  end
+
+  # Merges the ops of one call that go the same way to the same node, so a node is handed
+  # the whole batch at once instead of one element per call. `alpha_ops/3` emits one op per
+  # fact per child, and a node's per-call work is not all per item: `Rete.Engine.Nodes`
+  # dispatches, groups by join key, and — at a negation or a collection — reads back what
+  # it already holds. Paying that once per fact is what made an unkeyed negation quadratic.
+  #
+  # **This decides an order.** Ops keep the position of the first fact that produced one
+  # for a given child, so a rule's own matches still arrive in fact order. What changes is
+  # that a rule reached through two different parents now sees all of one parent's tokens
+  # before any of the other's, where it used to see them interleaved fact by fact. Both are
+  # arrival orders; only the first is stable when a fact type feeds several conditions. See
+  # `docs/design/engine.md` §5.
+  defp coalesce([]), do: []
+  defp coalesce([_only] = ops), do: ops
+
+  defp coalesce(ops) do
+    {merged, targets} =
+      Enum.reduce(ops, {%{}, []}, fn {direction, child, items}, {merged, targets} ->
+        target = {direction, child}
+
+        case merged do
+          %{^target => batches} -> {%{merged | target => [items | batches]}, targets}
+          _ -> {Map.put(merged, target, [items]), [target | targets]}
+        end
+      end)
+
+    for {direction, child} = target <- Enum.reverse(targets) do
+      {direction, child, merged |> Map.fetch!(target) |> Enum.reverse() |> Enum.concat()}
+    end
+  end
 
   @doc """
   Fires until the agenda is empty.
@@ -493,19 +526,28 @@ defmodule Rete.Engine do
 
   # Every fact the match rests on. This is the facts it matched, plus what the match that
   # concluded each of those rested on, down to what the user asserted.
+  #
+  # Walks `Rete.Memory.inserters/2`, which is maintained as insertions are recorded. This
+  # used to build that index on the spot, from every insertion record in the session, on
+  # every conclusion that was already present — which made two rules concluding one fact
+  # quadratic in the number of conclusions.
   defp support_closure(%State{memory: memory}, token) do
-    walk(MapSet.new(), matched_facts(token), inserted_by(memory))
+    walk(MapSet.new(), matched_facts(token), memory)
   end
 
-  @spec walk(MapSet.t(), [term()], %{optional(term()) => [Token.t()]}) :: MapSet.t()
-  defp walk(seen, [], _inserters), do: seen
+  @spec walk(MapSet.t(), [term()], Memory.t()) :: MapSet.t()
+  defp walk(seen, [], _memory), do: seen
 
-  defp walk(seen, [fact | rest], inserters) do
+  defp walk(seen, [fact | rest], memory) do
     if MapSet.member?(seen, fact) do
-      walk(seen, rest, inserters)
+      walk(seen, rest, memory)
     else
-      supports = inserters |> Map.get(fact, []) |> Enum.flat_map(&matched_facts/1)
-      walk(MapSet.put(seen, fact), supports ++ rest, inserters)
+      supports =
+        memory
+        |> Memory.inserters(fact)
+        |> Enum.flat_map(fn {_node_id, token} -> matched_facts(token) end)
+
+      walk(MapSet.put(seen, fact), supports ++ rest, memory)
     end
   end
 
@@ -513,18 +555,6 @@ defmodule Rete.Engine do
   # which one a set threaded through a local recursion holds. This set never leaves these
   # two functions, and only `MapSet.new/0` and `MapSet.put/2` build it.
   @dialyzer {:no_opaque, walk: 3, well_founded: 3}
-
-  # fact => the tokens whose activation inserted it. Built on demand, since it is only
-  # needed for a conclusion that is already present.
-  defp inserted_by(%Memory{insertions: insertions}) do
-    for {_node_id, by_token} <- insertions,
-        {token, batches} <- by_token,
-        batch <- batches,
-        fact <- batch,
-        reduce: %{} do
-      acc -> Map.update(acc, fact, [token], &[token | &1])
-    end
-  end
 
   # A collection match holds the list it gathered, and rests on every member of it.
   defp matched_facts(%Token{} = token) do

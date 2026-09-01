@@ -121,11 +121,10 @@ defmodule Rete.Inspect do
   end
 
   # Truth maintenance records "this match at this production inserted these facts", which
-  # read backwards is a provenance edge.
+  # read backwards is a provenance edge. `Rete.Memory.inserters/2` is that index, kept the
+  # other way round, so this is a lookup rather than a scan of every insertion record.
   defp derivations(state, fact) do
-    for {node_id, by_token} <- state.memory.insertions,
-        {token, batches} <- by_token,
-        Enum.any?(batches, &(fact in &1)),
+    for {node_id, token} <- Memory.inserters(state.memory, fact),
         node = Network.node(state.network, node_id),
         match?(%Node.Production{}, node) do
       {node, token}

@@ -193,6 +193,30 @@ defmodule Bench.Negation do
   end
 end
 
+defmodule Bench.UnkeyedNegation do
+  @moduledoc false
+  use Rete.Ruleset
+
+  # The negated condition shares no variable with the token, so every token and
+  # every element lands under one join key. `Bench.Negation` above is the
+  # well-keyed case — one token and one element per key — which hides whatever a
+  # negation node does per arriving element.
+  defrule blocked({:cust, id}, {:not, [{:blocker, _b}]}) do
+    {:blocked, id}
+  end
+end
+
+defmodule Bench.Shared do
+  @moduledoc false
+  use Rete.Ruleset
+
+  # Two rules concluding the same fact: the textbook truth-maintenance shape.
+  # Whichever fires second finds its conclusion already present, which is the
+  # only thing that sends `well_founded/3` looking for the support closure.
+  defrule from_x({:x, i}), do: {:derived, i}
+  defrule from_y({:y, i}), do: {:derived, i}
+end
+
 defmodule Bench.Blocking do
   @moduledoc false
   use Rete.Ruleset
@@ -209,6 +233,7 @@ end
 # --- the scenarios ---------------------------------------------------------------
 
 alias Bench.{Agenda, Blocking, Cascade, Chain, Collection, ManyKeys, Negation, OneKey}
+alias Bench.{Shared, UnkeyedNegation}
 
 one_key = Bench.network(OneKey)
 many_keys = Bench.network(ManyKeys)
@@ -217,6 +242,8 @@ cascade = Bench.network(Cascade)
 chain = Bench.network(Chain)
 collection = Bench.network(Collection)
 negation = Bench.network(Negation)
+unkeyed_negation = Bench.network(UnkeyedNegation)
+shared = Bench.network(Shared)
 blocking = Bench.network(Blocking)
 
 IO.puts("\n\e[1m\e[4mrete scaling\e[0m")
@@ -287,6 +314,18 @@ Bench.scenario(
 )
 
 Bench.scenario(
+  "cancel n pending activations of one rule",
+  [250, 500, 1_000, 2_000],
+  fn n ->
+    facts = for i <- 1..n, do: {:seed, i}
+    session = agenda |> Bench.session() |> Rete.Session.insert(facts)
+
+    session |> Rete.Session.retract(facts) |> Rete.Session.fire_rules()
+  end,
+  note: "retract the support before firing, so every match leaves the agenda unfired"
+)
+
+Bench.scenario(
   "a cascade n rules deep",
   [1_000, 2_000, 4_000],
   fn n ->
@@ -313,6 +352,30 @@ Bench.scenario(
 )
 
 Bench.scenario(
+  "two rules concluding the same fact",
+  [125, 250, 500, 1_000],
+  fn n ->
+    facts = for(i <- 1..n, do: {:x, i}) ++ for(i <- 1..n, do: {:y, i})
+
+    shared |> Bench.session() |> Rete.Session.insert(facts) |> Rete.Session.fire_rules()
+  end,
+  note:
+    "whichever rule fires second re-concludes a fact that is already present, " <>
+      "which is the only thing that consults the support index"
+)
+
+Bench.scenario(
+  "the same two rules over disjoint conclusions",
+  [125, 250, 500, 1_000],
+  fn n ->
+    facts = for(i <- 1..n, do: {:x, i}) ++ for(i <- 1..n, do: {:y, -i})
+
+    shared |> Bench.session() |> Rete.Session.insert(facts) |> Rete.Session.fire_rules()
+  end,
+  note: "the control for the scenario above — same rules, same fact count, no re-conclusion"
+)
+
+Bench.scenario(
   "a negation flipping on and off",
   [500, 1_000, 2_000],
   fn n ->
@@ -332,7 +395,25 @@ Bench.scenario(
 )
 
 Bench.scenario(
-  "filling one collection",
+  "an unkeyed negation taking n blockers",
+  [125, 250, 500, 1_000],
+  fn n ->
+    custs = for i <- 1..n, do: {:cust, i}
+    blockers = for i <- 1..n, do: {:blocker, i}
+
+    session =
+      unkeyed_negation
+      |> Bench.session()
+      |> Rete.Session.insert(custs)
+      |> Rete.Session.fire_rules()
+
+    session |> Rete.Session.insert(blockers) |> Rete.Session.fire_rules()
+  end,
+  note: "n tokens and n elements under one key — the scenario above keys them apart"
+)
+
+Bench.scenario(
+  "filling one collection, no token yet",
   [250, 500, 1_000],
   fn n ->
     orders = for i <- 1..n, do: {:order, 1, i}
@@ -342,10 +423,52 @@ Bench.scenario(
     |> Rete.Session.insert([{:cust, 1} | orders])
     |> Rete.Session.fire_rules()
   end,
-  note: "members are kept in term order, inserted one at a time",
+  note:
+    "{:cust, 1} is enqueued first, so its token reaches the node behind every order — " <>
+      "the members land with nothing to collect for, and nothing reads the group back"
+)
+
+Bench.scenario(
+  "filling one collection behind a live token",
+  [125, 250, 500, 1_000],
+  fn n ->
+    orders = for i <- 1..n, do: {:order, 1, i}
+
+    session =
+      collection
+      |> Bench.session()
+      |> Rete.Session.insert({:cust, 1})
+      |> Rete.Session.fire_rules()
+
+    session |> Rete.Session.insert(orders) |> Rete.Session.fire_rules()
+  end,
+  note:
+    "settle the token first, then one call carrying every member — the group is read " <>
+      "back twice for the batch, not twice per member"
+)
+
+Bench.scenario(
+  "filling one collection one member at a time",
+  [125, 250, 500, 1_000],
+  fn n ->
+    session =
+      collection
+      |> Bench.session()
+      |> Rete.Session.insert({:cust, 1})
+      |> Rete.Session.fire_rules()
+
+    Enum.reduce(1..n, session, fn i, session ->
+      session |> Rete.Session.insert({:order, 1, i}) |> Rete.Session.fire_rules()
+    end)
+  end,
+  note:
+    "the same members through n calls instead of one, so nothing can be batched — " <>
+      "this is the shape the scenario above hides",
   expect:
     {:known,
-     "Rete.Engine.Nodes.insert_ordered/2 is O(k) per member — see the known gaps in docs/design/engine.md"}
+     "the collection binding is the gathered list, so a member change rebuilds it twice: " <>
+       "one list to retract the old match by, one to send the new one. " <>
+       "See the known gaps in docs/design/engine.md"}
 )
 
 Bench.compare(

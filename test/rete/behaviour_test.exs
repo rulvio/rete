@@ -1770,7 +1770,11 @@ defmodule Rete.BehaviourTest do
         assert base.state.memory.facts == restored.state.memory.facts,
                "support counts changed for #{inspect(fact)}"
 
-        assert base.state.memory.accum == restored.state.memory.accum,
+        # Through the dump: a collection group is a tree, and a member removed and put
+        # back can leave it balanced differently while holding the same members in the
+        # same order.
+        assert Rete.Memory.dump(base.state.memory).accum ==
+                 Rete.Memory.dump(restored.state.memory).accum,
                "collection groups changed for #{inspect(fact)}"
 
         assert base.state.memory.insertions == restored.state.memory.insertions,

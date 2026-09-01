@@ -10,9 +10,11 @@ defmodule Rete.Agenda do
   Two matches of the same rule fire in the order they arrived.
 
   Every activation of one production node shares a sort key. So the agenda is a small
-  number of ordered buckets, not one sorted list. `add/2` and `pop/1` are O(1). `remove/2`
-  is linear in one bucket, which holds one rule's pending matches. See
-  `docs/design/engine.md` §7.
+  number of ordered buckets, not one sorted list, and each bucket is a `Rete.Bucket` — the
+  same tombstoned ordered multiset working memory keys per join key. `add/2`, `pop/1` and
+  `remove/2` are all O(1) amortised. `remove/2` used to be linear in one bucket, which is
+  one rule's pending matches, so retracting the support of a rule with many of them was
+  quadratic. See `docs/design/engine.md` §7.
 
       iex> alias Rete.{Activation, Agenda}
       iex> urgent = %Activation{node_id: :n1, salience: 10}
@@ -23,12 +25,13 @@ defmodule Rete.Agenda do
   """
 
   alias Rete.Activation
+  alias Rete.Bucket
 
   @type key :: {integer(), integer(), non_neg_integer()}
 
   @type t :: %__MODULE__{
           keys: [key()],
-          buckets: %{key() => :queue.queue(Activation.t())},
+          buckets: %{key() => Bucket.t()},
           size: non_neg_integer()
         }
 
@@ -60,14 +63,14 @@ defmodule Rete.Agenda do
       {:ok, bucket} ->
         %__MODULE__{
           agenda
-          | buckets: Map.put(agenda.buckets, key, :queue.in(activation, bucket)),
+          | buckets: Map.put(agenda.buckets, key, Bucket.push_one(bucket, activation)),
             size: agenda.size + 1
         }
 
       :error ->
         %__MODULE__{
           keys: insert_key(agenda.keys, key),
-          buckets: Map.put(agenda.buckets, key, :queue.from_list([activation])),
+          buckets: Map.put(agenda.buckets, key, Bucket.new([activation])),
           size: agenda.size + 1
         }
     end
@@ -95,8 +98,8 @@ defmodule Rete.Agenda do
     key = Activation.key(activation)
 
     with {:ok, bucket} <- Map.fetch(agenda.buckets, key),
-         {:ok, rest} <- drop_first(:queue.to_list(bucket), activation) do
-      {store(agenda, key, :queue.from_list(rest)), :removed}
+         {:ok, bucket} <- Bucket.take(bucket, activation) do
+      {store(agenda, key, bucket), :removed}
     else
       _ -> {agenda, :missing}
     end
@@ -112,7 +115,7 @@ defmodule Rete.Agenda do
   def pop(%__MODULE__{keys: []}), do: :empty
 
   def pop(%__MODULE__{keys: [key | _]} = agenda) do
-    {{:value, activation}, rest} = agenda.buckets |> Map.fetch!(key) |> :queue.out()
+    {:ok, activation, rest} = agenda.buckets |> Map.fetch!(key) |> Bucket.pop()
 
     {:ok, activation, store(agenda, key, rest)}
   end
@@ -147,22 +150,22 @@ defmodule Rete.Agenda do
   def peek_group(%__MODULE__{keys: [{salience, internal, _order} | _]} = agenda) do
     agenda.keys
     |> Enum.take_while(fn {s, i, _order} -> s == salience and i == internal end)
-    |> Enum.flat_map(&(agenda.buckets |> Map.fetch!(&1) |> :queue.to_list()))
+    |> Enum.flat_map(&(agenda.buckets |> Map.fetch!(&1) |> Bucket.to_list()))
   end
 
   @doc "Every pending activation, in firing order."
   @spec to_list(t()) :: [Activation.t()]
   def to_list(%__MODULE__{keys: keys, buckets: buckets}) do
-    Enum.flat_map(keys, fn key -> buckets |> Map.fetch!(key) |> :queue.to_list() end)
+    Enum.flat_map(keys, fn key -> buckets |> Map.fetch!(key) |> Bucket.to_list() end)
   end
 
   # Drops the key when the bucket empties. `keys` records which buckets exist, so an
   # empty one left behind would make `pop/1` reach for a value that is not there.
   #
-  # Takes a queue, not a list. Round-tripping through `:queue.to_list/1` here would put
-  # an O(bucket) cost on `pop/1`, which has to stay O(1).
+  # Takes a bucket, not a list. Round-tripping through a list here would put an O(bucket)
+  # cost on `pop/1`, which has to stay O(1).
   defp store(%__MODULE__{} = agenda, key, remaining) do
-    if :queue.is_empty(remaining) do
+    if Bucket.empty?(remaining) do
       %__MODULE__{
         keys: List.delete(agenda.keys, key),
         buckets: Map.delete(agenda.buckets, key),
@@ -186,21 +189,12 @@ defmodule Rete.Agenda do
   end
 
   # Two activations are the same when they are the same rule, reached by the same match.
-  # `:order` and the salience fields come from the node, so they cannot differ when the
-  # node does not. That is also why the one looked for lands in the bucket of the one
-  # stored.
-  defp drop_first([], _activation), do: :error
-
-  defp drop_first([head | tail], activation) do
-    if same?(head, activation) do
-      {:ok, tail}
-    else
-      case drop_first(tail, activation) do
-        {:ok, rest} -> {:ok, [head | rest]}
-        :error -> :error
-      end
-    end
-  end
-
-  defp same?(a, b), do: a.node_id == b.node_id and a.token == b.token
+  # `remove/2` is always handed a freshly built activation rather than the stored one, so
+  # the comparison has to be by value — which is what a `Rete.Bucket` does, since it keys
+  # its multiset on the item itself.
+  #
+  # Comparing the whole struct is the same test as comparing `:node_id` and `:token`
+  # alone. `:order` and the salience fields all come from the node, so they cannot differ
+  # when the node does not. That is also why the one looked for lands in the bucket of the
+  # one stored: the bucket key is derived from those same three fields.
 end
