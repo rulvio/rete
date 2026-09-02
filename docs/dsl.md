@@ -583,6 +583,28 @@ So an index is worth declaring when a query is filtered more than a handful of t
 worth thinking twice about on facts that churn. Declare the ones your calls actually use, and
 check with `query_plan/3` that they do.
 
+### How much an index buys
+
+An indexed read still builds every row it returns, so the win is the scanning it skips. That
+makes the speedup track how many distinct values the indexed binding takes. Over 4,000
+matches, filtering on one value:
+
+| distinct values | rows returned | no index | indexed | |
+|---|---|---|---|---|
+| 1 | 4,000 | 0.55 ms | 0.46 ms | 1.2× |
+| 4 | 1,000 | 0.23 ms | 0.10 ms | 2.3× |
+| 20 | 200 | 0.19 ms | 0.019 ms | 10× |
+| 200 | 20 | 0.19 ms | 0.001 ms | 139× |
+| 4,000 | 1 | 0.19 ms | 0.000 ms | 427× |
+
+The rule of thumb is that the speedup is about the number of distinct values, until it
+flattens near 400× where the fixed cost of a call takes over. Below about four values an
+index is not worth its write cost. This assumes the values are evenly spread: where one
+value holds most of the rows, that key gets the 1× and the rare ones get the rest.
+
+That is the one thing `query_plan/3` cannot tell you. It reports that an index *is used*,
+not that it is worth using.
+
 ## The right hand side
 
 The body of a rule computes the facts that follow from the match. It may return:

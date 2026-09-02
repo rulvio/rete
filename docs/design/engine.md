@@ -637,6 +637,26 @@ node's buckets in map order, so an unfiltered query read out of an index would o
 rows by binding value rather than by arrival. `Rete.Inspect` also counts a node's tokens by
 its own id.
 
+**Indexing by default was measured and rejected**, so that it is rejected on evidence rather
+than reproposed on intuition. Over 4,000 matches at a query binding a 50-value field, a
+20-value field and a unique id — which is what a real query looks like:
+
+| | insert | retract | memory | buckets |
+|---|---|---|---|---|
+| no index | 2.3 ms | 11.1 ms | 1,169 KB | 1 |
+| one composite over all three | 4.9 ms | 13.5 ms | 2,121 KB | 4,001 |
+| one index per binding | 5.9 ms | 26.4 ms | 2,133 KB | 4,071 |
+
+Both double the writes and the memory. The composite earns almost none of it back, because
+`usable_index/2` needs the filter to cover the whole key set, so it serves only a filter
+naming every binding — which returns one row and is the rarest call anyone makes.
+
+The cost is cardinality, not indexing. An index over a unique field is one bucket per row,
+and most queries bind at least one unique field. A default cannot know which bindings
+partition usefully, and the ones that do not are exactly where an index costs most and
+returns least. That knowledge only exists in the ruleset author's head, which is why
+`index/2` asks for it.
+
 Clara reaches the same place from the opposite direction. Its query params *are* its node's
 join keys, so its lookup is a map fetch — but the params are mandatory and exact, and it
 cannot filter partially at all. Declaring an index here constrains nothing: every filter
