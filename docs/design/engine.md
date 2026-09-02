@@ -486,11 +486,24 @@ the rule instead.
   token from the bindings its alpha produced, so it cannot share one value the way a plain
   collection does. Neither is quadratic in a session, and both are measured.
 
-  What would remove even these is Clara's accumulator abstraction: `acc/all` is
-  `{:initial-value [] :reduce-fn conj}` with a `retract-fn`, so the *reduction* is bound
-  rather than the collection, and `count` or `sum` stay O(1) under any change. That is a
-  change to what `defrule` accepts, not a change to a node, and it is the natural next step
-  if collections turn out to be a bottleneck in practice.
+  Neither is fixed by Clara's accumulator abstraction, and it is worth being exact about
+  that, because the abstraction is otherwise worth having. Clara's `acc/all` removes with
+  `drop-one-of`, which walks the collection twice and rebuilds it into a fresh vector,
+  where `List.delete/2` here walks once and shares the tail past the removal point. Its
+  `min` and `max` carry no `retract-fn` at all and re-reduce the whole group on every
+  retraction. On removal from a gathered collection this engine is the faster of the two.
+
+  What the abstraction is actually for is **not gathering a collection in the first
+  place**. `count`, `sum` and `average` bind a number, with `retract-fn` of `dec` and `-`,
+  so both directions are O(1); `distinct` binds a frequency map. The saving is not the
+  arithmetic, it is that the token then carries a scalar: nothing allocates a k-element
+  list per member change, and nothing hashes or compares one in the memories downstream.
+
+  The benchmark rule here is the case in miniature — `orders = [...]` followed by
+  `length(orders)` builds the whole list on every change so that the body can measure it
+  and discard it. Most collection rules reduce. A `defrule` that could say so is the
+  natural next step if collections turn out to matter in practice; a rule that genuinely
+  wants the list would be no better off.
 * **A dropped circular support is not reconsidered.** See §8.
 * **The loop guard counts activations, not activation-group transitions.** Clara's signal
   is better in principle — a ruleset that legitimately fires 50,000 activations in one
