@@ -13,10 +13,12 @@ defmodule Rete.PropertyTest do
   tokens, collection groups and truth-maintenance records.
 
   Two memories built from the same facts in different orders are not `==`,
-  because a node's element list is appended to as facts arrive. `canon/1` sorts
-  every leaf list and nothing else: no entry is dropped and no duplicate is
-  collapsed, so a support imbalance still shows. Where the comparison can be
-  exact — a round trip on one session, a full drain — it is exact.
+  because a node's element list is appended to as facts arrive, and a collection
+  gathers in reverse arrival order. `canon/1` sorts every leaf list, and every
+  collection a token carries, and nothing else: no entry is dropped and no
+  duplicate is collapsed, so a support imbalance still shows. Where the
+  comparison can be exact — a round trip on one session, a full drain — it is
+  exact. See `Rete.Test.Canon`.
 
   The second is the **oracle**. `expected/1` computes what the ruleset means over
   a fact multiset, in plain `for` comprehensions, counting one support per match.
@@ -30,6 +32,7 @@ defmodule Rete.PropertyTest do
 
   alias Rete.Listener.Collect
   alias Rete.Session
+  alias Rete.Test.Canon
 
   # --- the ruleset -----------------------------------------------------------------
 
@@ -156,41 +159,16 @@ defmodule Rete.PropertyTest do
 
   defp counts(session), do: session.state.memory.facts
 
-  # Deep-sorts every leaf list of the memory. Order of arrival is not part of
-  # what a session means, but multiplicity is: nothing here dedups.
+  # Deep-sorts every leaf list of the memory, and every collection a token
+  # carries. Order of arrival is not part of what a session means, but
+  # multiplicity is: nothing here dedups. See `Rete.Test.Canon` for exactly what
+  # is normalised away and why that is safe over this fixture.
   #
   # Goes through `Rete.Memory.dump/1` rather than the struct: a bucket keeps
   # retracted items as tombstones until it compacts, so two memories holding
   # exactly the same matches can hold different bucket internals. The dump is
   # the view that means something.
-  defp canon(%Session{state: %{memory: memory}}) do
-    dump = Rete.Memory.dump(memory)
-
-    %{
-      elements: sort_leaves(dump.elements),
-      tokens: sort_leaves(dump.tokens),
-      accum: Map.new(dump.accum, fn {id, by_key} -> {id, sort_leaves(by_key)} end),
-      insertions: Map.new(dump.insertions, fn {id, by_token} -> {id, batches(by_token)} end),
-      # A multiset keyed on `{node_id, token}`, so it needs no canonicalising — which is
-      # why it is one, rather than a list of tokens per fact.
-      inserters: dump.inserters,
-      facts: dump.facts,
-      root_seeded?: dump.root_seeded?
-    }
-  end
-
-  defp sort_leaves(by_key) do
-    Map.new(by_key, fn
-      {key, list} when is_list(list) -> {key, Enum.sort(list)}
-      {key, map} when is_map(map) -> {key, sort_leaves(map)}
-    end)
-  end
-
-  defp batches(by_token) do
-    Map.new(by_token, fn {token, batches} ->
-      {token, Enum.sort(Enum.map(batches, &Enum.sort/1))}
-    end)
-  end
+  defp canon(%Session{state: %{memory: memory}}), do: Canon.dump(memory)
 
   # --- the oracle ---------------------------------------------------------------------
 

@@ -379,9 +379,26 @@ right hand side. This yields one fact holding a map, instead of one activation p
 **A rule may not depend on the order of the list it receives.** Sort the list in the right
 hand side, if order matters to you.
 
-The engine does keep collections in a deterministic order. The same facts always produce
-the same list, whatever order they arrived in. But that order is Erlang term order, and it
-is not a contract.
+This is a real warning, not a formality. A collection gathers in **reverse arrival order**,
+so the same facts fed in a different order produce a different list, and a member retracted
+and re-inserted comes back at the front. A rule that reduces its collection to something
+order-insensitive — `length`, a sum, a set — is unaffected. A rule that puts the list itself
+into a fact, or reads `hd/1`, is not:
+
+```elixir
+defrule totals({:customer, cid}, orders = [{:order, cid, _amt}]) do
+  {:total, cid, Enum.sum(for {_, _, amt} <- orders, do: amt)}   # fine
+end
+
+defrule biggest({:customer, cid}, orders = [{:order, cid, _amt}]) do
+  {:biggest, cid, hd(orders)}                                    # depends on the feed
+end
+```
+
+Sorting in the right hand side costs a pass each time the rule *fires*. Keeping the
+collection sorted internally would cost a pass each time a member *changes*, which over a
+group's lifetime is quadratic — so the engine leaves the choice, and the cost, with the
+rules that actually need it.
 
 ## Taxonomy
 

@@ -177,12 +177,15 @@ the list becomes a different value, so it is a different token. The old token is
 retracted, the new one propagates, and truth maintenance replaces the conclusion. That is
 why a rule over a collection fires once per group, not once per gathered fact.
 
-The engine keeps elements in term order, instead of appending them on arrival. So the same
-fact set always produces the same list, whatever order the facts arrived in. A
-retract-and-reinsert round trip restores that order exactly.
+The engine gathers in **reverse arrival order** — a member is prepended, nothing is sorted
+— so the stored list *is* the value the rule receives. That is what makes a member change
+cheap: the old collection and the new one are both in hand, sharing every cons cell but
+one, with nothing built to produce either. Sorting instead would mean walking the group to
+find each member's position, which is O(k) per change and quadratic over a group's life.
 
-This is an implementation guarantee, not a contract. Without it, a rule that *returns* its
-collection would break order independence. See `network.md` §3.
+The cost is that a collection's *order* is no longer a function of its fact set, only its
+*membership* is. See `network.md` §3 for what that gives up, and `docs/dsl.md` for the
+rule it puts on rule authors.
 
 ## 6. The root token
 
@@ -476,22 +479,17 @@ the rule instead.
 
 ## 12. Known gaps
 
-* **A collection binding is rebuilt on every change.** The binding *is* the gathered list,
-  so a member joining or leaving means building the list twice: one to retract the old
-  match by value, one to send the new one. Filling a collection of k members therefore
-  costs O(k) per change, and O(k²) overall.
+* **Removing a collection member is O(position), and a filtered collection is O(k) per
+  token.** Adding is O(1) — the stored list is the binding, and a member is prepended — but
+  removal walks to the member, and an `AccumulateJoin` has to re-decide membership per
+  token from the bindings its alpha produced, so it cannot share one value the way a plain
+  collection does. Neither is quadratic in a session, and both are measured.
 
-  Batching hides this whenever the members arrive together — `Rete.Engine.coalesce/1`
-  merges them into one op, so the group is read back twice for the batch rather than twice
-  per member, and `mix bench` measures `~n^1.1` for 1,000 members in one call. Feed the
-  same 1,000 through 1,000 calls and it is `~n^1.8`. Both scenarios are in the suite, so
-  neither the win nor the floor can be read as the whole story.
-
-  Clara escapes the floor rather than lowering it: `acc/all` is
-  `{:initial-value [] :reduce-fn conj}` over a persistent vector, and the reduced value is
-  cached per binding group, so adding a member is O(1) with structural sharing and the
-  token holds a reference. Matching that needs a reduce/combine/retract accumulator
-  abstraction, which is a change to what `defrule` accepts, not a change to a node.
+  What would remove even these is Clara's accumulator abstraction: `acc/all` is
+  `{:initial-value [] :reduce-fn conj}` with a `retract-fn`, so the *reduction* is bound
+  rather than the collection, and `count` or `sum` stay O(1) under any change. That is a
+  change to what `defrule` accepts, not a change to a node, and it is the natural next step
+  if collections turn out to be a bottleneck in practice.
 * **A dropped circular support is not reconsidered.** See §8.
 * **The loop guard counts activations, not activation-group transitions.** Clara's signal
   is better in principle — a ruleset that legitimately fires 50,000 activations in one
@@ -534,8 +532,9 @@ the rule instead.
   | scenario | was | now | fix |
   |---|---|---|---|
   | two rules concluding the same fact | `~n^1.93`, 193 ms | `~n^0.9`, 6 ms | the `inserters` index, §4 |
-  | filling one collection behind a live token | `~n^2.37`, 48 ms | `~n^1.1`, 2 ms | member tree + batching |
-  | filling one collection, no token yet | `~n^1.99`, 14 ms | `~n^1.1`, 2 ms | member tree; a group with no token is never read back |
+  | filling one collection behind a live token | `~n^2.37`, 48 ms | `~n^0.9`, 0.6 ms | the stored list *is* the binding, §5 |
+  | filling one collection, no token yet | `~n^1.99`, 14 ms | `~n^1.0`, 0.7 ms | the same |
+  | filling one collection one member at a time | `~n^1.78`, 31 ms | `~n^1.1`, 4 ms | the same; this is the shape batching cannot hide |
   | an unkeyed negation taking n blockers | `~n^1.72`, 30 ms | `~n^1.1`, 5 ms | a plain negation is an emptiness edge, §5 |
   | cancel n pending activations of one rule | `~n^1.51`, 17 ms | `~n^1.1`, 8 ms | `Rete.Agenda` over `Rete.Bucket`, §7 |
 
@@ -543,7 +542,11 @@ the rule instead.
   which half of a scenario is slow. Two rules concluding the same fact used to run 37× the
   *disjoint* conclusion of the same two rules over the same fact count, and now runs level
   with it. The unkeyed negation runs against the keyed one; the collection runs at both
-  fact orderings and both batch shapes.
+  batch shapes and at one member per call, which is the only one of the three that no
+  amount of batching helps.
+
+  The collection fix is the only one that cost a semantic guarantee, and it is the reason
+  those three rows moved as far as they did. See `network.md` §3.
 
   Two of the fixes are indexes, and an index is a trade, not a free lunch. Maintaining
   `inserters` costs about 13% of a settling pass that never re-concludes anything, and
@@ -576,8 +579,19 @@ the rule instead.
   appears. A control that agrees with the hypothesis is not a control; vary the thing the
   hypothesis says is irrelevant.
 
-  A third variant of the same error, from the pass that fixed these: the member tree was
-  supposed to make filling a collection cheap, and on its own it made both collection
-  scenarios **slower** — because reading a group back materialises it, which a list did not
-  need to do. What made them fast was not the tree but batching, which cut the number of
-  read-backs from two per member to two per call. Measure the fix, not just the bug.
+  A third variant of the same error, from the pass that fixed these. Keeping the group in a
+  `:gb_trees` was supposed to make filling a collection cheap, since ordered insertion drops
+  from O(k) to O(log k). On its own it made both collection scenarios **slower**, because
+  reading a group back then has to materialise it, which a list did not need to do. Batching
+  rescued the numbers by cutting read-backs from two per member to two per call, and the
+  tree got the credit.
+
+  It did not deserve it. The tree was answering the wrong question: the expensive thing was
+  never the ordered insert, it was that the stored group and the emitted binding were two
+  different values, so every change built one from the other. Dropping the sort — which the
+  contract never promised — makes the stored list *be* the binding, and the tree, the
+  materialisation and the batching-dependence all go away together. Filling a collection one
+  member at a time went from 31 ms to 4 ms, on top of what batching had already done.
+
+  Measure the fix, not just the bug. And when a fix needs a second fix to look good, check
+  whether the first one was the right one.

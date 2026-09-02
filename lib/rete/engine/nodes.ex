@@ -541,20 +541,20 @@ defmodule Rete.Engine.Nodes do
   # conjures the virtual empty one. `propagates_empty?` holds exactly when the pattern
   # binds no new variables, so the only group key it can be asked about is the join key
   # itself, and there is never more than one group to confuse it with.
-  #
-  # A plain collection reads the facts straight out, because that is all it binds. A
-  # filtered one decides membership per token from the bindings its alpha produced, so it
-  # has to read elements. `visible/3` closes over the difference.
-  defp group_members(%State{} = state, %Node.Accumulate{} = node, key, group_key) do
-    absent_or(Memory.group_facts(state.memory, node.id, key, group_key), node)
+  defp group_members(%State{} = state, node, key, group_key) do
+    case Memory.group(state.memory, node.id, key, group_key) do
+      nil -> if node.propagates_empty?, do: [], else: nil
+      members -> members
+    end
   end
 
-  defp group_members(%State{} = state, %Node.AccumulateJoin{} = node, key, group_key) do
-    absent_or(Memory.group(state.memory, node.id, key, group_key), node)
-  end
-
-  defp absent_or(nil, node), do: if(node.propagates_empty?, do: [], else: nil)
-  defp absent_or(members, _node), do: members
+  # What a group stores. A plain collection keeps **facts**, because facts are what it
+  # binds: the stored list is handed to the rule as-is, so a member change produces the
+  # collection's old value and its new one without building either. A filtered one decides
+  # membership per token, and needs the bindings its alpha produced, so it keeps elements
+  # and pays a pass per token. `visible/3` closes over the difference.
+  defp member(%Node.Accumulate{}, %Element{fact: fact}), do: fact
+  defp member(%Node.AccumulateJoin{}, %Element{} = element), do: element
 
   # A plain collection takes its group whole. For a filtered one, the stored group is
   # only a candidate set, and membership is decided per token. That is why groups hold
@@ -585,13 +585,15 @@ defmodule Rete.Engine.Nodes do
     Enum.reduce(elements, {memory, MapSet.new()}, fn element, {memory, changed} ->
       group_key = group_key(node, key, element)
 
+      member = member(node, element)
+
       case direction do
         :right ->
-          {Memory.add_to_group(memory, node.id, key, group_key, element),
+          {Memory.add_to_group(memory, node.id, key, group_key, member),
            MapSet.put(changed, group_key)}
 
         :right_retract ->
-          case Memory.remove_from_group(memory, node.id, key, group_key, element) do
+          case Memory.remove_from_group(memory, node.id, key, group_key, member) do
             {memory, :removed} -> {memory, MapSet.put(changed, group_key)}
             {memory, :absent} -> {memory, changed}
           end

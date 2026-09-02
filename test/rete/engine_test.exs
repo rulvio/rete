@@ -3,6 +3,7 @@ defmodule Rete.EngineTest do
 
   alias Rete.Listener.Collect
   alias Rete.Session
+  alias Rete.Test.Canon
 
   defp run(mod, facts) do
     mod |> Session.new() |> Session.insert(facts) |> Session.fire_rules()
@@ -396,39 +397,77 @@ defmodule Rete.EngineTest do
       end
     end
 
-    # A collection is a function of the facts in it, like everything else a Rete
-    # network concludes. Storing members in arrival order makes `hd`, `Enum.at`
-    # and `List.first` depend on the order the session was fed, and makes a
-    # retract-and-reinsert cycle change a conclusion — which the round trip
-    # invariant cannot see while every collection rule only takes `length`.
-    test "a collection is ordered by its facts, not by when they arrived" do
+    # A collection gathers in **reverse arrival order** and does not sort. This is
+    # the one place the engine's order independence stops: a rule that puts its
+    # collection into a conclusion, rather than reducing it to something
+    # order-insensitive, produces a different fact for a different feed. `docs/dsl.md`
+    # says a rule may not depend on the gathered order for exactly this reason —
+    # sort in the right hand side if the order matters.
+    #
+    # The alternative was to insert members in term order, which makes a collection
+    # a function of its fact set but costs O(k) on every member change, because the
+    # position has to be found by walking. Prepending is O(1) and shares the whole
+    # tail. See `Rete.Memory.add_to_group/5`.
+    test "a collection gathers in reverse arrival order, and does not sort" do
       forwards =
         run([Ordered], [{:customer, 1}, {:order, 1, 10}, {:order, 1, 20}, {:order, 1, 30}])
 
       backwards =
         run([Ordered], [{:customer, 1}, {:order, 1, 30}, {:order, 1, 20}, {:order, 1, 10}])
 
-      assert [{:seq, 1, [10, 20, 30]}] == derived(forwards, :seq)
-      assert derived(forwards, :seq) == derived(backwards, :seq)
+      assert [{:seq, 1, [30, 20, 10]}] == derived(forwards, :seq)
+      assert [{:seq, 1, [10, 20, 30]}] == derived(backwards, :seq)
     end
 
-    test "retracting and reinserting a collection member restores the collection" do
+    # The membership is a function of the fact set even though the order is not, so
+    # a rule that reduces its collection to something order-insensitive — which is
+    # what `docs/dsl.md` tells you to do — is order independent after all.
+    test "what a collection holds does not depend on the order it was fed" do
+      forwards =
+        run([Ordered], [{:customer, 1}, {:order, 1, 10}, {:order, 1, 20}, {:order, 1, 30}])
+
+      backwards =
+        run([Ordered], [{:customer, 1}, {:order, 1, 30}, {:order, 1, 20}, {:order, 1, 10}])
+
+      sorted = fn session ->
+        for {:seq, cid, amts} <- derived(session, :seq), do: {cid, Enum.sort(amts)}
+      end
+
+      assert [{1, [10, 20, 30]}] == sorted.(forwards)
+      assert sorted.(forwards) == sorted.(backwards)
+    end
+
+    # A member taken out and put back comes back at the **front**, not where it
+    # was, because a collection gathers in arrival order. So the round trip
+    # restores the membership and not the sequence, and a rule that puts its
+    # collection into a conclusion sees that conclusion change. The cost of
+    # prepending, stated where someone will trip over it.
+    test "retracting and reinserting a collection member moves it to the front" do
       base = run([Ordered], [{:customer, 1}, {:order, 1, 10}, {:order, 1, 20}, {:order, 1, 30}])
 
       cycled =
         base
-        |> Session.retract({:order, 1, 10})
+        |> Session.retract({:order, 1, 20})
         |> Session.fire_rules()
-        |> Session.insert({:order, 1, 10})
+        |> Session.insert({:order, 1, 20})
         |> Session.fire_rules()
 
-      assert derived(base, :seq) == derived(cycled, :seq)
+      assert [{:seq, 1, [30, 20, 10]}] == derived(base, :seq)
+      assert [{:seq, 1, [20, 30, 10]}] == derived(cycled, :seq)
 
-      # Through the dump, not the struct. A collection group is a tree, and a member
-      # removed and put back can leave it balanced differently while holding exactly the
-      # same members in exactly the same order. The dump renders every group as a list,
-      # which is the view the round trip is a claim about.
-      assert Rete.Memory.dump(base.state.memory) == Rete.Memory.dump(cycled.state.memory)
+      # The conclusion is a different term, which is the whole point: a rule that
+      # puts its collection into a fact is not order independent, and `docs/dsl.md`
+      # says not to write one. What must still hold is everything else — the group
+      # holds the same members, there is still exactly one `:seq`, and the round
+      # trip left no support behind.
+      assert Canon.dump(base.state.memory).accum ==
+               Canon.dump(cycled.state.memory).accum
+
+      assert [{1, [10, 20, 30]}] ==
+               for({:seq, cid, amts} <- derived(cycled, :seq), do: {cid, Enum.sort(amts)})
+
+      assert base.state.memory.facts |> Map.values() |> Enum.sort() ==
+               cycled.state.memory.facts |> Map.values() |> Enum.sort()
     end
   end
 
@@ -723,7 +762,11 @@ defmodule Rete.EngineTest do
       session = run([LeadColl], [{:o, 1}, {:o, 2}])
 
       assert [{:count, 2}] == derived(session, :count)
-      assert [[{:o, 1}, {:o, 2}]] == LeadColl.all(session)
+
+      # Sorted: the gathered order is not a contract, and the engine gathers in
+      # reverse arrival order. What is being asserted is that both facts landed in
+      # the one collection.
+      assert [[{:o, 1}, {:o, 2}]] == session |> LeadColl.all() |> Enum.map(&Enum.sort/1)
     end
 
     # The case that forces the root token to be planted when the state is built

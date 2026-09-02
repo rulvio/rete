@@ -10,7 +10,7 @@ defmodule Rete.Memory do
 
       elements    node_id => join_key => Bucket of Element   right of a beta node
       tokens      node_id => join_key => Bucket of Token     left of a beta node
-      accum       node_id => join_key => group_key => tree   what a collection gathered
+      accum       node_id => join_key => group_key => [member] what a collection gathered
       insertions  node_id => token => [[fact]]               truth maintenance
       inserters   fact => {node_id, token} => count          the same, read backwards
       facts       fact => count                              what it was told
@@ -56,20 +56,10 @@ defmodule Rete.Memory do
   @typedoc "One match at one production, identified by where it fired and what it matched."
   @type inserter :: {node_id(), Token.t()}
 
-  @typedoc """
-  One collection group: its members as an ordered multiset, keyed on `{fact, bindings}`.
-
-  A tree rather than a list, so that adding and removing a member cost O(log k) instead of
-  a walk. Filling one collection was quadratic while it was a list, because ordered
-  insertion had to find the position by walking. Read it with `group/4` or `groups/3`,
-  which render it as a list.
-  """
-  @type member_tree :: :gb_trees.tree({term(), key()}, {Element.t(), pos_integer()})
-
   @type t :: %__MODULE__{
           elements: %{node_id() => %{key() => Bucket.t()}},
           tokens: %{node_id() => %{key() => Bucket.t()}},
-          accum: %{node_id() => %{key() => %{key() => member_tree()}}},
+          accum: %{node_id() => %{key() => %{key() => [term()]}}},
           insertions: %{node_id() => %{Token.t() => [[term()]]}},
           inserters: %{term() => %{inserter() => pos_integer()}},
           facts: %{term() => pos_integer()},
@@ -187,74 +177,59 @@ defmodule Rete.Memory do
   # --- accumulated collections --------------------------------------------------
 
   @doc """
-  The collection groups at a node under a join key, `group_key => elements`.
+  The collection groups at a node under a join key, `group_key => members`.
 
-  Each group comes back as a list, in member order. Building that list is O(k), so a
-  caller that wants one group should ask for `group/4` instead of filtering this.
+  A member is whatever the node stored: a plain collection keeps facts, because that is
+  what it binds, and a filtered one keeps `Rete.Element`s, because its filter needs the
+  bindings the alpha produced. `Rete.Memory` does not interpret them.
   """
-  @spec groups(t(), node_id(), key()) :: %{key() => [Element.t()]}
+  @spec groups(t(), node_id(), key()) :: %{key() => [term()]}
   def groups(%__MODULE__{accum: accum}, node_id, key) do
-    accum
-    |> Map.get(node_id, %{})
-    |> Map.get(key, %{})
-    |> Map.new(fn {group_key, tree} -> {group_key, members(tree)} end)
+    accum |> Map.get(node_id, %{}) |> Map.get(key, %{})
   end
 
   @doc """
-  The group keys a node holds under a join key, without reading any of the groups.
+  The group keys a node holds under a join key.
   """
   @spec group_keys(t(), node_id(), key()) :: [key()]
-  def group_keys(%__MODULE__{accum: accum}, node_id, key) do
-    accum |> Map.get(node_id, %{}) |> Map.get(key, %{}) |> Map.keys()
+  def group_keys(%__MODULE__{} = memory, node_id, key) do
+    memory |> groups(node_id, key) |> Map.keys()
   end
 
   @doc """
-  The members of one collection group, in member order, or `nil` if there is no such
-  group.
+  The members of one collection group, or `nil` if there is no such group. O(1).
 
   `nil` and `[]` are different answers. A group with no members does not exist; an empty
   collection a rule can legitimately see is `[]`, and only `Rete.Engine.Nodes` knows which
   of the two an absent group means. See `remove_from_group/5`.
+
+  This is the list the node hands to the rule, not a view built for the occasion. That is
+  the point of it: a member change has to produce the collection's old value and its new
+  one, and materialising either would be O(k) on the hottest path there is.
   """
-  @spec group(t(), node_id(), key(), key()) :: [Element.t()] | nil
+  @spec group(t(), node_id(), key(), key()) :: [term()] | nil
   def group(%__MODULE__{} = memory, node_id, key, group_key) do
-    case tree(memory, node_id, key, group_key) do
-      nil -> nil
-      tree -> members(tree)
-    end
+    memory |> groups(node_id, key) |> Map.get(group_key)
   end
 
   @doc """
-  The facts of one collection group, in member order, or `nil` if there is no such group.
+  Adds one member to a collection group, in front of the ones already there. O(1).
 
-  The same list `group/4` returns, with the bindings left off. A collection with no filter
-  binds the facts and nothing reads the bindings, and that is the common case on the
-  hottest path there is — a group is read twice on every member change, so building an
-  `Rete.Element` per member and mapping it away again costs two passes that buy nothing.
+  **Reverse arrival order, and no sort.** The new list shares its whole tail with the old
+  one, so adding a member allocates a single cons cell however large the group is. The
+  order a collection comes back in is not a contract — see `docs/dsl.md` — and sorting to
+  make it a function of the fact set costs O(k) per change, which is quadratic over a
+  group's lifetime. A rule that needs a particular order sorts in its own right hand side,
+  where it is paid for once per firing instead of once per member.
   """
-  @spec group_facts(t(), node_id(), key(), key()) :: [term()] | nil
-  def group_facts(%__MODULE__{} = memory, node_id, key, group_key) do
-    case tree(memory, node_id, key, group_key) do
-      nil -> nil
-      tree -> collect(:gb_trees.iterator(tree), [], & &1.fact)
-    end
+  @spec add_to_group(t(), node_id(), key(), key(), term()) :: t()
+  def add_to_group(%__MODULE__{} = memory, node_id, key, group_key, member) do
+    update_group(memory, node_id, key, group_key, &[member | &1 || []])
   end
 
   @doc """
-  Adds one element to a collection group. O(log k).
-  """
-  @spec add_to_group(t(), node_id(), key(), key(), Element.t()) :: t()
-  def add_to_group(%__MODULE__{} = memory, node_id, key, group_key, element) do
-    update_group(memory, node_id, key, group_key, fn tree ->
-      member = order_key(element)
-
-      :gb_trees.enter(member, {element, occurrences(tree, member) + 1}, tree)
-    end)
-  end
-
-  @doc """
-  Removes one occurrence of an element from a collection group, reporting whether it was
-  there. O(log k).
+  Removes one occurrence of a member from a collection group, reporting whether it was
+  there. O(position).
 
   `:absent` rather than a silent no-op, for the same reason `remove_elements/4` leaves an
   absent element out of what it returns: a caller that emitted a retract-and-resend for a
@@ -264,27 +239,17 @@ defmodule Rete.Memory do
   goes with it, and so does the node, if that was its last join key. Both are binding
   values, so leaving them behind would leak one entry per entity the session has seen.
   """
-  @spec remove_from_group(t(), node_id(), key(), key(), Element.t()) ::
-          {t(), :removed | :absent}
-  def remove_from_group(%__MODULE__{} = memory, node_id, key, group_key, element) do
-    member = order_key(element)
-    tree = tree(memory, node_id, key, group_key)
-
-    case tree && occurrences(tree, member) do
-      falsy when falsy in [nil, false, 0] ->
+  @spec remove_from_group(t(), node_id(), key(), key(), term()) :: {t(), :removed | :absent}
+  def remove_from_group(%__MODULE__{} = memory, node_id, key, group_key, member) do
+    case group(memory, node_id, key, group_key) do
+      nil ->
         {memory, :absent}
 
-      1 ->
-        {update_group(memory, node_id, key, group_key, &:gb_trees.delete(member, &1)), :removed}
-
-      n ->
-        {update_group(
-           memory,
-           node_id,
-           key,
-           group_key,
-           &:gb_trees.update(member, {element, n - 1}, &1)
-         ), :removed}
+      members ->
+        case List.delete(members, member) do
+          ^members -> {memory, :absent}
+          rest -> {update_group(memory, node_id, key, group_key, fn _ -> rest end), :removed}
+        end
     end
   end
 
@@ -396,15 +361,18 @@ defmodule Rete.Memory do
   @doc """
   The whole memory as plain data, every bucket rendered as a list in arrival order.
 
-  Use this instead of the struct. Two memories that agree on every match can still disagree
-  underneath: a `Rete.Bucket` holds a queue with tombstones in it, and a collection group
-  is a tree whose shape depends on the order its members arrived. This is the view that is
+  Use this instead of the struct. A `Rete.Bucket` holds a queue with tombstones in it, so
+  two memories that agree on every match can still disagree there. This is the view that is
   meaningful to compare, assert on, and write down.
+
+  Note that `:accum` is **not** canonical even here: a collection group is kept in reverse
+  arrival order, so two sessions holding the same members can list them differently. Sort
+  it before comparing sessions that were fed differently. See `add_to_group/5`.
   """
   @spec dump(t()) :: %{
           elements: %{node_id() => %{key() => [Element.t()]}},
           tokens: %{node_id() => %{key() => [Token.t()]}},
-          accum: %{node_id() => %{key() => %{key() => [Element.t()]}}},
+          accum: %{node_id() => %{key() => %{key() => [term()]}}},
           insertions: %{node_id() => %{Token.t() => [[term()]]}},
           inserters: %{term() => %{inserter() => pos_integer()}},
           facts: %{term() => pos_integer()},
@@ -414,7 +382,7 @@ defmodule Rete.Memory do
     %{
       elements: listed(memory.elements),
       tokens: listed(memory.tokens),
-      accum: listed_groups(memory.accum),
+      accum: memory.accum,
       insertions: memory.insertions,
       inserters: memory.inserters,
       facts: memory.facts,
@@ -425,15 +393,6 @@ defmodule Rete.Memory do
   defp listed(store) do
     Map.new(store, fn {node_id, by_key} ->
       {node_id, Map.new(by_key, fn {key, bucket} -> {key, Bucket.to_list(bucket)} end)}
-    end)
-  end
-
-  defp listed_groups(accum) do
-    Map.new(accum, fn {node_id, by_key} ->
-      {node_id,
-       Map.new(by_key, fn {key, groups} ->
-         {key, Map.new(groups, fn {group_key, tree} -> {group_key, members(tree)} end)}
-       end)}
     end)
   end
 
@@ -498,62 +457,13 @@ defmodule Rete.Memory do
 
   # --- collection groups ------------------------------------------------------------
 
-  # A group is kept in the term order of its members, not arrival order. What a rule
-  # concludes has to be a function of the fact set. Under arrival order, `hd(orders)` would
-  # depend on how the session was fed, and a retract-and-reinsert round trip would move a
-  # member to the end and change the conclusion.
-  #
-  # The fact comes first, because that is what the rule sees. The bindings break ties
-  # between two elements over the same fact, which makes the order total. Ordering on the
-  # `Rete.Element` struct itself would not do the same thing: a struct is a map, so term
-  # order would compare `:bindings` before `:fact`.
-  defp order_key(%Element{fact: fact, bindings: bindings}), do: {fact, bindings}
-
-  # The element is stored alongside its count, rather than rebuilt from the key it was
-  # derived from. Reading a group is on the hot path of every collection change, and
-  # allocating a struct per member there costs more than holding one does.
-  defp members(tree), do: collect(:gb_trees.iterator(tree), [], & &1)
-
-  # Walks the tree in member order in one pass. `Enum.flat_map/2` over `:gb_trees.values/1`
-  # would build the intermediate list as well as the result, and both of those are per
-  # member.
-  defp collect(iterator, acc, project) do
-    case :gb_trees.next(iterator) do
-      :none ->
-        Enum.reverse(acc)
-
-      {_member, {element, 1}, iterator} ->
-        collect(iterator, [project.(element) | acc], project)
-
-      {_member, {element, n}, iterator} ->
-        # Equal members, so their order among themselves cannot be observed.
-        collect(iterator, List.duplicate(project.(element), n) ++ acc, project)
-    end
-  end
-
-  defp tree(%__MODULE__{accum: accum}, node_id, key, group_key) do
-    accum |> Map.get(node_id, %{}) |> Map.get(key, %{}) |> Map.get(group_key)
-  end
-
-  defp occurrences(tree, member) do
-    case :gb_trees.lookup(member, tree) do
-      {:value, {_element, n}} -> n
-      :none -> 0
-    end
-  end
-
-  # Applies `fun` to one group's tree, and collapses every level that empties behind it.
+  # Applies `fun` to one group's members, and collapses every level that empties behind it.
   defp update_group(%__MODULE__{} = memory, node_id, key, group_key, fun) do
     by_key = Map.get(memory.accum, node_id, %{})
     groups = Map.get(by_key, key, %{})
-    tree = fun.(Map.get(groups, group_key) || :gb_trees.empty())
+    members = fun.(Map.get(groups, group_key))
 
-    groups =
-      if :gb_trees.is_empty(tree),
-        do: Map.delete(groups, group_key),
-        else: Map.put(groups, group_key, tree)
-
-    by_key = store_at(by_key, key, groups)
+    by_key = store_at(by_key, key, store_at(groups, group_key, members))
 
     %__MODULE__{memory | accum: store_at(memory.accum, node_id, by_key)}
   end

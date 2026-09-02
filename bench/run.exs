@@ -463,12 +463,7 @@ Bench.scenario(
   end,
   note:
     "the same members through n calls instead of one, so nothing can be batched — " <>
-      "this is the shape the scenario above hides",
-  expect:
-    {:known,
-     "the collection binding is the gathered list, so a member change rebuilds it twice: " <>
-       "one list to retract the old match by, one to send the new one. " <>
-       "See the known gaps in docs/design/engine.md"}
+      "this is the shape the scenario above hides"
 )
 
 Bench.compare(
