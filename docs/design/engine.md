@@ -598,8 +598,13 @@ Inserting members one at a time and firing after each, with the same rule writte
 | 4,000 | 21.5 ms | 10.2 ms | 11.2 ms |
 
 The middle column is the engine, and it is linear: each doubling costs 1.95×. The right
-column is `length/1` over a list that grew by one, n times, and it is quadratic: 3.8× per
-doubling. At 4,000 members the body is over half the total.
+column is the body, and it is quadratic: 3.8× per doubling. At 4,000 members it is over half
+the total.
+
+The body runs n + 1 times, once per member and once for the empty collection, with no
+activation cancelled. That is the least a collection rule can fire, because each member
+change is a different match. Each run walks the whole list, so the body traverses about
+n²/2 cells — 8M at n = 4,000, which is the 11.2 ms above at roughly 1.4 ns a cell.
 
 Two things follow. The engine has no collection gap left to close against Clara at these
 shapes. And an accumulator — a `defrule` that could say *count* rather than *gather, then
