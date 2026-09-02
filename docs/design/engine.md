@@ -489,37 +489,30 @@ the rule instead.
   token from the bindings its alpha produced, so it cannot share one value the way a plain
   collection does. Neither is quadratic in a session, and both are measured.
 
-  Clara's accumulator abstraction fixes neither, and it is worth being exact about that.
-  Its `acc/all` retracts with `drop-one-of`, which walks the collection twice and rebuilds
-  it, where `List.delete/2` here walks once and shares the tail past the removal point. Its
-  `min` and `max` carry no `retract-fn` at all and re-reduce the whole group.
+  A rule that *reduces* its collection pays a further O(k) per firing. That cost is in the
+  body, not the engine. This list used to put it in the engine, and argued for an accumulator
+  on the strength of it. Both were wrong, and §13 carries the correction: what the measurement
+  actually shows, why batching removes most of it, and why a rule that folds and concludes a
+  scalar already covers the case without changing what `defrule` accepts.
 
-  What that abstraction is *for* is not gathering a collection at all. `count`, `sum` and
-  `average` bind a number with an invertible `retract-fn`, so the token carries a scalar
-  rather than a list.
+* **An unchanged conclusion is retracted and re-asserted.** When a token is replaced, the
+  engine retracts what the old token concluded and inserts what the new one concludes. It
+  does not compare them. So a rule whose conclusion drops the part of the match that changed
+  re-asserts an identical fact, and every rule beneath it re-fires.
 
-  **How much that is worth here has changed, and this list said otherwise for a while.**
-  It read "`orders = [...]` then `length(orders)` builds the whole list so the body can
-  measure it and throw it away". That was true when a collection was rebuilt on every member
-  change. Since the stored list became the binding, nothing rebuilds it — the new value is
-  the old one with a cons on the front, and the token holds the same term the group does.
+  ```elixir
+  defrule known({:cust, id, _version}), do: {:known, id}
+  ```
 
-  What is left, measured by inserting members one at a time and firing after each:
+  Over 2,000 updates to one customer, `{:known, 1}` is asserted throughout and never absent
+  from `Session.facts/1`. Every rule in the chain below still fired 2,001 times. The cost is
+  linear in the depth of that chain: 4.7 ms for the rule alone, 9.1 ms with one consumer,
+  18.5 ms with three.
 
-  | n | body reads `os` | body ignores `os` | the body's share |
-  |---|---|---|---|
-  | 1,000 | 3.4 ms | 2.7 ms | 0.7 ms |
-  | 2,000 | 8.2 ms | 5.2 ms | 3.0 ms |
-  | 4,000 | 21.5 ms | 10.2 ms | 11.2 ms |
-
-  The engine's half is linear. The quadratic that remains is the **rule body**, re-reducing
-  a list that grew by one: `length/1` over k members, n times. At 4,000 members that is
-  already 52% of the total and rising.
-
-  So an accumulator would still pay, but for a different reason than this list used to give.
-  It would not save the engine work. It would stop the body redoing a fold whose answer the
-  engine could have carried forward. Whether that is worth a change to what `defrule`
-  accepts depends on collections large enough for the body's half to matter.
+  Nothing observable is wrong, because a body is pure and returns facts. The waste is the
+  firing and the listener churn. A fix has to defer a production's retraction to the end of
+  the cycle and cancel it if the same fact is re-concluded, which is a change to truth
+  maintenance rather than a local one. It is the largest unclaimed win left.
 
 * **A dropped circular support is not reconsidered.** See §8.
 * **The loop guard counts activations, not activation-group transitions.** Clara's signal
@@ -651,6 +644,28 @@ not move the answer and the differs-from-previous check suppresses the propagati
 So the case for an accumulator is an intersection of two conditions: a caller that fires per
 member, and a reduction to a scalar. That is the 17 ms cell above. Everywhere else, batching
 or the shape of the reduction has already taken it.
+
+And that case is already expressible, without extending the DSL. A rule that folds and
+concludes **is** the accumulator:
+
+```elixir
+defrule order_count({:cust, id}, os = [{:order, id, _a}]), do: {:order_count, id, length(os)}
+```
+
+Every other rule then matches `{:order_count, id, n}` and binds a scalar. The fold happens
+once no matter how many rules consume it, exactly as a shared accumulate node would, and the
+engine stays a rule engine rather than growing an aggregate library.
+
+One thing that composition does not recover, and it is not an argument for accumulators.
+Clara compares the reduced value **at the accumulate node**, upstream of any production, so
+an unchanged `min` moves nothing below it. The derived-fact version compares nothing: the
+producing rule re-fires, retracts its old conclusion and asserts an identical one, and every
+rule beneath it re-fires. Measured with a `max` that never moves over 4,000 members, the two
+rules below it each fired 4,001 times.
+
+That is the general gap recorded in §12, not a collection problem. Closing it would make the
+derived fact strictly better than an accumulator, because it would also be shared, pure, and
+quiet.
 
 ### Indexes are built on first use
 
