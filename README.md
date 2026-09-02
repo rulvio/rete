@@ -345,8 +345,8 @@ docs under `docs/design/` record why.
 * **Collections are collect-all.** `orders = [{:order, cid, amt}]` gathers matching facts
   into a list. There is no accumulator library: no `min`, `max`, `sum`, `count`, and no
   custom accumulators either. Do this work in the right hand side with `Enum` instead.
-  Gathering is linear, and reducing in the body is the shape to write. Concluding a fact
-  that *holds* the collection is not — see `docs/dsl.md`.
+  Gathering is linear. What a collection costs after that depends on how many members
+  arrive per `insert` call — see `docs/dsl.md`.
 * **Logical inserts only.** A rule's body returns facts to insert. The engine truth-maintains
   them. There is no unconditional insert and no retract from a rule. Session-level
   `Rete.Session.retract/2` exists. Truth maintenance cascades from it.

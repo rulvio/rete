@@ -593,28 +593,64 @@ Inserting members one at a time and firing after each, with the same rule writte
 
 | n | body reads the collection | body ignores it | the body's share |
 |---|---|---|---|
-| 1,000 | 3.4 ms | 2.7 ms | 0.7 ms |
-| 2,000 | 8.2 ms | 5.2 ms | 3.0 ms |
-| 4,000 | 21.5 ms | 10.2 ms | 11.2 ms |
+| 1,000 | 3.4 ms | 2.6 ms | 0.7 ms |
+| 2,000 | 8.4 ms | 5.2 ms | 3.2 ms |
+| 4,000 | 26.9 ms | 10.0 ms | 16.9 ms |
 
-The middle column is the engine, and it is linear: each doubling costs 1.95×. The right
-column is the body, and it is quadratic: 3.8× per doubling. At 4,000 members it is over half
-the total.
+The middle column is the engine, and it is linear: each doubling costs exactly 2×. The right
+column is the body, and it grows about 5× per doubling, at or a little above the 4× that n²
+predicts. At 4,000 members the body is nearly twice the engine.
 
 The body runs n + 1 times, once per member and once for the empty collection, with no
-activation cancelled. That is the least a collection rule can fire, because each member
-change is a different match. Each run walks the whole list, so the body traverses about
-n²/2 cells — 8M at n = 4,000, which is the 11.2 ms above at roughly 1.4 ns a cell.
+activation cancelled. Each run walks the whole list, so the body traverses about n²/2 cells
+— 8M at n = 4,000, which is the 16.9 ms above at roughly 2 ns a cell.
 
-Two things follow. The engine has no collection gap left to close against Clara at these
-shapes. And an accumulator — a `defrule` that could say *count* rather than *gather, then
-count* — would still pay, but for the body's half, not the engine's. The gap this document
-used to describe is gone. A smaller one, in different code, is not.
+**That count is a function of how members arrive, not of how many there are.** Alpha batching
+(§7) folds every member arriving in one `insert` call into one group change, so the rule fires
+once per call. The same 4,000 members, and the concluding-a-list shape below alongside:
 
-One shape is worse than either column. A body that puts the collection **into** its
-conclusion, rather than reducing it, runs at `~n^1.97` and 410 ms at n = 4,000, because
-`Memory.add_fact/2` hashes a k-element fact per member change. That is inherent to
-concluding a value that grows, not a defect in the collection.
+| members per call | firings | reads it | ignores it | the body's share | concludes the list |
+|---|---|---|---|---|---|
+| 1 | 4,001 | 27.1 ms | 10.0 ms | 17.1 ms | 408 ms |
+| 10 | 401 | 4.6 ms | 3.3 ms | 1.3 ms | 43 ms |
+| 100 | 41 | 3.0 ms | 2.8 ms | 0.2 ms | 6.8 ms |
+| 1,000 | 5 | 2.9 ms | 3.0 ms | 0.0 ms | 3.7 ms |
+| 4,000 | 2 | 3.4 ms | 3.2 ms | 0.2 ms | 3.3 ms |
+
+Both quadratics are O(n²/b) for a batch of b, and both are noise by b = 100. Only a caller
+that must fire per member pays either.
+
+The last column is the shape to warn authors about, because it is 15× the reducing form at
+b = 1 and nothing in the DSL discourages it. A body that puts the collection **into** its
+conclusion makes `Memory.add_fact/2` hash a fact that grows with the group, once per change.
+That is inherent to concluding a growing value, not a defect in the collection. See
+`docs/dsl.md`.
+
+### What an accumulator would and would not buy
+
+The engine has no collection gap left against Clara at these shapes. What an accumulator —
+a `defrule` that could say *count* rather than *gather, then count* — would add is narrower
+than earlier drafts of this section claimed.
+
+It would **not** reduce how often a rule fires. Clara's `right-activate-reduced` propagates
+whenever the reduced value differs from the previous one, and a count differs on every add,
+so `acc/count` re-fires as often as gathering does. What changes is what the token carries: a
+scalar the engine maintained once per member at O(1), rather than a list the body folds at
+O(k) per firing. That is the body's share above, and nothing else.
+
+For collect-all it buys nothing at all, in either engine. Clara's add path is incremental —
+it folds new facts into the previous reduced value rather than re-reducing — but for `acc/all`
+the reduced value *is* the list, so it changes on every member and the body receives the whole
+thing. Retraction is worse there than here: `drop-one-of` walks the collection twice and
+rebuilds it, where `List.delete/2` walks once and shares the tail past the removal. `min` and
+`max` carry no `retract-fn` and re-reduce the group.
+
+`min` and `max` are the one case that would also cut firings, because a new member usually does
+not move the answer and the differs-from-previous check suppresses the propagation.
+
+So the case for an accumulator is an intersection of two conditions: a caller that fires per
+member, and a reduction to a scalar. That is the 17 ms cell above. Everywhere else, batching
+or the shape of the reduction has already taken it.
 
 ### Indexes are built on first use
 

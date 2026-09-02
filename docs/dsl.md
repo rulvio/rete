@@ -326,10 +326,23 @@ Gathering is cheap. A member is prepended, so a change costs the engine one cons
 the list the body receives is the one the engine already holds. Reducing that list to a
 number in the right hand side, as above, is the shape the engine is built for.
 
-**Do not put the collection itself into a conclusion.** `{:spend, name, orders}` concludes a
-fact that grows with the group, and the engine hashes that whole fact on every member
-change. Measured over 4,000 members added one at a time, that is 410 ms against 21 ms for
-the reducing form. Conclude what you computed, not what you gathered.
+What the rest costs depends on **how members arrive**, not on how many there are. Everything
+inserted in one call is one change, so the rule fires once per call rather than once per
+member. Over 4,000 members:
+
+| members per `insert` call | body reduces the list | body concludes the list |
+|---|---|---|
+| 1 | 27 ms | 408 ms |
+| 10 | 4.6 ms | 43 ms |
+| 100 | 3.0 ms | 6.8 ms |
+| all 4,000 | 3.4 ms | 3.3 ms |
+
+So **insert in batches** where the caller can. Both columns fall with the batch, and by 100 a
+member at a time neither costs anything worth naming.
+
+Where you cannot batch — one event per call — **conclude what you computed, not what you
+gathered.** `{:spend, name, orders}` concludes a fact that grows with the group, and the
+engine hashes that whole fact on every change. That is the 408 ms against 27 ms above.
 
 ### The empty-collection rule
 
