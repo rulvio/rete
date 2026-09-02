@@ -10,7 +10,8 @@ locals_without_parens = [
   defquery: 1,
   defquery: 2,
   derive: 2,
-  underive: 2
+  underive: 2,
+  index: 2
 ]
 
 [

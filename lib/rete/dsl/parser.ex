@@ -96,7 +96,28 @@ defmodule Rete.DSL.Parser do
   # such declaration any more. `Rete.Session.query/3` accepts any variable the left hand
   # side binds. So a leftover `:params` would be silently ignored — the worst outcome for
   # something that used to change behaviour.
+  # `:internal_salience` and `:generated` are set by `Rete.Compiler.Negation` on the
+  # helper it extracts, not written by hand. They are listed because they are legal on a
+  # production, not because anyone should type them.
+  @known_opts [:salience, :internal_salience, :generated]
+
   defp check_opts!(name, opts) do
+    check_params!(name, opts)
+
+    case Keyword.keys(opts) -- @known_opts do
+      [] ->
+        :ok
+
+      unknown ->
+        raise ArgumentError,
+              "#{name} sets #{inspect(unknown)}, which is not an option. " <>
+                "The options map takes #{inspect(@known_opts)}. An index is declared " <>
+                "separately, with `index :#{name}, [...]`. A silently ignored option is " <>
+                "worse than a rejected one, so this is an error rather than a no-op."
+    end
+  end
+
+  defp check_params!(name, opts) do
     case Keyword.get(opts, :params) do
       nil ->
         :ok

@@ -22,6 +22,7 @@ defmodule Rete.Inspect do
   """
 
   alias Rete.Compiler.BetaGraph
+  alias Rete.Engine
   alias Rete.Engine.State
   alias Rete.Memory
   alias Rete.Network
@@ -233,6 +234,28 @@ defmodule Rete.Inspect do
     state.memory
     |> Memory.groups(node_id, join_key)
     |> Enum.flat_map(fn {_group, elements} -> Enum.map(elements, & &1.fact) end)
+  end
+
+  @doc """
+  Which index a query would use for a set of filters, or `:scan`.
+
+  `Rete.Ruleset.index/2` changes speed and nothing else, so an index that no call matches
+  is invisible: the query answers correctly and stays as slow as it was. This is how to
+  check that a declared index is the one a call reaches for.
+
+  A filter naming a superset of an index still uses it, and then narrows the bucket. A
+  filter naming less than any declared index scans.
+
+      Rete.Inspect.query_plan(session, {MyApp.Orders, :flagged_for}, cid: 1)
+      #=> {:index, [:cid]}
+
+      Rete.Inspect.query_plan(session, {MyApp.Orders, :flagged_for}, amt: 250)
+      #=> :scan
+  """
+  @spec query_plan(Session.t(), {module(), atom()}, keyword() | %{atom() => term()}) ::
+          {:index, [atom()]} | :scan
+  def query_plan(%Session{state: state}, ref, filters \\ []) do
+    Engine.query_plan(state, ref, filters)
   end
 
   defp describe_node(state, id) do

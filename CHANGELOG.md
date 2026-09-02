@@ -49,6 +49,26 @@ attributions made along the way.
 
 ### Added
 
+* `index/2`, which declares how a query's matches are bucketed. A filter covering a declared
+  key set reads one bucket instead of every match. Measured at 4,000 matches with one
+  returned: 200 calls take 97 ms unindexed and 0.07 ms indexed.
+
+  ```elixir
+  defquery flagged_for({:flagged, cid, tid, amt}), do: {cid, tid, amt}
+
+  index :flagged_for, [:cid]
+  index :flagged_for, [:cid, :tid]
+  ```
+
+  `[:cid, :tid]` is one index over both bindings. Two indexes are two lines. A declaration
+  may come before or after its query.
+
+  **An index changes speed, not results.** Every filter works, indexed or not, and returns
+  the same rows in the same order. It declares no parameters and permits nothing — the
+  caller may still filter on any bound variable. Declaring none is the default, and a query
+  without one behaves exactly as before.
+* `Rete.Inspect.query_plan/3`, which reports the index a filter would use, or `:scan`. A
+  declared index nothing matches is otherwise silently no faster.
 * `Rete.Bucket`, the tombstoned ordered multiset behind both working memory and the agenda.
   Internal.
 * `Rete.DisjunctionTest` and `Rete.CanonTest`. The first pins the compiler's claim that it
@@ -57,6 +77,9 @@ attributions made along the way.
 
 ### Fixed
 
+* The options map on `defrule` and `defquery` refused nothing it did not understand, so
+  `%{saliance: 10}` was silently ignored. Unknown keys now raise. This can break a ruleset
+  that passes a stray key.
 * The README claimed no profiling pass had been done and no benchmark suite existed. Both
   were false.
 * `docs/design/engine.md` attributed the collection quadratic to a walk that a control had

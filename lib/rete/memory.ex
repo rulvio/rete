@@ -152,6 +152,16 @@ defmodule Rete.Memory do
     tokens |> Map.get(node_id, %{}) |> bucket(key) |> Bucket.to_list()
   end
 
+  @doc """
+  The node id one of a query's indexes stores under.
+
+  A `node_id` is any term, so an index gets a namespace of its own rather than a second
+  keying of the query's own store. Two keyings under one id would collide in
+  `all_tokens/2`, which unions a node's buckets.
+  """
+  @spec index_id(node_id(), non_neg_integer()) :: node_id()
+  def index_id(node_id, position), do: {node_id, :index, position}
+
   @doc "Every token at a node, whatever its join key."
   @spec all_tokens(t(), node_id()) :: [Token.t()]
   def all_tokens(%__MODULE__{tokens: tokens}, node_id) do

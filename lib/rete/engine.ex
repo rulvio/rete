@@ -214,7 +214,7 @@ defmodule Rete.Engine do
     check_filters!(node, filters)
 
     state.memory
-    |> Memory.all_tokens(node.id)
+    |> candidates(node, filters)
     |> Enum.filter(fn %{bindings: bindings} ->
       Enum.all?(filters, fn {key, value} -> Map.get(bindings, key) == value end)
     end)
@@ -223,6 +223,59 @@ defmodule Rete.Engine do
 
   def query(%State{} = state, name, _filters) when is_atom(name) do
     raise ArgumentError, bare_name_message(state, name)
+  end
+
+  @doc """
+  Which index `filters` would use at a query, or `:scan`.
+
+  A declared index that no call ever uses is silently no faster, which is the one thing
+  that cannot be seen from the outside. This says so. See `Rete.Inspect.query_plan/3`.
+  """
+  @spec query_plan(State.t(), {module(), atom()}, keyword() | %{atom() => term()}) ::
+          {:index, [atom()]} | :scan
+  def query_plan(%State{} = state, ref, filters \\ []) do
+    node = query_node!(state, ref)
+    filters = normalize_filters(filters)
+    check_filters!(node, filters)
+
+    case usable_index(node, filters) do
+      nil -> :scan
+      {_position, keys} -> {:index, keys}
+    end
+  end
+
+  # The matches a filter could possibly select. With a usable index that is one bucket,
+  # and with none it is every match — which is what the filter above then narrows either
+  # way. So an index changes how many matches are considered, never which are returned.
+  #
+  # Arrival order survives. A bucket holds its tokens in arrival order, and the ones a
+  # filter selects are the same subsequence a scan of everything would have found.
+  defp candidates(memory, node, filters) do
+    case usable_index(node, filters) do
+      nil ->
+        Memory.all_tokens(memory, node.id)
+
+      {position, keys} ->
+        Memory.tokens(memory, Memory.index_id(node.id, position), Map.take(filters, keys))
+    end
+  end
+
+  # The largest declared key set the filter covers, so the bucket is as narrow as the
+  # declarations allow. Ties go to the first declared, so the choice is deterministic.
+  # A set the filter only partly covers is no use: its bucket key needs every one of them.
+  defp usable_index(%Node.Query{index: []}, _filters), do: nil
+
+  defp usable_index(%Node.Query{index: index}, filters) do
+    asked = filters |> Map.keys() |> MapSet.new()
+
+    index
+    |> Enum.with_index()
+    |> Enum.filter(fn {keys, _position} -> MapSet.subset?(MapSet.new(keys), asked) end)
+    |> Enum.max_by(fn {keys, _position} -> length(keys) end, fn -> nil end)
+    |> case do
+      nil -> nil
+      {keys, position} -> {position, keys}
+    end
   end
 
   defp bare_name_message(state, name) do

@@ -598,6 +598,32 @@ appended to that child list, which is O(children) per node added. Sharing is an 
 and children are stored newest first and reversed by `children/2`. Compiling 1,024 rules
 over one fact type went from an extrapolated ~225 ms to 7.7 ms.
 
+### Queries
+
+A query stores its matches under one key and filters them on the way out, so a filter that
+returns one row costs what returning every row costs. `Rete.Ruleset.index/2` declares key
+sets to bucket them by, and `Rete.Engine.Nodes` keeps one store per declared set under
+`Rete.Memory.index_id/2`. `Rete.Engine.query/3` then reads the largest declared set the
+filter covers.
+
+| 200 calls, 4,000 matches, one row returned | |
+|---|---|
+| no index | 97 ms |
+| `index :rows, [:cid]` | **0.07 ms** |
+
+Per call that is 0.3 µs, against Clara's 0.5 µs on the same probe. Flat in the match count,
+where the scan is linear in it.
+
+The unbucketed store stays whether or not an index exists. `Memory.all_tokens/2` unions a
+node's buckets in map order, so an unfiltered query read out of an index would order its
+rows by binding value rather than by arrival. `Rete.Inspect` also counts a node's tokens by
+its own id.
+
+Clara reaches the same place from the opposite direction. Its query params *are* its node's
+join keys, so its lookup is a map fetch — but the params are mandatory and exact, and it
+cannot filter partially at all. Declaring an index here constrains nothing: every filter
+still works, indexed or not.
+
 ### Memory
 
 Measured with `:erts_debug.size_shared/1`, which counts a shared subterm once. That is the

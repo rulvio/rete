@@ -531,6 +531,45 @@ order matters to you.**
 
 The *set* of rows never varies, and one feed always answers the same way.
 
+### Indexes
+
+A query answers by looking at every match it holds and keeping the ones the filter accepts.
+`index/2` buckets those matches by the bindings it names, so a filter over exactly those
+bindings reads one bucket instead of all of them:
+
+```elixir
+defquery flagged_for({:flagged, cid, tid, amt}) do
+  {cid, tid, amt}
+end
+
+index :flagged_for, [:cid]
+index :flagged_for, [:cid, :tid]
+```
+
+`[:cid, :tid]` is **one** index over both bindings. Write two lines for two indexes. Order
+within the list does not matter, and a declaration may come before or after its query.
+
+**An index changes speed, not results.** Every filter still works, indexed or not, and gives
+the same rows in the same order. This declares no parameters and permits nothing: the caller
+may still filter on any variable the left hand side binds. Declaring none is the default, and
+a query without one behaves exactly as it always has.
+
+A filter naming *more* than an index uses it and then narrows the bucket, so `[:cid]` above
+serves `cid: 1` and `cid: 1, amt: 250` alike. A filter naming *less* than every declared
+index — `amt: 250` on its own here — reads them all, as before.
+
+That last case is the trap: a declared index no call ever matches is silently no faster.
+`Rete.Inspect.query_plan/3` says which index a filter would use, or `:scan`:
+
+```elixir
+Rete.Inspect.query_plan(session, {MyApp.Orders, :flagged_for}, cid: 1)   #=> {:index, [:cid]}
+Rete.Inspect.query_plan(session, {MyApp.Orders, :flagged_for}, amt: 250) #=> :scan
+```
+
+An index costs one bucket entry per match per declared set, and nothing at all when none is
+declared. Measured at 4,000 matches with one returned: 97 ms for 200 unindexed calls against
+0.07 ms indexed.
+
 ## The right hand side
 
 The body of a rule computes the facts that follow from the match. It may return:

@@ -160,6 +160,10 @@ defmodule Rete.Session do
 
   The *set* of rows never varies, and one feed always answers the same way.
 
+  A query looks at every match it holds unless `Rete.Ruleset.index/2` declared an index the
+  filter covers. An index changes speed and nothing else: the rows and their order are the
+  same either way. `Rete.Inspect.query_plan/3` reports which index a filter would use.
+
       iex> alias Rete.Session
       iex> session =
       ...>   Session.new([Rete.Doc.Orders])

@@ -252,6 +252,22 @@ defmodule Bench.Width do
   end
 end
 
+defmodule Bench.Query do
+  @moduledoc false
+  use Rete.Ruleset
+
+  defquery rows({:rec, cid, amt}), do: {cid, amt}
+end
+
+defmodule Bench.IndexedQuery do
+  @moduledoc false
+  use Rete.Ruleset
+
+  defquery rows({:rec, cid, amt}), do: {cid, amt}
+
+  index :rows, [:cid]
+end
+
 defmodule Bench.Blocking do
   @moduledoc false
   use Rete.Ruleset
@@ -280,7 +296,6 @@ negation = Bench.network(Negation)
 unkeyed_negation = Bench.network(UnkeyedNegation)
 shared = Bench.network(Shared)
 blocking = Bench.network(Blocking)
-
 IO.puts("\n\e[1m\e[4mrete scaling\e[0m")
 
 Bench.scenario(
@@ -529,3 +544,52 @@ Bench.compare(
 )
 
 IO.puts("")
+
+# Scoped, and last. These need a loaded session per size alive at once, and a live heap
+# that large distorts every measurement taken after it — the whole suite reads as
+# superlinear. Inside a function the sessions become garbage when it returns, and the
+# harness collects before it times anything.
+(fn ->
+   query = Bench.network(Bench.Query)
+   indexed_query = Bench.network(Bench.IndexedQuery)
+
+   query_sessions =
+     for n <- [500, 1_000, 2_000, 4_000], into: %{} do
+       facts = for i <- 1..n, do: {:rec, i, i}
+
+       {n,
+        %{
+          plain:
+            query |> Bench.session() |> Rete.Session.insert(facts) |> Rete.Session.fire_rules(),
+          indexed:
+            indexed_query
+            |> Bench.session()
+            |> Rete.Session.insert(facts)
+            |> Rete.Session.fire_rules()
+        }}
+     end
+
+   # Only the indexed shape gets a scaling scenario. A scan's shape is linear in the match
+   # count, measured one session at a time in `docs/design/engine.md` §13. Measured here it
+   # would read as a step and then a plateau, which is the heap talking, not the engine.
+   Bench.scenario(
+     "a filtered query with an index, selecting 1 of n",
+     [500, 1_000, 2_000, 4_000],
+     fn n -> for _ <- 1..200, do: Bench.IndexedQuery.rows(query_sessions[n].indexed, cid: 1) end,
+     note: "`index :rows, [:cid]`, so the filter reads one bucket and n stops mattering"
+   )
+
+   Bench.compare(
+     "one filtered query over 4,000 matches, indexed and not",
+     [{"no index", :plain}, {"index [:cid]", :indexed}],
+     fn kind ->
+       session = query_sessions[4_000][kind]
+       module = if kind == :plain, do: Bench.Query, else: Bench.IndexedQuery
+
+       for _ <- 1..200, do: module.rows(session, cid: 1)
+     end,
+     note: "one row returned either way — the number `index/2` exists to move"
+   )
+
+   :ok
+ end).()

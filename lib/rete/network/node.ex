@@ -227,6 +227,10 @@ defmodule Rete.Network.Node do
 
     There is no parameter list. A query is its conditions and its body.
     `Rete.Engine.query/3` lets the caller constrain any variable in `:bind`.
+
+    `:index` is the key sets `Rete.Ruleset.index/2` declared, each sorted. A filter whose
+    keys are a superset of one of them reads a bucket instead of every match. It changes
+    speed and nothing else, so an empty list only means every filter scans.
     """
     @type t :: %__MODULE__{
             id: non_neg_integer() | nil,
@@ -234,9 +238,10 @@ defmodule Rete.Network.Node do
             module: module(),
             hash: integer(),
             rhs: fun(),
-            bind: [atom()]
+            bind: [atom()],
+            index: [[atom()]]
           }
-    defstruct [:id, :name, :module, :hash, :rhs, bind: []]
+    defstruct [:id, :name, :module, :hash, :rhs, bind: [], index: []]
   end
 
   @type t ::

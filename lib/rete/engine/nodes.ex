@@ -366,12 +366,26 @@ defmodule Rete.Engine.Nodes do
     {state, Enum.reverse(reversed)}
   end
 
+  # A query stores its matches under one key, so `Rete.Engine.query/3` can hand them all
+  # back in arrival order. A declared index stores them a second time, bucketed by the
+  # bindings it names, under its own node id. See `Rete.Ruleset.index/2`.
+  #
+  # The unbucketed store stays whether or not there are indexes. `Memory.all_tokens/2`
+  # unions a node's buckets in map order, so reading an unfiltered query out of an index
+  # would order its rows by binding value rather than by arrival.
   defp dispatch(%Node.Query{} = node, :left, tokens, %State{} = state) do
-    {%State{state | memory: Memory.add_tokens(state.memory, node.id, %{}, tokens)}, []}
+    memory =
+      state.memory
+      |> Memory.add_tokens(node.id, %{}, tokens)
+      |> index_tokens(node, tokens, &Memory.add_tokens/4)
+
+    {%State{state | memory: memory}, []}
   end
 
   defp dispatch(%Node.Query{} = node, :left_retract, tokens, %State{} = state) do
     {memory, _removed} = Memory.remove_tokens(state.memory, node.id, %{}, tokens)
+    memory = index_tokens(memory, node, tokens, &drop_tokens/4)
+
     {%State{state | memory: memory}, []}
   end
 
@@ -381,6 +395,29 @@ defmodule Rete.Engine.Nodes do
 
   defp dispatch(node, kind, _items, _state) do
     raise ArgumentError, "no #{kind} behaviour for #{inspect(node)}"
+  end
+
+  # Applies `fun` to each index's store. Tokens are grouped by the key set first, so one
+  # call covers every token that shares a bucket. `Rete.Memory.index_id/2` names the store.
+  defp index_tokens(memory, %Node.Query{index: []}, _tokens, _fun), do: memory
+
+  defp index_tokens(memory, %Node.Query{} = node, tokens, fun) do
+    node.index
+    |> Enum.with_index()
+    |> Enum.reduce(memory, fn {keys, position}, memory ->
+      tokens
+      |> Enum.group_by(&Token.join_key(&1, keys))
+      |> Enum.reduce(memory, fn {key, group}, memory ->
+        fun.(memory, Memory.index_id(node.id, position), key, group)
+      end)
+    end)
+  end
+
+  # `remove_tokens/4` returns what it found. An index only mirrors the store above it, so
+  # what it found is not news.
+  defp drop_tokens(memory, node_id, key, tokens) do
+    {memory, _removed} = Memory.remove_tokens(memory, node_id, key, tokens)
+    memory
   end
 
   # --- building matches ----------------------------------------------------------------
