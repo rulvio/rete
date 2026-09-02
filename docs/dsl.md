@@ -395,10 +395,11 @@ defrule biggest({:customer, cid}, orders = [{:order, cid, _amt}]) do
 end
 ```
 
-Sorting in the right hand side costs a pass each time the rule *fires*. Keeping the
-collection sorted internally would cost a pass each time a member *changes*, which over a
-group's lifetime is quadratic — so the engine leaves the choice, and the cost, with the
-rules that actually need it.
+The engine used to sort collections internally, so that `biggest` above happened to be
+stable. Do not rely on that returning: it cost a pass over the group every time a member
+changed, quadratic over the group's lifetime, to prop up the one kind of rule this section
+tells you not to write. Sorting in the right hand side costs a pass each time the rule
+*fires* instead — paid by the rules that need it, when they need it.
 
 ## Taxonomy
 

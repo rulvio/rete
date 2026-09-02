@@ -216,11 +216,15 @@ defmodule Rete.Memory do
   Adds one member to a collection group, in front of the ones already there. O(1).
 
   **Reverse arrival order, and no sort.** The new list shares its whole tail with the old
-  one, so adding a member allocates a single cons cell however large the group is. The
-  order a collection comes back in is not a contract — see `docs/dsl.md` — and sorting to
-  make it a function of the fact set costs O(k) per change, which is quadratic over a
-  group's lifetime. A rule that needs a particular order sorts in its own right hand side,
-  where it is paid for once per firing instead of once per member.
+  one, so adding a member allocates a single cons cell however large the group is.
+
+  Do not reintroduce a sort here. This node used to keep members in term order, so that a
+  collection's order — and not merely its membership — was a function of the fact set.
+  Nothing asks for that: `docs/dsl.md` has always said a rule may not depend on the
+  gathered order, so the sort could only ever help rules that were already outside the
+  contract, and it charged O(k) to every member change of every collection to do it. A rule
+  that needs a particular order sorts in its own right hand side, once per firing rather
+  than once per member.
   """
   @spec add_to_group(t(), node_id(), key(), key(), term()) :: t()
   def add_to_group(%__MODULE__{} = memory, node_id, key, group_key, member) do

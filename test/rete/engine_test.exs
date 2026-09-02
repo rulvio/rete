@@ -397,17 +397,16 @@ defmodule Rete.EngineTest do
       end
     end
 
-    # A collection gathers in **reverse arrival order** and does not sort. This is
-    # the one place the engine's order independence stops: a rule that puts its
-    # collection into a conclusion, rather than reducing it to something
-    # order-insensitive, produces a different fact for a different feed. `docs/dsl.md`
-    # says a rule may not depend on the gathered order for exactly this reason —
-    # sort in the right hand side if the order matters.
+    # A collection gathers in **reverse arrival order** and does not sort. So a rule
+    # that puts its collection into a conclusion, rather than reducing it to
+    # something order-insensitive, produces a different fact for a different feed.
+    # `docs/dsl.md` says a rule may not depend on the gathered order for exactly
+    # this reason — sort in the right hand side if the order matters.
     #
-    # The alternative was to insert members in term order, which makes a collection
-    # a function of its fact set but costs O(k) on every member change, because the
-    # position has to be found by walking. Prepending is O(1) and shares the whole
-    # tail. See `Rete.Memory.add_to_group/5`.
+    # The engine used to sort internally, which made such a rule stable by accident
+    # and cost O(k) on every member change to do it, because the position had to be
+    # found by walking. Nothing in the contract asked for it. Prepending is O(1) and
+    # shares the whole tail. See `Rete.Memory.add_to_group/5`.
     test "a collection gathers in reverse arrival order, and does not sort" do
       forwards =
         run([Ordered], [{:customer, 1}, {:order, 1, 10}, {:order, 1, 20}, {:order, 1, 30}])
@@ -440,8 +439,9 @@ defmodule Rete.EngineTest do
     # A member taken out and put back comes back at the **front**, not where it
     # was, because a collection gathers in arrival order. So the round trip
     # restores the membership and not the sequence, and a rule that puts its
-    # collection into a conclusion sees that conclusion change. The cost of
-    # prepending, stated where someone will trip over it.
+    # collection into a conclusion sees that conclusion change. Pinned here so the
+    # behaviour is written down where someone will meet it, not so it is defended:
+    # the sequence was never something a rule was entitled to.
     test "retracting and reinserting a collection member moves it to the front" do
       base = run([Ordered], [{:customer, 1}, {:order, 1, 10}, {:order, 1, 20}, {:order, 1, 30}])
 

@@ -183,9 +183,10 @@ cheap: the old collection and the new one are both in hand, sharing every cons c
 one, with nothing built to produce either. Sorting instead would mean walking the group to
 find each member's position, which is O(k) per change and quadratic over a group's life.
 
-The cost is that a collection's *order* is no longer a function of its fact set, only its
-*membership* is. See `network.md` §3 for what that gives up, and `docs/dsl.md` for the
-rule it puts on rule authors.
+A collection's *order* is therefore not a function of its fact set; its *membership* is.
+The engine used to sort to make the order one too, which nothing had asked for and every
+collection paid for. See `network.md` §3, and `docs/dsl.md` for the rule it puts on rule
+authors.
 
 ## 6. The root token
 
@@ -545,8 +546,11 @@ the rule instead.
   batch shapes and at one member per call, which is the only one of the three that no
   amount of batching helps.
 
-  The collection fix is the only one that cost a semantic guarantee, and it is the reason
-  those three rows moved as far as they did. See `network.md` §3.
+  The three collection rows are one fix, and it is the only one that changed what the
+  engine guarantees. It withdrew a guarantee that should never have been made: collections
+  were sorted so that their order, and not merely their membership, was a function of the
+  fact set. Nothing in the contract asked for that, and it cost O(k) on every member change
+  to provide. See `network.md` §3.
 
   Two of the fixes are indexes, and an index is a trade, not a free lunch. Maintaining
   `inserters` costs about 13% of a settling pass that never re-concludes anything, and
