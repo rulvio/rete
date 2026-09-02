@@ -511,7 +511,10 @@ defmodule Rete.PropertyTest do
       # rather than forcing a build. `Rete.Inspect.derivations/2` takes it, so it
       # has to agree with the index for every fact the session holds.
       check all(facts <- multiset(), facts != [], max_runs: 40) do
-        memory = facts |> build() |> Map.fetch!(:state) |> Map.fetch!(:memory)
+        # Matched out rather than fetched, so the struct update below is one the
+        # compiler can check: `Map.fetch!/2` gives back `dynamic()`, and
+        # `%Rete.Memory{memory | ...}` needs to know it is updating a memory.
+        %Session{state: %{memory: %Rete.Memory{} = memory}} = build(facts)
         unbuilt = %Rete.Memory{memory | inserters: nil}
         built = Rete.Memory.index_inserters(unbuilt)
 
