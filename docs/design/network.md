@@ -94,17 +94,25 @@ guarded collection over otherwise-local variables is ungrouped, and it does prop
 **A rule may not depend on the order of the list it receives.** Sort the list in the right
 hand side, if order matters to you.
 
-The engine does in fact keep collections in a deterministic order. It inserts elements by
-term order, instead of appending them on arrival. So the same fact set always produces the
-same list, whatever order the facts arrived in. A retract-and-reinsert round trip restores
-that exact order.
+The engine gathers in **reverse arrival order**: a member is prepended, and nothing is
+sorted. So the same facts fed in a different order produce a different list, and a member
+retracted and re-inserted comes back at the front rather than where it was.
 
-This is deliberate. Without it, a rule that returns its collection would produce a
-different fact depending on insertion order. The engine's order-independence property
-would then hold for every rule except that one.
+The engine used to insert members in term order instead, so that a collection's order was
+a function of its fact set. **That was a mistake**, and it was an expensive one. Finding an
+arriving member's position meant walking the group, so every member change cost O(k) and
+filling a collection was quadratic in its size. Prepending is O(1), and the new list shares
+its whole tail with the old one.
 
-But this is an implementation guarantee, not a contract. Term order is arbitrary from the
-rule author's point of view. Nothing about it is useful to build on.
+The mistake was not the implementation, it was the promise. Nothing asked for it. The
+contract has always said a rule may not depend on the gathered order, so the only rules the
+sort could possibly help were the ones this page tells you not to write — and every other
+rule in the session paid for them. `mix bench` puts the bill at 31 ms against 4 ms for
+filling one collection of 1,000 members.
+
+What was never in question: the *membership* of a collection is a function of its fact set.
+Two feeds agree on what a collection holds, and a retract-and-reinsert round trip restores
+it. Only the sequence moves, and the sequence was never promised.
 
 ---
 

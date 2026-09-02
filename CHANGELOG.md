@@ -4,6 +4,93 @@ All notable changes to `rete` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+A performance pass. Six quadratics removed, and three orderings changed.
+
+### Changed
+
+Three orderings moved. Every one of them was documented as **unspecified** before this
+release, so none was a promise. Each was costing real time to hold steady.
+
+* **A collection gathers in reverse arrival order, and does not sort.** The same facts fed
+  in a different order now produce a different list, and a member retracted and reinserted
+  comes back at the front. What a collection *holds* is still a function of the fact set.
+  Sort in the right hand side if the order matters. See `docs/design/network.md` §3.
+* **Query rows follow the order the facts arrived.** `Rete.Session.query/3` no longer sorts
+  its result. The *set* of rows never varies, and one feed always answers the same way.
+* **A rule reached by two routes within one `insert` call** now sees all of one route's
+  matches before any of the other's, instead of interleaving them fact by fact. A rule's own
+  matches still arrive in fact order. `{:propagated, ...}` events coarsen with it: fewer
+  events, larger counts, same shape.
+
+### Performance
+
+`mix bench` grew from nine scenarios to seventeen. The eight added cover the shapes the
+original suite could not see, and each has a control beside it. All seventeen are linear.
+
+| scenario | was | now |
+|---|---|---|
+| two rules concluding the same fact | `~n^1.93`, 193 ms | `~n^0.9`, 6 ms |
+| filling one collection behind a live token | `~n^2.37`, 48 ms | `~n^0.9`, 0.6 ms |
+| filling one collection, no token yet | `~n^1.99`, 14 ms | `~n^1.0`, 0.7 ms |
+| filling one collection one member at a time | `~n^1.78`, 31 ms | `~n^1.1`, 4 ms |
+| an unkeyed negation taking n blockers | `~n^1.72`, 30 ms | `~n^1.1`, 5 ms |
+| cancel n pending activations of one rule | `~n^1.51`, 17 ms | `~n^1.1`, 8 ms |
+
+Compiling 1,024 rules over one fact type went from an extrapolated ~225 ms to 7.7 ms. Beta
+node sharing is an index now, rather than a scan of every child of every parent.
+
+Sessions that only insert got about 30% faster. The two indexes that make retraction cheap
+are built on first use, so a session that never retracts never pays for them.
+
+Gathering into a collection is linear. What a collection costs after that depends on how
+members arrive, because everything inserted in one call is one change. Over 4,000 members
+arriving one per call, a rule that reduces its collection costs 27 ms, and one that concludes
+a fact **holding** the collection costs 408 ms. Arriving a hundred per call, the same two cost
+3.0 ms and 6.8 ms. Batch inserts where you can. See `docs/dsl.md`.
+
+`docs/design/engine.md` §13 carries the measurements, the trades, and the three wrong
+attributions made along the way.
+
+### Added
+
+* `index/2`, which declares how a query's matches are bucketed. A filter covering a declared
+  key set reads one bucket instead of every match. Measured at 4,000 matches with one
+  returned: 200 calls take 97 ms unindexed and 0.07 ms indexed.
+
+  ```elixir
+  defquery flagged_for({:flagged, cid, tid, amt}), do: {cid, tid, amt}
+
+  index :flagged_for, [:cid]
+  index :flagged_for, [:cid, :tid]
+  ```
+
+  `[:cid, :tid]` is one index over both bindings. Two indexes are two lines. A declaration
+  may come before or after its query.
+
+  **An index changes speed, not results.** Every filter works, indexed or not, and returns
+  the same rows in the same order. It declares no parameters and permits nothing — the
+  caller may still filter on any bound variable. Declaring none is the default, and a query
+  without one behaves exactly as before.
+* `Rete.Inspect.query_plan/3`, which reports the index a filter would use, or `:scan`. A
+  declared index nothing matches is otherwise silently no faster.
+* `Rete.Bucket`, the tombstoned ordered multiset behind both working memory and the agenda.
+  Internal.
+* `Rete.DisjunctionTest` and `Rete.CanonTest`. The first pins the compiler's claim that it
+  never flattens a left hand side to disjunctive normal form, and the 256-branch cap, which
+  had no test in either direction.
+
+### Fixed
+
+* The options map on `defrule` and `defquery` refused nothing it did not understand, so
+  `%{saliance: 10}` was silently ignored. Unknown keys now raise. This can break a ruleset
+  that passes a stray key.
+* The README claimed no profiling pass had been done and no benchmark suite existed. Both
+  were false.
+* `docs/design/engine.md` attributed the collection quadratic to a walk that a control had
+  seemed to confirm and had not.
+
 ## 0.2.0
 
 Documentation and a dependency bump. No change to the DSL, the compiler or the engine.

@@ -8,11 +8,11 @@ defmodule Rete.DoctestsTest do
   use ExUnit.Case, async: true
 
   doctest Rete.Activation
+  doctest Rete.Bucket
   doctest Rete.Element
   doctest Rete.Listener
   doctest Rete.Listener.Collect
   doctest Rete.Memory
-  doctest Rete.Memory.Bucket
   doctest Rete.Network.Node
   doctest Rete.Session
   doctest Rete.Token

@@ -99,7 +99,36 @@ defmodule Rete.Engine do
 
   # Batches are collected newest first. Appending per fact would be quadratic in the size
   # of one insert. Propagation order decides the order matches reach the agenda.
-  defp ordered_ops(batches), do: batches |> Enum.reverse() |> Enum.concat()
+  defp ordered_ops(batches) do
+    batches |> Enum.reverse() |> Enum.concat() |> coalesce()
+  end
+
+  # Merges the ops of one call that go the same way to the same node, so a node is handed a
+  # batch instead of one element per call. A node's per-call work is not all per item. It
+  # dispatches, groups by join key, and at a negation or a collection reads back what it
+  # already holds. Paying that once per fact is what made an unkeyed negation quadratic.
+  #
+  # **This decides an order.** A rule's own matches still arrive in fact order. A rule
+  # reached by two routes now sees all of one route's matches before the other's. See
+  # `docs/design/engine.md` §5.
+  defp coalesce([]), do: []
+  defp coalesce([_only] = ops), do: ops
+
+  defp coalesce(ops) do
+    {merged, targets} =
+      Enum.reduce(ops, {%{}, []}, fn {direction, child, items}, {merged, targets} ->
+        target = {direction, child}
+
+        case merged do
+          %{^target => batches} -> {%{merged | target => [items | batches]}, targets}
+          _ -> {Map.put(merged, target, [items]), [target | targets]}
+        end
+      end)
+
+    for {direction, child} = target <- Enum.reverse(targets) do
+      {direction, child, merged |> Map.fetch!(target) |> Enum.reverse() |> Enum.concat()}
+    end
+  end
 
   @doc """
   Fires until the agenda is empty.
@@ -169,8 +198,11 @@ defmodule Rete.Engine do
   `filters` narrows the matches by equality on the *bindings*, before the body runs. It
   may name any variable the left hand side binds.
 
-  Row order is **unspecified**. It is deterministic for a given set of facts. But nothing
-  about that order is a guarantee to build on.
+  Row order is **unspecified**. Rows follow the order the facts arrived in.
+
+  This used to sort every result, so that one fact set always answered the same way. The
+  contract never promised that, and the sort cost O(n log n) on every call. The rows are
+  the same without it. Only their sequence moves.
   """
   @spec query(State.t(), {module(), atom()}, keyword() | %{atom() => term()}) :: [term()]
   def query(state, ref, filters \\ [])
@@ -182,18 +214,68 @@ defmodule Rete.Engine do
     check_filters!(node, filters)
 
     state.memory
-    |> Memory.all_tokens(node.id)
+    |> candidates(node, filters)
     |> Enum.filter(fn %{bindings: bindings} ->
       Enum.all?(filters, fn {key, value} -> Map.get(bindings, key) == value end)
     end)
     |> Enum.map(&node.rhs.(node.hash, &1.bindings))
-    # Beta memory is arrival ordered. Without this sort, the same facts, inserted in a
-    # different order, would answer the same query in a different order.
-    |> Enum.sort()
   end
 
   def query(%State{} = state, name, _filters) when is_atom(name) do
     raise ArgumentError, bare_name_message(state, name)
+  end
+
+  @doc """
+  Which index `filters` would use at a query, or `:scan`.
+
+  A declared index that no call ever uses is silently no faster, which is the one thing
+  that cannot be seen from the outside. This says so. See `Rete.Inspect.query_plan/3`.
+  """
+  @spec query_plan(State.t(), {module(), atom()}, keyword() | %{atom() => term()}) ::
+          {:index, [atom()]} | :scan
+  def query_plan(%State{} = state, ref, filters \\ []) do
+    node = query_node!(state, ref)
+    filters = normalize_filters(filters)
+    check_filters!(node, filters)
+
+    case usable_index(node, filters) do
+      nil -> :scan
+      {_position, keys} -> {:index, keys}
+    end
+  end
+
+  # The matches a filter could possibly select. With a usable index that is one bucket,
+  # and with none it is every match — which is what the filter above then narrows either
+  # way. So an index changes how many matches are considered, never which are returned.
+  #
+  # Arrival order survives. A bucket holds its tokens in arrival order, and the ones a
+  # filter selects are the same subsequence a scan of everything would have found.
+  defp candidates(memory, node, filters) do
+    case usable_index(node, filters) do
+      nil ->
+        Memory.all_tokens(memory, node.id)
+
+      {position, keys} ->
+        Memory.tokens(memory, Memory.index_id(node.id, position), Map.take(filters, keys))
+    end
+  end
+
+  # The largest declared key set the filter covers, so the bucket is as narrow as the
+  # declarations allow. Ties go to the first declared, so the choice is deterministic.
+  # A set the filter only partly covers is no use: its bucket key needs every one of them.
+  defp usable_index(%Node.Query{index: []}, _filters), do: nil
+
+  defp usable_index(%Node.Query{index: index}, filters) do
+    asked = filters |> Map.keys() |> MapSet.new()
+
+    index
+    |> Enum.with_index()
+    |> Enum.filter(fn {keys, _position} -> MapSet.subset?(MapSet.new(keys), asked) end)
+    |> Enum.max_by(fn {keys, _position} -> length(keys) end, fn -> nil end)
+    |> case do
+      nil -> nil
+      {keys, position} -> {position, keys}
+    end
   end
 
   defp bare_name_message(state, name) do
@@ -441,7 +523,7 @@ defmodule Rete.Engine do
   # The engine records facts against the token before inserting them. So retracting the
   # token later finds them, even if the insertion cascades.
   defp conclude(%State{} = state, %Activation{token: token}, node, result) do
-    facts =
+    {state, facts} =
       result
       |> unwrap!(node, token)
       |> check_facts!(state, node, token)
@@ -482,30 +564,44 @@ defmodule Rete.Engine do
   # Drops a conclusion the match already rests on, so it cannot support itself. This runs
   # only when the fact is already present, since that is the only way the cycle can
   # close. See `docs/design/engine.md` §8.
+  #
+  # Returns the state, because reaching the support index is what builds it. A ruleset
+  # where no rule ever re-concludes never gets here, and so never pays for it.
   defp well_founded(facts, %State{} = state, token) do
     if Enum.any?(facts, &Map.has_key?(state.memory.facts, &1)) do
+      state = %State{state | memory: Memory.index_inserters(state.memory)}
       support = support_closure(state, token)
-      Enum.reject(facts, &MapSet.member?(support, &1))
+
+      {state, Enum.reject(facts, &MapSet.member?(support, &1))}
     else
-      facts
+      {state, facts}
     end
   end
 
   # Every fact the match rests on. This is the facts it matched, plus what the match that
   # concluded each of those rested on, down to what the user asserted.
+  #
+  # Walks `Rete.Memory.inserters/2`, which is maintained as insertions are recorded. This
+  # used to build that index on the spot, from every insertion record in the session, on
+  # every conclusion that was already present — which made two rules concluding one fact
+  # quadratic in the number of conclusions.
   defp support_closure(%State{memory: memory}, token) do
-    walk(MapSet.new(), matched_facts(token), inserted_by(memory))
+    walk(MapSet.new(), matched_facts(token), memory)
   end
 
-  @spec walk(MapSet.t(), [term()], %{optional(term()) => [Token.t()]}) :: MapSet.t()
-  defp walk(seen, [], _inserters), do: seen
+  @spec walk(MapSet.t(), [term()], Memory.t()) :: MapSet.t()
+  defp walk(seen, [], _memory), do: seen
 
-  defp walk(seen, [fact | rest], inserters) do
+  defp walk(seen, [fact | rest], memory) do
     if MapSet.member?(seen, fact) do
-      walk(seen, rest, inserters)
+      walk(seen, rest, memory)
     else
-      supports = inserters |> Map.get(fact, []) |> Enum.flat_map(&matched_facts/1)
-      walk(MapSet.put(seen, fact), supports ++ rest, inserters)
+      supports =
+        memory
+        |> Memory.inserters(fact)
+        |> Enum.flat_map(fn {_node_id, token} -> matched_facts(token) end)
+
+      walk(MapSet.put(seen, fact), supports ++ rest, memory)
     end
   end
 
@@ -513,18 +609,6 @@ defmodule Rete.Engine do
   # which one a set threaded through a local recursion holds. This set never leaves these
   # two functions, and only `MapSet.new/0` and `MapSet.put/2` build it.
   @dialyzer {:no_opaque, walk: 3, well_founded: 3}
-
-  # fact => the tokens whose activation inserted it. Built on demand, since it is only
-  # needed for a conclusion that is already present.
-  defp inserted_by(%Memory{insertions: insertions}) do
-    for {_node_id, by_token} <- insertions,
-        {token, batches} <- by_token,
-        batch <- batches,
-        fact <- batch,
-        reduce: %{} do
-      acc -> Map.update(acc, fact, [token], &[token | &1])
-    end
-  end
 
   # A collection match holds the list it gathered, and rests on every member of it.
   defp matched_facts(%Token{} = token) do

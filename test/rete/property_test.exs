@@ -13,10 +13,12 @@ defmodule Rete.PropertyTest do
   tokens, collection groups and truth-maintenance records.
 
   Two memories built from the same facts in different orders are not `==`,
-  because a node's element list is appended to as facts arrive. `canon/1` sorts
-  every leaf list and nothing else: no entry is dropped and no duplicate is
-  collapsed, so a support imbalance still shows. Where the comparison can be
-  exact — a round trip on one session, a full drain — it is exact.
+  because a node's element list is appended to as facts arrive, and a collection
+  gathers in reverse arrival order. `canon/1` sorts every leaf list, and every
+  collection a token carries, and nothing else: no entry is dropped and no
+  duplicate is collapsed, so a support imbalance still shows. Where the
+  comparison can be exact — a round trip on one session, a full drain — it is
+  exact. See `Rete.Test.Canon`.
 
   The second is the **oracle**. `expected/1` computes what the ruleset means over
   a fact multiset, in plain `for` comprehensions, counting one support per match.
@@ -30,6 +32,7 @@ defmodule Rete.PropertyTest do
 
   alias Rete.Listener.Collect
   alias Rete.Session
+  alias Rete.Test.Canon
 
   # --- the ruleset -----------------------------------------------------------------
 
@@ -156,38 +159,20 @@ defmodule Rete.PropertyTest do
 
   defp counts(session), do: session.state.memory.facts
 
-  # Deep-sorts every leaf list of the memory. Order of arrival is not part of
-  # what a session means, but multiplicity is: nothing here dedups.
+  # Deep-sorts every leaf list of the memory, and every collection a token
+  # carries. Order of arrival is not part of what a session means, but
+  # multiplicity is: nothing here dedups. See `Rete.Test.Canon` for exactly what
+  # is normalised away and why that is safe over this fixture.
   #
   # Goes through `Rete.Memory.dump/1` rather than the struct: a bucket keeps
   # retracted items as tombstones until it compacts, so two memories holding
   # exactly the same matches can hold different bucket internals. The dump is
   # the view that means something.
-  defp canon(%Session{state: %{memory: memory}}) do
-    dump = Rete.Memory.dump(memory)
+  defp canon(%Session{} = session), do: Canon.dump(session)
 
-    %{
-      elements: sort_leaves(dump.elements),
-      tokens: sort_leaves(dump.tokens),
-      accum: Map.new(dump.accum, fn {id, by_key} -> {id, sort_leaves(by_key)} end),
-      insertions: Map.new(dump.insertions, fn {id, by_token} -> {id, batches(by_token)} end),
-      facts: dump.facts,
-      root_seeded?: dump.root_seeded?
-    }
-  end
-
-  defp sort_leaves(by_key) do
-    Map.new(by_key, fn
-      {key, list} when is_list(list) -> {key, Enum.sort(list)}
-      {key, map} when is_map(map) -> {key, sort_leaves(map)}
-    end)
-  end
-
-  defp batches(by_token) do
-    Map.new(by_token, fn {token, batches} ->
-      {token, Enum.sort(Enum.map(batches, &Enum.sort/1))}
-    end)
-  end
+  # The exact view: every match, in order, but without the derived state a
+  # `Rete.Bucket` carries — its tombstones, and whether its index has been built.
+  defp dump(%Session{state: %{memory: memory}}), do: Rete.Memory.dump(memory)
 
   # --- the oracle ---------------------------------------------------------------------
 
@@ -404,7 +389,12 @@ defmodule Rete.PropertyTest do
         # Equality with a fresh session, not "everything is empty": that is what
         # pins "exactly one root token" and "no join key left pointing at an
         # empty map", neither of which an emptiness check can see.
-        assert fresh().state.memory == drained.state.memory
+        #
+        # Through the dump, which is what `Rete.Memory.dump/1` exists for. The
+        # struct additionally carries derived state — a bucket's tombstones and
+        # whether its index has been built — and a session that drained something
+        # legitimately differs there from one that never held anything.
+        assert dump(fresh()) == dump(drained)
       end
     end
 
@@ -412,7 +402,7 @@ defmodule Rete.PropertyTest do
       check all(facts <- multiset(), max_runs: 40) do
         drained = facts |> build() |> Session.retract(facts) |> Session.fire_rules()
 
-        assert fresh().state.memory == drained.state.memory
+        assert dump(fresh()) == dump(drained)
       end
     end
 
@@ -482,6 +472,73 @@ defmodule Rete.PropertyTest do
           assert list == Enum.uniq(list),
                  "node #{inspect(node_id)} holds a duplicate under #{inspect(key)}"
         end
+      end
+    end
+
+    property "the inserters index says exactly what the insertion records say" do
+      # `inserters` is `insertions` turned around. It is built on first use and
+      # maintained in step after that, which means it can drift in a way nothing
+      # else notices: the engine reads it only for a conclusion that is already
+      # present, so a stale entry stays invisible until the one ruleset that
+      # re-concludes something trips over it. Rebuild it the slow way and compare,
+      # after retractions have had a chance to leave one behind.
+      #
+      # `index_inserters/1` returns the memory unchanged when the session already
+      # built one, so this checks the *maintained* index wherever the run reached
+      # for it, and a fresh build where it never did. `Everything` re-concludes —
+      # two thresholds under one order flag the same fact twice — so the
+      # maintained path is the usual one here.
+      check all(facts <- multiset(), facts != [], max_runs: 60) do
+        session = build(facts)
+
+        for dropped <- Enum.uniq(facts) do
+          memory =
+            session
+            |> Session.retract(dropped)
+            |> Session.fire_rules()
+            |> Map.fetch!(:state)
+            |> Map.fetch!(:memory)
+            |> Rete.Memory.index_inserters()
+
+          assert rebuilt_inserters(memory) == memory.inserters,
+                 "the index disagrees with the records after retracting #{inspect(dropped)}"
+        end
+      end
+    end
+
+    property "an unbuilt index answers the same as a built one" do
+      # The fallback path in `Rete.Memory.inserters/2`, which scans `insertions`
+      # rather than forcing a build. `Rete.Inspect.derivations/2` takes it, so it
+      # has to agree with the index for every fact the session holds.
+      check all(facts <- multiset(), facts != [], max_runs: 40) do
+        # Matched out rather than fetched, so the struct update below is one the
+        # compiler can check: `Map.fetch!/2` gives back `dynamic()`, and
+        # `%Rete.Memory{memory | ...}` needs to know it is updating a memory.
+        %Session{state: %{memory: %Rete.Memory{} = memory}} = build(facts)
+        unbuilt = %Rete.Memory{memory | inserters: nil}
+        built = Rete.Memory.index_inserters(unbuilt)
+
+        for fact <- Rete.Memory.facts(memory) do
+          assert Enum.sort(Rete.Memory.inserters(unbuilt, fact)) ==
+                   Enum.sort(Rete.Memory.inserters(built, fact)),
+                 "the scan and the index disagree about #{inspect(fact)}"
+        end
+      end
+    end
+
+    # What `Rete.Memory.inserters/2` used to do on every call: one entry per
+    # occurrence of a fact in a batch, so a rule that concluded the same fact twice
+    # in one activation counts twice.
+    defp rebuilt_inserters(memory) do
+      for {node_id, by_token} <- memory.insertions,
+          {token, batches} <- by_token,
+          batch <- batches,
+          fact <- batch,
+          reduce: %{} do
+        acc ->
+          Map.update(acc, fact, %{{node_id, token} => 1}, fn refs ->
+            Map.update(refs, {node_id, token}, 1, &(&1 + 1))
+          end)
       end
     end
 
@@ -659,7 +716,7 @@ defmodule Rete.PropertyTest do
         s |> Session.retract(f) |> Session.fire_rules()
       end)
 
-    assert fresh().state.memory == drained.state.memory
+    assert dump(fresh()) == dump(drained)
   end
 
   # --- queries follow the same facts ------------------------------------------------------------------
@@ -733,13 +790,13 @@ defmodule Rete.PropertyTest do
   end
 
   # A bucket does not remove anything when it is asked to: it marks the
-  # occurrence dead and leaves it in the stack, which is what makes retraction
+  # occurrence dead and leaves it in the queue, which is what makes retraction
   # O(1) whatever the bucket holds. The debt is only bounded because compaction
   # clears it once the dead outnumber the living — so that bound is the contract,
-  # and without it a long-lived session would grow a stack of tombstones that
+  # and without it a long-lived session would grow a queue of tombstones that
   # nothing above `to_list/1` could see.
   describe "a bucket's tombstones" do
-    alias Rete.Memory.Bucket
+    alias Rete.Bucket
 
     property "never outnumber the living by more than one" do
       check all(ops <- list_of(one_of([{:push, element()}, {:take, element()}]), max_length: 60)) do
@@ -751,14 +808,15 @@ defmodule Rete.PropertyTest do
             {:take, item}, bucket ->
               case Bucket.take(bucket, item) do
                 {:ok, bucket} -> bucket
-                :error -> bucket
+                {:error, bucket} -> bucket
               end
           end)
 
         live = length(Bucket.to_list(bucket))
+        held = :queue.len(bucket.queue)
 
-        assert length(bucket.stack) <= 2 * live + 1,
-               "stack of #{length(bucket.stack)} holding #{live} live items has not compacted"
+        assert held <= 2 * live + 1,
+               "queue of #{held} holding #{live} live items has not compacted"
       end
     end
 
@@ -773,7 +831,7 @@ defmodule Rete.PropertyTest do
 
       assert Bucket.empty?(emptied)
       assert [] == Bucket.to_list(emptied)
-      assert [] == emptied.stack, "a fully drained bucket still holds tombstones"
+      assert [] == :queue.to_list(emptied.queue), "a fully drained bucket still holds tombstones"
     end
 
     # The subtle one. Equal items are interchangeable in a set and are not in a
@@ -785,6 +843,108 @@ defmodule Rete.PropertyTest do
 
       assert [el(:b), el(:c)] == Bucket.to_list(bucket)
     end
+
+    # `pop/1` is the agenda's read. It has to agree with `to_list/1` about which
+    # occurrence is next, or a cancelled activation would fire and a live one would
+    # not — and it has to discard the tombstones it steps over, or skipping one
+    # would be paid for again on the next pop.
+    property "popping drains a bucket in exactly the order to_list reports" do
+      check all(ops <- list_of(one_of([{:push, element()}, {:take, element()}]), max_length: 60)) do
+        bucket =
+          Enum.reduce(ops, Bucket.new(), fn
+            {:push, item}, bucket ->
+              Bucket.push(bucket, [item])
+
+            {:take, item}, bucket ->
+              case Bucket.take(bucket, item) do
+                {:ok, bucket} -> bucket
+                {:error, bucket} -> bucket
+              end
+          end)
+
+        assert Bucket.to_list(bucket) == drain_bucket(bucket)
+      end
+    end
+
+    # The index exists only to make `take/2` O(1), so a bucket nothing is ever
+    # taken from should not be paying for it. Pinned because the saving is
+    # invisible in behaviour: an eagerly-indexed bucket answers every question
+    # identically, just slower.
+    test "the index is not built until something is taken" do
+      pushed = Bucket.new([el(:a), el(:b), el(:a)])
+
+      refute pushed.indexed?
+      assert %{} == pushed.counts
+
+      {:ok, popped, _} = Bucket.pop(pushed)
+      assert el(:a) == popped
+      refute pushed.indexed?, "popping built the index"
+
+      {:ok, taken} = Bucket.take(pushed, el(:b))
+      assert taken.indexed?
+      assert %{el(:a) => 2} == taken.counts
+    end
+
+    # A miss is what a cancelled-but-already-fired activation looks like, and it
+    # is the call that builds the index. Handing the bucket back on that path is
+    # what stops the next miss rebuilding it.
+    test "a miss builds the index and hands the bucket back" do
+      {:error, indexed} = Bucket.new([el(:a)]) |> Bucket.take(el(:c))
+
+      assert indexed.indexed?
+      assert %{el(:a) => 1} == indexed.counts
+    end
+
+    # Whether the index was built or not must not change a single answer.
+    property "a lazily indexed bucket answers exactly as an eagerly indexed one" do
+      check all(ops <- list_of(one_of([{:push, element()}, {:take, element()}]), max_length: 60)) do
+        lazy = replay(ops, Bucket.new())
+
+        # Same operations, but with the index forced up front by a take that
+        # cannot match anything the generator produces.
+        {:error, seeded} = Bucket.take(Bucket.new(), el(:never))
+        eager = replay(ops, seeded)
+
+        assert Bucket.to_list(lazy) == Bucket.to_list(eager)
+        assert Bucket.size(lazy) == Bucket.size(eager)
+        assert drain_bucket(lazy) == drain_bucket(eager)
+      end
+    end
+
+    test "popping everything leaves no tombstone behind" do
+      bucket = Bucket.new([el(:a), el(:b), el(:c)])
+      {:ok, bucket} = Bucket.take(bucket, el(:b))
+
+      drained =
+        Enum.reduce(1..2, bucket, fn _, bucket ->
+          {:ok, _item, rest} = Bucket.pop(bucket)
+          rest
+        end)
+
+      assert :empty == Bucket.pop(drained)
+      assert 0 == Bucket.size(drained)
+      assert [] == :queue.to_list(drained.queue)
+    end
+  end
+
+  defp drain_bucket(bucket, acc \\ []) do
+    case Rete.Bucket.pop(bucket) do
+      :empty -> Enum.reverse(acc)
+      {:ok, item, rest} -> drain_bucket(rest, [item | acc])
+    end
+  end
+
+  defp replay(ops, bucket) do
+    Enum.reduce(ops, bucket, fn
+      {:push, item}, bucket ->
+        Rete.Bucket.push(bucket, [item])
+
+      {:take, item}, bucket ->
+        case Rete.Bucket.take(bucket, item) do
+          {:ok, bucket} -> bucket
+          {:error, bucket} -> bucket
+        end
+    end)
   end
 
   defp el(fact), do: %Rete.Element{fact: fact, bindings: %{}}

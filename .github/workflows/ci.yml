@@ -61,7 +61,7 @@ jobs:
       # usually a binding that was classified wrong.
       - run: mix compile --warnings-as-errors
 
-      - run: mix test
+      - run: mix test --warnings-as-errors
 
   # Format, lint and types do not vary with the Elixir version in any way worth
   # paying for, so they run once on the current release.

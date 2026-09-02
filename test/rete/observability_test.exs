@@ -343,11 +343,15 @@ defmodule Rete.ObservabilityTest do
       end
     end
 
-    # Beta memory is arrival ordered, so without a deterministic sort the same
-    # facts inserted in a different order would answer the same query in a
-    # different order. The order itself is not a contract. Varying with
-    # insertion order is a trap.
-    test "does not vary with the order facts were inserted in" do
+    # Beta memory is arrival ordered, and a query hands its matches back as it
+    # finds them. So rows come out in the order the facts arrived.
+    #
+    # The engine used to sort every result, so that one fact set always answered
+    # the same way. `Rete.Session.query/3` has always called the order
+    # unspecified, so nothing could rely on that, and it cost O(n log n) per
+    # call. Same shape as sorting a collection's members, removed for the same
+    # reason.
+    test "follows the order the facts arrived in" do
       answer = fn facts ->
         [Ordered]
         |> Session.new()
@@ -356,11 +360,28 @@ defmodule Rete.ObservabilityTest do
         |> Ordered.flagged()
       end
 
-      base = answer.([{:o, 1, 20}, {:o, 2, 30}, {:o, 3, 40}])
+      assert [{1, 20}, {2, 30}, {3, 40}] == answer.([{:o, 1, 20}, {:o, 2, 30}, {:o, 3, 40}])
+      assert [{3, 40}, {1, 20}, {2, 30}] == answer.([{:o, 3, 40}, {:o, 1, 20}, {:o, 2, 30}])
+    end
 
-      assert base == answer.([{:o, 3, 40}, {:o, 1, 20}, {:o, 2, 30}])
-      assert base == answer.([{:o, 2, 30}, {:o, 3, 40}, {:o, 1, 20}])
-      assert 3 == length(base)
+    # What is still true, and what a caller can actually rely on: the same facts
+    # in the same order always answer the same way, and the rows are the same
+    # set however they were fed.
+    test "the same feed always answers the same way, and the set never varies" do
+      answer = fn facts ->
+        [Ordered]
+        |> Session.new()
+        |> Session.insert(facts)
+        |> Session.fire_rules()
+        |> Ordered.flagged()
+      end
+
+      facts = [{:o, 1, 20}, {:o, 2, 30}, {:o, 3, 40}]
+
+      assert answer.(facts) == answer.(facts)
+
+      assert Enum.sort(answer.(facts)) ==
+               Enum.sort(answer.([{:o, 2, 30}, {:o, 3, 40}, {:o, 1, 20}]))
     end
   end
 

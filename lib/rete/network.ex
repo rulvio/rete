@@ -193,7 +193,7 @@ defmodule Rete.Network do
     |> Enum.flat_map(&conditions/1)
     |> Enum.reduce(%{}, fn %{alpha: %IR.Expr{code: code}, type: type}, acc ->
       if Map.has_key?(alphas, code) do
-        Map.update(acc, type, [code], &Enum.uniq([code | &1]))
+        Map.update(acc, type, MapSet.new([code]), &MapSet.put(&1, code))
       else
         acc
       end

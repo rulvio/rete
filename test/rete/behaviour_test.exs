@@ -38,15 +38,10 @@ defmodule Rete.BehaviourTest do
 
   alias Rete.Listener.Collect
   alias Rete.Session
+  alias Rete.Test.Canon
 
   defp run(mod, facts) do
     [mod] |> Session.new() |> Session.insert(facts) |> Session.fire_rules()
-  end
-
-  defp sorted_leaves(by_node) do
-    Map.new(by_node, fn {node, by_key} ->
-      {node, Map.new(by_key, fn {key, items} -> {key, Enum.sort(items)} end)}
-    end)
   end
 
   defp tagged(session, tag) do
@@ -795,8 +790,13 @@ defmodule Rete.BehaviourTest do
     # filter, or the negation silently tests against a missing key and never
     # blocks.
     test "a negation's filter can read a collection binding from the token" do
+      # Sorted: the gathered order is not a contract, and the engine gathers in
+      # reverse arrival order. What is being asserted is the membership.
       assert [[temp: 5, temp: 7]] ==
-               CollInNegation.all_small(run(CollInNegation, [{:temp, 5}, {:temp, 7}]))
+               CollInNegation
+               |> run([{:temp, 5}, {:temp, 7}])
+               |> CollInNegation.all_small()
+               |> Enum.map(&Enum.sort/1)
 
       assert [] == CollInNegation.all_small(run(CollInNegation, [{:temp, 1}, {:temp, 7}]))
     end
@@ -1718,19 +1718,23 @@ defmodule Rete.BehaviourTest do
         # maintenance records have to match too, or one order built an
         # imbalance the fact list cannot show.
         #
-        # `memory.tokens` is deliberately *not* compared. Beta memory keeps the
-        # token list for a join key in arrival order, so two orders that agree
-        # on every match still disagree on the order of the list holding them —
-        # which also makes the order of `Session.query/3` results depend on
-        # insertion history. See the note reported alongside this suite. The
-        # sets agree, only their order does not.
-        expected = Rete.Memory.dump(base.state.memory)
-        actual = Rete.Memory.dump(session.state.memory)
+        # `Rete.Test.Canon` rather than the raw dump, for two reasons that both
+        # come down to order not being part of what a session means. Beta memory
+        # keeps the token list for a join key in arrival order, so two feeds that
+        # agree on every match still disagree on the order of the list holding
+        # them — which also makes `Session.query/3` results depend on insertion
+        # history. And a collection is kept in reverse arrival order, so a token
+        # carrying one differs between feeds down in its bindings. Everything
+        # else is compared exactly: multiplicity, support counts and the truth
+        # maintenance records all still have to match, or one order built an
+        # imbalance the fact list cannot show.
+        expected = Canon.dump(base)
+        actual = Canon.dump(session)
 
         assert expected.facts == actual.facts
         assert expected.accum == actual.accum
         assert expected.insertions == actual.insertions
-        assert sorted_leaves(expected.tokens) == sorted_leaves(actual.tokens)
+        assert expected.tokens == actual.tokens
       end
     end
 
@@ -1770,10 +1774,18 @@ defmodule Rete.BehaviourTest do
         assert base.state.memory.facts == restored.state.memory.facts,
                "support counts changed for #{inspect(fact)}"
 
-        assert base.state.memory.accum == restored.state.memory.accum,
+        # Sorted: a collection is kept in reverse arrival order, so a member taken
+        # out and put back comes back at the front rather than where it was. The
+        # members have to be the same ones. Where they sit is not a contract.
+        # `insertions` needs the same treatment, because it is keyed on the token
+        # that carries the collection.
+        canon_base = Canon.dump(base)
+        canon_restored = Canon.dump(restored)
+
+        assert canon_base.accum == canon_restored.accum,
                "collection groups changed for #{inspect(fact)}"
 
-        assert base.state.memory.insertions == restored.state.memory.insertions,
+        assert canon_base.insertions == canon_restored.insertions,
                "truth maintenance records changed for #{inspect(fact)}"
       end
     end

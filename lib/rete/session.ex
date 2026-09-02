@@ -154,9 +154,15 @@ defmodule Rete.Session do
   separate parameter declaration. Naming something the query does not bind raises an
   error, instead of answering `[]`.
 
-  Row order is **unspecified**. It does not vary with insertion order, so a given set of
-  facts always answers the same way. Sort the result yourself, if you need a particular
-  order.
+  Row order is **unspecified**. Rows come back in the order the facts arrived, so the same
+  facts fed in a different order answer in a different order. Sort the result yourself if
+  order matters to you.
+
+  The *set* of rows never varies, and one feed always answers the same way.
+
+  A query looks at every match it holds unless `Rete.Ruleset.index/2` declared an index the
+  filter covers. An index changes speed and nothing else: the rows and their order are the
+  same either way. `Rete.Inspect.query_plan/3` reports which index a filter would use.
 
       iex> alias Rete.Session
       iex> session =

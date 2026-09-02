@@ -3,6 +3,7 @@ defmodule Rete.EngineTest do
 
   alias Rete.Listener.Collect
   alias Rete.Session
+  alias Rete.Test.Canon
 
   defp run(mod, facts) do
     mod |> Session.new() |> Session.insert(facts) |> Session.fire_rules()
@@ -165,6 +166,47 @@ defmodule Rete.EngineTest do
 
     test "the same facts always fire in the same order" do
       assert fired_order(40) == fired_order(40)
+    end
+  end
+
+  describe "arrival order across two parents" do
+    defmodule TwoParents do
+      use Rete.Ruleset
+
+      # Both branches match every `{:n, _}` here, and they are different alpha
+      # expressions, so one fact produces two elements that re-converge on one
+      # terminal. This is the only shape where a rule's matches reach the agenda
+      # by more than one route within a single insert call.
+      defrule hit({:or, [{:n, x} when x > 0, {:n, x} when x < 100]}) do
+        {:hit, x}
+      end
+    end
+
+    # `Rete.Engine.coalesce/1` merges the ops of one call that go the same way to
+    # the same node, so a node sees a batch rather than one element per call.
+    # That fixes the order here: all of one branch, then all of the other. Before
+    # it was fact-major — both branches of the first fact, then both of the
+    # second — which is just as defensible, and is the order this used to have.
+    #
+    # This is pinned rather than left to the suite because the suite stayed green
+    # through the change: nothing else looks at the sequence, only at what the
+    # session settles to, and both orders settle to the same facts.
+    test "one fact reaching a rule twice fires branch by branch, not fact by fact" do
+      fired =
+        [TwoParents]
+        |> Session.new()
+        |> Session.with_listener(Collect, [])
+        |> Session.insert([{:n, 5}, {:n, 6}])
+        |> Session.fire_rules()
+        |> Collect.by_tag(:activation_fired)
+        |> Enum.map(fn {:activation_fired, _source, token, _facts} -> token.bindings.x end)
+
+      assert [5, 6, 5, 6] == fired
+    end
+
+    # The promise that did not change, and the one rules actually rest on.
+    test "a rule's own matches still arrive in fact order" do
+      assert Enum.to_list(1..40) == fired_order(40)
     end
   end
 
@@ -355,34 +397,76 @@ defmodule Rete.EngineTest do
       end
     end
 
-    # A collection is a function of the facts in it, like everything else a Rete
-    # network concludes. Storing members in arrival order makes `hd`, `Enum.at`
-    # and `List.first` depend on the order the session was fed, and makes a
-    # retract-and-reinsert cycle change a conclusion — which the round trip
-    # invariant cannot see while every collection rule only takes `length`.
-    test "a collection is ordered by its facts, not by when they arrived" do
+    # A collection gathers in **reverse arrival order** and does not sort. So a rule
+    # that puts its collection into a conclusion, rather than reducing it to
+    # something order-insensitive, produces a different fact for a different feed.
+    # `docs/dsl.md` says a rule may not depend on the gathered order for exactly
+    # this reason — sort in the right hand side if the order matters.
+    #
+    # The engine used to sort internally, which made such a rule stable by accident
+    # and cost O(k) on every member change to do it, because the position had to be
+    # found by walking. Nothing in the contract asked for it. Prepending is O(1) and
+    # shares the whole tail. See `Rete.Memory.add_to_group/5`.
+    test "a collection gathers in reverse arrival order, and does not sort" do
       forwards =
         run([Ordered], [{:customer, 1}, {:order, 1, 10}, {:order, 1, 20}, {:order, 1, 30}])
 
       backwards =
         run([Ordered], [{:customer, 1}, {:order, 1, 30}, {:order, 1, 20}, {:order, 1, 10}])
 
-      assert [{:seq, 1, [10, 20, 30]}] == derived(forwards, :seq)
-      assert derived(forwards, :seq) == derived(backwards, :seq)
+      assert [{:seq, 1, [30, 20, 10]}] == derived(forwards, :seq)
+      assert [{:seq, 1, [10, 20, 30]}] == derived(backwards, :seq)
     end
 
-    test "retracting and reinserting a collection member restores the collection" do
+    # The membership is a function of the fact set even though the order is not, so
+    # a rule that reduces its collection to something order-insensitive — which is
+    # what `docs/dsl.md` tells you to do — is order independent after all.
+    test "what a collection holds does not depend on the order it was fed" do
+      forwards =
+        run([Ordered], [{:customer, 1}, {:order, 1, 10}, {:order, 1, 20}, {:order, 1, 30}])
+
+      backwards =
+        run([Ordered], [{:customer, 1}, {:order, 1, 30}, {:order, 1, 20}, {:order, 1, 10}])
+
+      sorted = fn session ->
+        for {:seq, cid, amts} <- derived(session, :seq), do: {cid, Enum.sort(amts)}
+      end
+
+      assert [{1, [10, 20, 30]}] == sorted.(forwards)
+      assert sorted.(forwards) == sorted.(backwards)
+    end
+
+    # A member taken out and put back comes back at the **front**, not where it
+    # was, because a collection gathers in arrival order. So the round trip
+    # restores the membership and not the sequence, and a rule that puts its
+    # collection into a conclusion sees that conclusion change. Pinned here so the
+    # behaviour is written down where someone will meet it, not so it is defended:
+    # the sequence was never something a rule was entitled to.
+    test "retracting and reinserting a collection member moves it to the front" do
       base = run([Ordered], [{:customer, 1}, {:order, 1, 10}, {:order, 1, 20}, {:order, 1, 30}])
 
       cycled =
         base
-        |> Session.retract({:order, 1, 10})
+        |> Session.retract({:order, 1, 20})
         |> Session.fire_rules()
-        |> Session.insert({:order, 1, 10})
+        |> Session.insert({:order, 1, 20})
         |> Session.fire_rules()
 
-      assert derived(base, :seq) == derived(cycled, :seq)
-      assert base.state.memory == cycled.state.memory
+      assert [{:seq, 1, [30, 20, 10]}] == derived(base, :seq)
+      assert [{:seq, 1, [20, 30, 10]}] == derived(cycled, :seq)
+
+      # The conclusion is a different term, which is the whole point: a rule that
+      # puts its collection into a fact is not order independent, and `docs/dsl.md`
+      # says not to write one. What must still hold is everything else — the group
+      # holds the same members, there is still exactly one `:seq`, and the round
+      # trip left no support behind.
+      assert Canon.dump(base).accum == Canon.dump(cycled).accum
+
+      assert [{1, [10, 20, 30]}] ==
+               for({:seq, cid, amts} <- derived(cycled, :seq), do: {cid, Enum.sort(amts)})
+
+      assert base.state.memory.facts |> Map.values() |> Enum.sort() ==
+               cycled.state.memory.facts |> Map.values() |> Enum.sort()
     end
   end
 
@@ -677,7 +761,11 @@ defmodule Rete.EngineTest do
       session = run([LeadColl], [{:o, 1}, {:o, 2}])
 
       assert [{:count, 2}] == derived(session, :count)
-      assert [[{:o, 1}, {:o, 2}]] == LeadColl.all(session)
+
+      # Sorted: the gathered order is not a contract, and the engine gathers in
+      # reverse arrival order. What is being asserted is that both facts landed in
+      # the one collection.
+      assert [[{:o, 1}, {:o, 2}]] == session |> LeadColl.all() |> Enum.map(&Enum.sort/1)
     end
 
     # The case that forces the root token to be planted when the state is built
@@ -902,7 +990,7 @@ defmodule Rete.EngineTest do
   describe "self supporting conclusions" do
     defp memories(session) do
       memory = session.state.memory
-      Map.take(memory, [:facts, :elements, :tokens, :accum, :insertions])
+      Map.take(memory, [:facts, :elements, :tokens, :accum, :insertions, :inserters])
     end
 
     defmodule Symmetric do
@@ -929,7 +1017,14 @@ defmodule Rete.EngineTest do
 
       assert [] == Session.facts(session)
 
-      assert %{facts: %{}, elements: %{}, tokens: %{}, accum: %{}, insertions: %{}} ==
+      assert %{
+               facts: %{},
+               elements: %{},
+               tokens: %{},
+               accum: %{},
+               insertions: %{},
+               inserters: nil
+             } ==
                memories(session)
     end
 
@@ -978,7 +1073,14 @@ defmodule Rete.EngineTest do
 
       assert [] == Session.facts(session)
 
-      assert %{facts: %{}, elements: %{}, tokens: %{}, accum: %{}, insertions: %{}} ==
+      assert %{
+               facts: %{},
+               elements: %{},
+               tokens: %{},
+               accum: %{},
+               insertions: %{},
+               inserters: nil
+             } ==
                memories(session)
     end
 
@@ -1021,7 +1123,14 @@ defmodule Rete.EngineTest do
 
       assert [] == Session.facts(session)
 
-      assert %{facts: %{}, elements: %{}, tokens: %{}, accum: %{}, insertions: %{}} ==
+      assert %{
+               facts: %{},
+               elements: %{},
+               tokens: %{},
+               accum: %{},
+               insertions: %{},
+               inserters: nil
+             } ==
                memories(session)
     end
   end

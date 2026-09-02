@@ -320,6 +320,30 @@ There is one activation per group, holding the whole list, not one activation pe
 fact. Change any member, and the list changes. A different list is a different match, so
 the old conclusion is retracted and a new one takes its place.
 
+### What a collection costs
+
+Gathering is cheap. A member is prepended, so a change costs the engine one cons cell, and
+the list the body receives is the one the engine already holds. Reducing that list to a
+number in the right hand side, as above, is the shape the engine is built for.
+
+What the rest costs depends on **how members arrive**, not on how many there are. Everything
+inserted in one call is one change, so the rule fires once per call rather than once per
+member. Over 4,000 members:
+
+| members per `insert` call | body reduces the list | body concludes the list |
+|---|---|---|
+| 1 | 27 ms | 408 ms |
+| 10 | 4.6 ms | 43 ms |
+| 100 | 3.0 ms | 6.8 ms |
+| all 4,000 | 3.4 ms | 3.3 ms |
+
+So **insert in batches** where the caller can. Both columns fall with the batch, and by 100 a
+member at a time neither costs anything worth naming.
+
+Where you cannot batch — one event per call — **conclude what you computed, not what you
+gathered.** `{:spend, name, orders}` concludes a fact that grows with the group, and the
+engine hashes that whole fact on every change. That is the 408 ms against 27 ms above.
+
 ### The empty-collection rule
 
 Whether a collection can match *nothing* depends on whether it introduces a variable of
@@ -379,9 +403,27 @@ right hand side. This yields one fact holding a map, instead of one activation p
 **A rule may not depend on the order of the list it receives.** Sort the list in the right
 hand side, if order matters to you.
 
-The engine does keep collections in a deterministic order. The same facts always produce
-the same list, whatever order they arrived in. But that order is Erlang term order, and it
-is not a contract.
+This is a real warning, not a formality. A collection gathers in **reverse arrival order**,
+so the same facts fed in a different order produce a different list, and a member retracted
+and re-inserted comes back at the front. A rule that reduces its collection to something
+order-insensitive — `length`, a sum, a set — is unaffected. A rule that puts the list itself
+into a fact, or reads `hd/1`, is not:
+
+```elixir
+defrule totals({:customer, cid}, orders = [{:order, cid, _amt}]) do
+  {:total, cid, Enum.sum(for {_, _, amt} <- orders, do: amt)}   # fine
+end
+
+defrule biggest({:customer, cid}, orders = [{:order, cid, _amt}]) do
+  {:biggest, cid, hd(orders)}                                    # depends on the feed
+end
+```
+
+The engine used to sort collections internally, so that `biggest` above happened to be
+stable. Do not rely on that returning: it cost a pass over the group every time a member
+changed, quadratic over the group's lifetime, to prop up the one kind of rule this section
+tells you not to write. Sorting in the right hand side costs a pass each time the rule
+*fires* instead — paid by the rules that need it, when they need it.
 
 ## Taxonomy
 
@@ -507,9 +549,85 @@ Two things to know:
 * a query reads the session as it stands. If you query one with pending activations, you
   see what was true before they fired.
 
-Row order is unspecified. It does not vary with the order facts were inserted in, so a
-given set of facts always answers the same way. Sort the result yourself if order matters
-to you.
+Row order is unspecified. Rows come back in the order the facts arrived in, so the same
+facts fed in a different order answer in a different order. **Sort the result yourself if
+order matters to you.**
+
+The *set* of rows never varies, and one feed always answers the same way.
+
+### Indexes
+
+A query answers by looking at every match it holds and keeping the ones the filter accepts.
+`index/2` buckets those matches by the bindings it names, so a filter over exactly those
+bindings reads one bucket instead of all of them:
+
+```elixir
+defquery flagged_for({:flagged, cid, tid, amt}) do
+  {cid, tid, amt}
+end
+
+index :flagged_for, [:cid]
+index :flagged_for, [:cid, :tid]
+```
+
+`[:cid, :tid]` is **one** index over both bindings. Write two lines for two indexes. Order
+within the list does not matter, and a declaration may come before or after its query.
+
+**An index changes speed, not results.** Every filter still works, indexed or not, and gives
+the same rows in the same order. This declares no parameters and permits nothing: the caller
+may still filter on any variable the left hand side binds. Declaring none is the default, and
+a query without one behaves exactly as it always has.
+
+A filter naming *more* than an index uses it and then narrows the bucket, so `[:cid]` above
+serves `cid: 1` and `cid: 1, amt: 250` alike. A filter naming *less* than every declared
+index — `amt: 250` on its own here — reads them all, as before.
+
+That last case is the trap: a declared index no call ever matches is silently no faster.
+`Rete.Inspect.query_plan/3` says which index a filter would use, or `:scan`:
+
+```elixir
+Rete.Inspect.query_plan(session, {MyApp.Orders, :flagged_for}, cid: 1)   #=> {:index, [:cid]}
+Rete.Inspect.query_plan(session, {MyApp.Orders, :flagged_for}, amt: 250) #=> :scan
+```
+
+An index costs one bucket entry per match per declared set, and nothing at all when none is
+declared. Measured at 4,000 matches with one returned: 200 calls take 97 ms unindexed and
+0.07 ms indexed.
+
+The cost falls on writes. Inserting those 4,000 facts takes 2.4 ms with no index, 3.0 ms
+with one and 4.6 ms with three. Retracting them takes 10.0 ms, 16.5 ms and 28.4 ms.
+
+Put the other way, an index costs about **three to five unindexed reads** to carry through a
+load, and it saves nearly the whole of every read after that. Retraction is where it gets
+expensive: a session loaded and then fully drained pays more like **twenty-five to thirty-five
+reads** for the same index, because taking from a bucket is what builds the machinery that
+makes removal O(1).
+
+So an index is worth declaring when a query is filtered more than a handful of times, and
+worth thinking twice about on facts that churn. Declare the ones your calls actually use, and
+check with `query_plan/3` that they do.
+
+### How much an index buys
+
+An indexed read still builds every row it returns, so the win is the scanning it skips. That
+makes the speedup track how many distinct values the indexed binding takes. Over 4,000
+matches, filtering on one value:
+
+| distinct values | rows returned | no index | indexed | |
+|---|---|---|---|---|
+| 1 | 4,000 | 0.55 ms | 0.46 ms | 1.2× |
+| 4 | 1,000 | 0.23 ms | 0.10 ms | 2.3× |
+| 20 | 200 | 0.19 ms | 0.019 ms | 10× |
+| 200 | 20 | 0.19 ms | 0.001 ms | 139× |
+| 4,000 | 1 | 0.19 ms | 0.000 ms | 427× |
+
+The rule of thumb is that the speedup is about the number of distinct values, until it
+flattens near 400× where the fixed cost of a call takes over. Below about four values an
+index is not worth its write cost. This assumes the values are evenly spread: where one
+value holds most of the rows, that key gets the 1× and the rare ones get the rest.
+
+That is the one thing `query_plan/3` cannot tell you. It reports that an index *is used*,
+not that it is worth using.
 
 ## The right hand side
 

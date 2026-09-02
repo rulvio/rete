@@ -134,8 +134,81 @@ defmodule Rete.Engine.Nodes do
   # A token passes only while nothing matches it. The edges are what matter here. The
   # first element to arrive suppresses the tokens that already went through. The last to
   # leave releases them.
-  defp dispatch(%kind{} = node, :left, tokens, %State{} = state)
-       when kind in [Node.Negation, Node.NegationJoin] do
+  #
+  # A plain negation has **no filter**: `Rete.Network.Node.Negation` carries no `:filter`
+  # field, so every token-element pair matches. "Does anything match this token" is
+  # therefore the same question for every token — is the bucket empty — and each of these
+  # four clauses is an edge test on one boolean. `Node.NegationJoin` below cannot do this,
+  # because its filter has to be evaluated per token, and it keeps the general form.
+  defp dispatch(%Node.Negation{} = node, :left, tokens, %State{} = state) do
+    reduce_groups(state, tokens, &Token.join_key(&1, node.join_bind), fn %State{} = state,
+                                                                         key,
+                                                                         group ->
+      memory = Memory.add_tokens(state.memory, node.id, key, group)
+      state = %State{state | memory: memory}
+
+      if Memory.any_elements?(memory, node.id, key) do
+        {state, []}
+      else
+        send_left(state, node, group)
+      end
+    end)
+  end
+
+  defp dispatch(%Node.Negation{} = node, :left_retract, tokens, %State{} = state) do
+    reduce_groups(state, tokens, &Token.join_key(&1, node.join_bind), fn %State{} = state,
+                                                                         key,
+                                                                         group ->
+      {memory, removed} = Memory.remove_tokens(state.memory, node.id, key, group)
+      state = %State{state | memory: memory}
+
+      if Memory.any_elements?(memory, node.id, key) do
+        {state, []}
+      else
+        retract_left(state, node, removed)
+      end
+    end)
+  end
+
+  # `group` is never empty — `reduce_groups/4` only produces groups it has an item for —
+  # so the bucket is non-empty afterwards either way. The only edge is the first element
+  # under a key. Everything after it changes nothing, and reads no tokens at all.
+  defp dispatch(%Node.Negation{} = node, :right, elements, %State{} = state) do
+    reduce_groups(state, elements, &Element.join_key(&1, node.join_bind), fn %State{} = state,
+                                                                             key,
+                                                                             group ->
+      newly_matched =
+        if Memory.any_elements?(state.memory, node.id, key),
+          do: [],
+          else: Memory.tokens(state.memory, node.id, key)
+
+      memory = Memory.add_elements(state.memory, node.id, key, group)
+
+      retract_left(%State{state | memory: memory}, node, newly_matched)
+    end)
+  end
+
+  # The mirror. The tokens are read from memory *after* the removal, so what is released
+  # is what the node still holds — the retraction rule in the moduledoc.
+  defp dispatch(%Node.Negation{} = node, :right_retract, elements, %State{} = state) do
+    reduce_groups(state, elements, &Element.join_key(&1, node.join_bind), fn %State{} = state,
+                                                                             key,
+                                                                             group ->
+      suppressed? = Memory.any_elements?(state.memory, node.id, key)
+      {memory, _removed} = Memory.remove_elements(state.memory, node.id, key, group)
+      state = %State{state | memory: memory}
+
+      if suppressed? and not Memory.any_elements?(memory, node.id, key) do
+        send_left(state, node, Memory.tokens(memory, node.id, key))
+      else
+        {state, []}
+      end
+    end)
+  end
+
+  # --- negation with a beta filter ------------------------------------------------------
+
+  defp dispatch(%Node.NegationJoin{} = node, :left, tokens, %State{} = state) do
     reduce_groups(state, tokens, &Token.join_key(&1, node.join_bind), fn %State{} = state,
                                                                          key,
                                                                          group ->
@@ -146,8 +219,7 @@ defmodule Rete.Engine.Nodes do
     end)
   end
 
-  defp dispatch(%kind{} = node, :left_retract, tokens, %State{} = state)
-       when kind in [Node.Negation, Node.NegationJoin] do
+  defp dispatch(%Node.NegationJoin{} = node, :left_retract, tokens, %State{} = state) do
     reduce_groups(state, tokens, &Token.join_key(&1, node.join_bind), fn %State{} = state,
                                                                          key,
                                                                          group ->
@@ -158,34 +230,43 @@ defmodule Rete.Engine.Nodes do
     end)
   end
 
-  defp dispatch(%kind{} = node, :right, elements, %State{} = state)
-       when kind in [Node.Negation, Node.NegationJoin] do
+  # Suppress the tokens that passed before, and no longer do. A token that was unmatched
+  # before stops being unmatched exactly when something in `group` matches it, which is
+  # cheaper to ask directly than to derive from a second `unmatched/3` over `before ++
+  # group` and a list difference.
+  defp dispatch(%Node.NegationJoin{} = node, :right, elements, %State{} = state) do
     reduce_groups(state, elements, &Element.join_key(&1, node.join_bind), fn %State{} = state,
                                                                              key,
                                                                              group ->
       tokens = Memory.tokens(state.memory, node.id, key)
       before = Memory.elements(state.memory, node.id, key)
-      memory = Memory.add_elements(state.memory, node.id, key, group)
 
-      # Suppress the tokens that passed before, and no longer do.
-      newly_matched = unmatched(node, tokens, before) -- unmatched(node, tokens, before ++ group)
+      newly_matched =
+        node
+        |> unmatched(tokens, before)
+        |> Enum.filter(fn token -> Enum.any?(group, &negation_match?(node, token, &1)) end)
+
+      memory = Memory.add_elements(state.memory, node.id, key, group)
 
       retract_left(%State{state | memory: memory}, node, newly_matched)
     end)
   end
 
-  defp dispatch(%kind{} = node, :right_retract, elements, %State{} = state)
-       when kind in [Node.Negation, Node.NegationJoin] do
+  # Release the tokens that were suppressed, and no longer are. A token nothing remaining
+  # matches was suppressed before exactly when something *removed* matched it, since the
+  # elements before the removal are the remaining ones plus the removed ones.
+  defp dispatch(%Node.NegationJoin{} = node, :right_retract, elements, %State{} = state) do
     reduce_groups(state, elements, &Element.join_key(&1, node.join_bind), fn %State{} = state,
                                                                              key,
                                                                              group ->
       tokens = Memory.tokens(state.memory, node.id, key)
-      before = Memory.elements(state.memory, node.id, key)
-      {memory, _removed} = Memory.remove_elements(state.memory, node.id, key, group)
+      {memory, removed} = Memory.remove_elements(state.memory, node.id, key, group)
       remaining = Memory.elements(memory, node.id, key)
 
-      # Release the tokens that were suppressed, and no longer are.
-      newly_free = unmatched(node, tokens, remaining) -- unmatched(node, tokens, before)
+      newly_free =
+        node
+        |> unmatched(tokens, remaining)
+        |> Enum.filter(fn token -> Enum.any?(removed, &negation_match?(node, token, &1)) end)
 
       send_left(%State{state | memory: memory}, node, newly_free)
     end)
@@ -220,21 +301,19 @@ defmodule Rete.Engine.Nodes do
   # An element joining or leaving a collection changes the value every matching token
   # carries. So the node retracts each at its old value, and re-sends it at the new one.
   # Sending without retracting would leave two contradictory matches downstream.
+  #
+  # Only the groups the batch names can have changed, so only those are rebuilt. This used
+  # to rebuild **every** group under the key, twice, once per token, and then cancel the
+  # unchanged ones out with a pair of list differences.
   defp dispatch(%kind{} = node, right, elements, %State{} = state)
        when kind in [Node.Accumulate, Node.AccumulateJoin] and right in [:right, :right_retract] do
     reduce_groups(state, elements, &Element.join_key(&1, node.join_bind), fn %State{} = state,
                                                                              key,
                                                                              group ->
-      tokens = Memory.tokens(state.memory, node.id, key)
-      before = collected(state, node, key, tokens)
-
-      state = %State{state | memory: update_groups(state.memory, node, key, group, right)}
-      now = collected(state, node, key, tokens)
-
-      {state, retractions} = retract_left(state, node, before -- now)
-      {state, additions} = send_left(state, node, now -- before)
-
-      {state, retractions ++ additions}
+      case Memory.tokens(state.memory, node.id, key) do
+        [] -> {store_only(state, node, key, group, right), []}
+        tokens -> recollect(state, node, key, group, right, tokens)
+      end
     end)
   end
 
@@ -267,27 +346,46 @@ defmodule Rete.Engine.Nodes do
   # Either the match is still pending, so it never fires. Or it fired, and truth
   # maintenance takes back what it inserted. `Agenda.remove/2` reports which case this is.
   defp dispatch(%Node.Production{} = node, :left_retract, tokens, %State{} = state) do
-    Enum.reduce(tokens, {state, []}, fn token, {%State{} = state, ops} ->
-      {agenda, outcome} = Agenda.remove(state.agenda, activation(state, node, token))
-      state = %State{state | agenda: agenda}
+    # Collected newest first and reversed once. Appending per token would be quadratic in
+    # the size of one batch, and a batch is a whole call's worth of retractions.
+    {state, reversed} =
+      Enum.reduce(tokens, {state, []}, fn token, {%State{} = state, ops} ->
+        {agenda, outcome} = Agenda.remove(state.agenda, activation(state, node, token))
+        state = %State{state | agenda: agenda}
 
-      case outcome do
-        :removed ->
-          {state, ops ++ [{:event, {:activation_removed, Node.source(node), token}}]}
+        case outcome do
+          :removed ->
+            {state, [{:event, {:activation_removed, Node.source(node), token}} | ops]}
 
-        :missing ->
-          {memory, facts} = Memory.take_insertion(state.memory, node.id, token)
-          {%State{state | memory: memory}, ops ++ [{:retract_facts, node.id, facts}]}
-      end
-    end)
+          :missing ->
+            {memory, facts} = Memory.take_insertion(state.memory, node.id, token)
+            {%State{state | memory: memory}, [{:retract_facts, node.id, facts} | ops]}
+        end
+      end)
+
+    {state, Enum.reverse(reversed)}
   end
 
+  # A query stores its matches under one key, so `Rete.Engine.query/3` can hand them all
+  # back in arrival order. A declared index stores them a second time, bucketed by the
+  # bindings it names, under its own node id. See `Rete.Ruleset.index/2`.
+  #
+  # The unbucketed store stays whether or not there are indexes. `Memory.all_tokens/2`
+  # unions a node's buckets in map order, so reading an unfiltered query out of an index
+  # would order its rows by binding value rather than by arrival.
   defp dispatch(%Node.Query{} = node, :left, tokens, %State{} = state) do
-    {%State{state | memory: Memory.add_tokens(state.memory, node.id, %{}, tokens)}, []}
+    memory =
+      state.memory
+      |> Memory.add_tokens(node.id, %{}, tokens)
+      |> index_tokens(node, tokens, &Memory.add_tokens/4)
+
+    {%State{state | memory: memory}, []}
   end
 
   defp dispatch(%Node.Query{} = node, :left_retract, tokens, %State{} = state) do
     {memory, _removed} = Memory.remove_tokens(state.memory, node.id, %{}, tokens)
+    memory = index_tokens(memory, node, tokens, &drop_tokens/4)
+
     {%State{state | memory: memory}, []}
   end
 
@@ -297,6 +395,29 @@ defmodule Rete.Engine.Nodes do
 
   defp dispatch(node, kind, _items, _state) do
     raise ArgumentError, "no #{kind} behaviour for #{inspect(node)}"
+  end
+
+  # Applies `fun` to each index's store. Tokens are grouped by the key set first, so one
+  # call covers every token that shares a bucket. `Rete.Memory.index_id/2` names the store.
+  defp index_tokens(memory, %Node.Query{index: []}, _tokens, _fun), do: memory
+
+  defp index_tokens(memory, %Node.Query{} = node, tokens, fun) do
+    node.index
+    |> Enum.with_index()
+    |> Enum.reduce(memory, fn {keys, position}, memory ->
+      tokens
+      |> Enum.group_by(&Token.join_key(&1, keys))
+      |> Enum.reduce(memory, fn {key, group}, memory ->
+        fun.(memory, Memory.index_id(node.id, position), key, group)
+      end)
+    end)
+  end
+
+  # `remove_tokens/4` returns what it found. An index only mirrors the store above it, so
+  # what it found is not news.
+  defp drop_tokens(memory, node_id, key, tokens) do
+    {memory, _removed} = Memory.remove_tokens(memory, node_id, key, tokens)
+    memory
   end
 
   # --- building matches ----------------------------------------------------------------
@@ -328,18 +449,18 @@ defmodule Rete.Engine.Nodes do
 
   defp matches?(_node, _token, _element), do: true
 
-  # The tokens of `tokens` that nothing in `elements` matches.
+  # The tokens of `tokens` that nothing in `elements` matches. Only a `NegationJoin` needs
+  # this. A plain negation's answer does not vary by token, and its clauses use that
+  # instead of paying a pass per element.
   defp unmatched(node, tokens, elements) do
-    Enum.filter(tokens, fn token ->
-      not Enum.any?(elements, &negation_match?(node, token, &1))
+    Enum.reject(tokens, fn token ->
+      Enum.any?(elements, &negation_match?(node, token, &1))
     end)
   end
 
   defp negation_match?(%Node.NegationJoin{filter: filter}, token, element) do
     !!filter.(token.bindings, element.bindings)
   end
-
-  defp negation_match?(_node, _token, _element), do: true
 
   defp passes?(%Node.Test{fun: fun}, token), do: !!fun.(token.bindings)
 
@@ -358,79 +479,167 @@ defmodule Rete.Engine.Nodes do
   # One extended token per group, plus the empty group when a collection that binds no
   # new variables still matches with nothing gathered.
   defp collected(%State{} = state, node, key, tokens) do
-    groups = groups_for(state, node, key)
+    # Read once per group, not once per group per token: every token under the key sees
+    # the same members, and a filtered collection narrows them from the same candidates.
+    groups =
+      for group_key <- groups_for(state, node, key),
+          do: {group_key, group_members(state, node, key, group_key)}
 
     for token <- tokens,
-        {group_key, candidates} <- groups,
-        facts = visible(node, token, candidates),
-        facts != [] or node.propagates_empty? do
-      Token.extend(token, facts, node.id, Map.merge(group_key, collection_binding(node, facts)))
+        {group_key, members} <- groups,
+        extended <- group_tokens(node, group_key, members, token),
+        do: extended
+  end
+
+  # No token under the key, so no match can change and nothing needs reading. Storing the
+  # members is all there is to do. This is the ordinary bulk load — a session is fed its
+  # facts, and the token that will collect them is still queued behind them — and reading
+  # each group back as it grew is what made filling one collection quadratic.
+  defp store_only(%State{} = state, node, key, group, direction) do
+    {memory, _changed} = update_groups(state.memory, node, key, group, direction)
+
+    %State{state | memory: memory}
+  end
+
+  defp recollect(%State{} = state, node, key, group, direction, tokens) do
+    candidates = group |> Enum.map(&group_key(node, key, &1)) |> Enum.uniq()
+    before = Map.new(candidates, &{&1, group_members(state, node, key, &1)})
+
+    {memory, changed} = update_groups(state.memory, node, key, group, direction)
+    state = %State{state | memory: memory}
+
+    touched = Enum.filter(candidates, &MapSet.member?(changed, &1))
+    now = Map.new(touched, &{&1, group_members(state, node, key, &1)})
+    changes = transitions(node, touched, before, now, tokens)
+
+    {state, retractions} = retract_left(state, node, Enum.flat_map(changes, &elem(&1, 0)))
+    {state, additions} = send_left(state, node, Enum.flat_map(changes, &elem(&1, 1)))
+
+    {state, retractions ++ additions}
+  end
+
+  # `{was, is}` per token per changed group, token-major so a rule's matches reach the
+  # agenda in token order however many groups the batch touched.
+  #
+  # A token whose match is unchanged must not appear. Retracting and re-sending it nets to
+  # the same facts, but the rule runs again, and a listener sees that.
+  #
+  # A plain collection cannot hide a change from a token, since every token sees the same
+  # members. A filtered one decides membership per token, so an element outside one token's
+  # filter leaves that match as it was.
+  defp transitions(%Node.Accumulate{} = node, touched, before, now, tokens) do
+    for token <- tokens, group_key <- touched do
+      {group_tokens(node, group_key, before[group_key], token),
+       group_tokens(node, group_key, now[group_key], token)}
     end
   end
 
-  # A group with no members is not the same as no group. A pattern that binds no new
-  # variables has every variable fixed by the token. So it has exactly one group, whether
-  # or not a fact landed in it. This is precomputed as `:propagates_empty?` at build time.
-  defp groups_for(%State{} = state, node, key) do
-    case Memory.groups(state.memory, node.id, key) do
-      empty when empty == %{} -> if node.propagates_empty?, do: %{key => []}, else: %{}
-      groups -> groups
+  defp transitions(%Node.AccumulateJoin{} = node, touched, before, now, tokens) do
+    for token <- tokens,
+        group_key <- touched,
+        was = group_tokens(node, group_key, before[group_key], token),
+        is = group_tokens(node, group_key, now[group_key], token),
+        was != is do
+      {was, is}
     end
   end
+
+  # What one group contributes for one token: one extended token, or nothing.
+  #
+  # `nil` members mean the group does not exist, which contributes nothing at all. That is
+  # not the same as a group holding nothing, which a collection binding no new variables
+  # still propagates — see `group_members/4`.
+  defp group_tokens(_node, _group_key, nil, _token), do: []
+
+  defp group_tokens(node, group_key, members, token) do
+    facts = visible(node, token, members)
+
+    if facts == [] and not node.propagates_empty? do
+      []
+    else
+      [Token.extend(token, facts, node.id, Map.merge(group_key, collection_binding(node, facts)))]
+    end
+  end
+
+  # The group keys a token must be offered. A group with no members is not the same as no
+  # group: a pattern that binds no new variables has every variable fixed by the token, so
+  # it has exactly one group whether or not a fact landed in it. This is precomputed as
+  # `:propagates_empty?` at build time.
+  defp groups_for(%State{} = state, node, key) do
+    case Memory.group_keys(state.memory, node.id, key) do
+      [] -> if node.propagates_empty?, do: [key], else: []
+      group_keys -> group_keys
+    end
+  end
+
+  # The same rule for one group: `nil` where it does not exist, `[]` where the node
+  # conjures the virtual empty one. `propagates_empty?` holds exactly when the pattern
+  # binds no new variables, so the only group key it can be asked about is the join key
+  # itself, and there is never more than one group to confuse it with.
+  defp group_members(%State{} = state, node, key, group_key) do
+    case Memory.group(state.memory, node.id, key, group_key) do
+      nil -> if node.propagates_empty?, do: [], else: nil
+      members -> members
+    end
+  end
+
+  # What a group stores. A plain collection keeps **facts**, because facts are what it
+  # binds: the stored list is handed to the rule as-is, so a member change produces the
+  # collection's old value and its new one without building either. A filtered one decides
+  # membership per token, and needs the bindings its alpha produced, so it keeps elements
+  # and pays a pass per token. `visible/3` closes over the difference.
+  defp member(%Node.Accumulate{}, %Element{fact: fact}), do: fact
+  defp member(%Node.AccumulateJoin{}, %Element{} = element), do: element
 
   # A plain collection takes its group whole. For a filtered one, the stored group is
   # only a candidate set, and membership is decided per token. That is why groups hold
   # elements, not facts — the filter needs the bindings the alpha produced.
+  # A filtered collection's group is only a candidate set: membership is decided per token,
+  # which is why it is read as elements rather than facts. A plain one gathers its group
+  # whole, and `group_members/4` has already read it as facts.
   defp visible(%Node.AccumulateJoin{filter: filter}, token, candidates) do
     for element <- candidates,
         filter.(token.bindings, element.bindings),
         do: element.fact
   end
 
-  defp visible(_node, _token, candidates), do: Enum.map(candidates, & &1.fact)
+  defp visible(_node, _token, facts), do: facts
 
   defp collection_binding(%{coll_binding: nil}, _facts), do: %{}
   defp collection_binding(%{coll_binding: name}, facts), do: %{name => facts}
 
+  # Applies a batch to the groups it names, and reports which of them actually changed.
+  # Retracting something a group never held changes nothing, and must not produce a
+  # retract-and-resend round trip downstream. That is the same guard
+  # `Rete.Memory.remove_elements/4` gives the join nodes.
+  #
+  # A group that loses its last member is dropped, by `Rete.Memory.remove_from_group/5`.
+  # The key holds binding values, so keeping empties would leak one per entity the session
+  # has seen. `group_members/4` conjures the virtual empty group when a token asks for one.
   defp update_groups(memory, node, key, elements, direction) do
-    Enum.reduce(elements, memory, fn element, memory ->
-      group_key = if node.new_bind == [], do: key, else: Map.take(element.bindings, node.new_bind)
-      current = memory |> Memory.groups(node.id, key) |> Map.get(group_key, [])
+    Enum.reduce(elements, {memory, MapSet.new()}, fn element, {memory, changed} ->
+      group_key = group_key(node, key, element)
+
+      member = member(node, element)
 
       case direction do
         :right ->
-          Memory.put_group(memory, node.id, key, group_key, insert_ordered(current, element))
+          {Memory.add_to_group(memory, node.id, key, group_key, member),
+           MapSet.put(changed, group_key)}
 
         :right_retract ->
-          case List.delete(current, element) do
-            # A group that loses its last member is dropped either way. The key holds
-            # binding values, so keeping empties would leak one per entity the session has
-            # seen. `groups_for/3` conjures the virtual empty group when a token asks for
-            # one.
-            [] -> Memory.drop_group(memory, node.id, key, group_key)
-            remaining -> Memory.put_group(memory, node.id, key, group_key, remaining)
+          case Memory.remove_from_group(memory, node.id, key, group_key, member) do
+            {memory, :removed} -> {memory, MapSet.put(changed, group_key)}
+            {memory, :absent} -> {memory, changed}
           end
       end
     end)
   end
 
-  # A group is kept in the term order of its facts, not arrival order. What a rule
-  # concludes has to be a function of the fact set. Under arrival order, `hd(orders)`
-  # would depend on how the session was fed. A retract-and-reinsert round trip would then
-  # move a member to the end, and change the conclusion.
-  defp insert_ordered([], element), do: [element]
-
-  defp insert_ordered([head | tail] = elements, element) do
-    if order_key(element) <= order_key(head) do
-      [element | elements]
-    else
-      [head | insert_ordered(tail, element)]
-    end
-  end
-
-  # The fact comes first, because that is what the rule sees. The bindings break ties
-  # between two elements over the same fact. This makes the order total.
-  defp order_key(%Element{fact: fact, bindings: bindings}), do: {fact, bindings}
+  # A collection that binds no new variables has every variable fixed by the token, so its
+  # one group is keyed by the join key itself.
+  defp group_key(%{new_bind: []}, key, _element), do: key
+  defp group_key(node, _key, element), do: Map.take(element.bindings, node.new_bind)
 
   # --- propagation helpers ---------------------------------------------------------------
 
@@ -449,13 +658,20 @@ defmodule Rete.Engine.Nodes do
 
   # Items arriving together can belong to different join groups. So the engine splits
   # them before anything touches memory. A group is the unit a join works on.
+  #
+  # Each group's ops are pushed and the whole lot reversed once. Appending per group would
+  # be quadratic in the number of groups, and one batch of n facts under n distinct join
+  # keys is exactly n groups.
   defp reduce_groups(%State{} = state, items, key_fun, fun) do
-    items
-    |> group_in_arrival_order(key_fun)
-    |> Enum.reduce({state, []}, fn {key, group}, {%State{} = state, ops} ->
-      {state, more} = fun.(state, key, group)
-      {state, ops ++ more}
-    end)
+    {state, reversed} =
+      items
+      |> group_in_arrival_order(key_fun)
+      |> Enum.reduce({state, []}, fn {key, group}, {%State{} = state, ops} ->
+        {state, more} = fun.(state, key, group)
+        {state, [more | ops]}
+      end)
+
+    {state, reversed |> Enum.reverse() |> Enum.concat()}
   end
 
   # Groups keyed the way `Enum.group_by/2` does, handed back in the order each key first
