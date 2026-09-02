@@ -571,8 +571,17 @@ declared. Measured at 4,000 matches with one returned: 200 calls take 97 ms unin
 0.07 ms indexed.
 
 The cost falls on writes. Inserting those 4,000 facts takes 2.4 ms with no index, 3.0 ms
-with one and 4.6 ms with three. Retracting them takes 10.0 ms, 16.5 ms and 28.4 ms. So
-declare the indexes your calls actually use, and check with `query_plan/3` that they do.
+with one and 4.6 ms with three. Retracting them takes 10.0 ms, 16.5 ms and 28.4 ms.
+
+Put the other way, an index costs about **three to five unindexed reads** to carry through a
+load, and it saves nearly the whole of every read after that. Retraction is where it gets
+expensive: a session loaded and then fully drained pays more like **twenty-five to thirty-five
+reads** for the same index, because taking from a bucket is what builds the machinery that
+makes removal O(1).
+
+So an index is worth declaring when a query is filtered more than a handful of times, and
+worth thinking twice about on facts that churn. Declare the ones your calls actually use, and
+check with `query_plan/3` that they do.
 
 ## The right hand side
 

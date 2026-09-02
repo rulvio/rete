@@ -624,8 +624,13 @@ facts reaching a query node:
 | three indexes | 4.6 ms | 28.4 ms |
 
 Retraction pays more than insertion, because taking from a bucket is what builds its
-`Rete.Bucket` index. Both stay linear in the fact count. Declaring three indexes to serve a
-query nobody filters selectively is a straight loss.
+`Rete.Bucket` index. Both stay linear in the fact count.
+
+In reads, an index costs about three to five unindexed calls to carry through a load, and
+about twenty-five to thirty-five if the session is also fully drained. It saves nearly the
+whole of each read it serves, so it pays for itself quickly on a session that accumulates
+and is queried, and slowly on one that churns. Declaring three indexes to serve a query
+nobody filters selectively is a straight loss.
 
 The unbucketed store stays whether or not an index exists. `Memory.all_tokens/2` unions a
 node's buckets in map order, so an unfiltered query read out of an index would order its
