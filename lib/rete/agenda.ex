@@ -16,6 +16,10 @@ defmodule Rete.Agenda do
   one rule's pending matches, so retracting the support of a rule with many of them was
   quadratic. See `docs/design/engine.md` §7.
 
+  What makes `remove/2` O(1) is the bucket's index, and a bucket builds that only when
+  something is first taken from it. An agenda that is only ever added to and drained —
+  a session that never retracts — never builds one.
+
       iex> alias Rete.{Activation, Agenda}
       iex> urgent = %Activation{node_id: :n1, salience: 10}
       iex> normal = %Activation{node_id: :n2, salience: 0}
@@ -97,11 +101,20 @@ defmodule Rete.Agenda do
   def remove(%__MODULE__{} = agenda, %Activation{} = activation) do
     key = Activation.key(activation)
 
-    with {:ok, bucket} <- Map.fetch(agenda.buckets, key),
-         {:ok, bucket} <- Bucket.take(bucket, activation) do
-      {store(agenda, key, bucket), :removed}
-    else
-      _ -> {agenda, :missing}
+    case Map.fetch(agenda.buckets, key) do
+      :error ->
+        {agenda, :missing}
+
+      {:ok, bucket} ->
+        case Bucket.take(bucket, activation) do
+          {:ok, bucket} ->
+            {store(agenda, key, bucket), :removed}
+
+          # The bucket comes back too, because the miss is what built its index. Kept
+          # without going through `store/3`, which would also decrement the size.
+          {:error, bucket} ->
+            {%__MODULE__{agenda | buckets: Map.put(agenda.buckets, key, bucket)}, :missing}
+        end
     end
   end
 

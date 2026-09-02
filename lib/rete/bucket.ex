@@ -19,12 +19,26 @@ defmodule Rete.Bucket do
   that went. Tombstones are compacted once they outnumber the living occurrences. See
   `docs/design/engine.md` §7.
 
+  ## The index is built on first use
+
+  `:counts` is what makes `take/2` O(1), and `take/2` is the only thing that reads it. A
+  bucket nothing is ever taken from — every beta memory of a session that only inserts,
+  and every agenda bucket of one that never cancels an activation — would maintain it for
+  nothing, hashing each item on the way in and again on the way out.
+
+  So it is not maintained until the first `take/2`, which builds it from the queue in one
+  pass and sets `:indexed?`. That build is safe precisely because `take/2` is also the only
+  thing that writes `:dead`: while `:indexed?` is false there are no tombstones, so the
+  queue holds exactly the live items.
+
+  This is never asymptotically worse. Pushing k items and taking one costs k bumps eagerly
+  and one k-item build lazily; after the first take both are O(1) per operation.
+
       iex> alias Rete.Bucket
       iex> {:ok, bucket} = Bucket.new([:a, :b, :a]) |> Bucket.take(:a)
       iex> Bucket.to_list(bucket)
       [:b, :a]
-      iex> Bucket.take(bucket, :never_stored)
-      :error
+      iex> {:error, _bucket} = Bucket.take(bucket, :never_stored)
       iex> {:ok, :b, _rest} = Bucket.pop(bucket)
   """
 
@@ -33,10 +47,11 @@ defmodule Rete.Bucket do
           counts: %{term() => pos_integer()},
           dead: %{term() => pos_integer()},
           live: non_neg_integer(),
-          dead_total: non_neg_integer()
+          dead_total: non_neg_integer(),
+          indexed?: boolean()
         }
 
-  defstruct [:queue, counts: %{}, dead: %{}, live: 0, dead_total: 0]
+  defstruct [:queue, counts: %{}, dead: %{}, live: 0, dead_total: 0, indexed?: false]
 
   @doc "A bucket holding `items`, in arrival order."
   @spec new([term()]) :: t()
@@ -50,6 +65,14 @@ defmodule Rete.Bucket do
   @spec push(t(), [term()]) :: t()
   def push(%__MODULE__{} = bucket, []), do: bucket
   def push(%__MODULE__{} = bucket, [item]), do: push_one(bucket, item)
+
+  def push(%__MODULE__{indexed?: false} = bucket, items) do
+    %__MODULE__{
+      bucket
+      | queue: Enum.reduce(items, bucket.queue, &:queue.in/2),
+        live: bucket.live + length(items)
+    }
+  end
 
   def push(%__MODULE__{} = bucket, items) do
     %__MODULE__{
@@ -68,6 +91,10 @@ defmodule Rete.Bucket do
   list form walks its argument three times and takes its length; this does neither.
   """
   @spec push_one(t(), term()) :: t()
+  def push_one(%__MODULE__{indexed?: false} = bucket, item) do
+    %__MODULE__{bucket | queue: :queue.in(item, bucket.queue), live: bucket.live + 1}
+  end
+
   def push_one(%__MODULE__{} = bucket, item) do
     %__MODULE__{
       bucket
@@ -78,14 +105,20 @@ defmodule Rete.Bucket do
   end
 
   @doc """
-  Removes the oldest live occurrence of `target`, or `:error` if there is none.
+  Removes the oldest live occurrence of `target`.
 
-  This returns `:error`, instead of silently doing nothing. A caller that propagated a
+  Returns `{:ok, bucket}`, or `{:error, bucket}` if there is no such occurrence. Both carry
+  a bucket, because the miss is what builds the index and throwing that away would rebuild
+  it on the next call — `Rete.Agenda` misses once per activation that has already fired.
+
+  A miss is reported rather than silently doing nothing. A caller that propagated a
   retraction of something the bucket never held would corrupt every count below it, and
   `Rete.Agenda` tells a cancelled activation from an already-fired one by exactly this.
   """
-  @spec take(t(), term()) :: {:ok, t()} | :error
-  def take(%__MODULE__{counts: counts} = bucket, target) do
+  @spec take(t(), term()) :: {:ok, t()} | {:error, t()}
+  def take(%__MODULE__{} = bucket, target) do
+    %__MODULE__{counts: counts} = bucket = index(bucket)
+
     if Map.has_key?(counts, target) do
       {:ok,
        compact(%__MODULE__{
@@ -96,7 +129,7 @@ defmodule Rete.Bucket do
            dead_total: bucket.dead_total + 1
        })}
     else
-      :error
+      {:error, bucket}
     end
   end
 
@@ -111,7 +144,7 @@ defmodule Rete.Bucket do
   def pop(%__MODULE__{} = bucket) do
     {item, %__MODULE__{} = bucket} = pop_live(bucket)
 
-    {:ok, item, %__MODULE__{bucket | counts: unbump(bucket.counts, item), live: bucket.live - 1}}
+    {:ok, item, %__MODULE__{bucket | counts: forget(bucket, item), live: bucket.live - 1}}
   end
 
   @doc "The live items, in arrival order."
@@ -129,6 +162,18 @@ defmodule Rete.Bucket do
   @doc "How many live items there are. O(1)."
   @spec size(t()) :: non_neg_integer()
   def size(%__MODULE__{live: live}), do: live
+
+  # Builds `:counts` from the queue, once. Nothing has been taken yet — `take/2` is the
+  # only writer of `:dead` and the only caller of this — so there are no tombstones and
+  # the queue holds exactly the live items.
+  defp index(%__MODULE__{indexed?: true} = bucket), do: bucket
+
+  defp index(%__MODULE__{queue: queue} = bucket) do
+    %__MODULE__{bucket | counts: queue |> :queue.to_list() |> Enum.frequencies(), indexed?: true}
+  end
+
+  defp forget(%__MODULE__{indexed?: false, counts: counts}, _item), do: counts
+  defp forget(%__MODULE__{counts: counts}, item), do: unbump(counts, item)
 
   # `live > 0` is the caller's guarantee, so the queue always yields a value here.
   #

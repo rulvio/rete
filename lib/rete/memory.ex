@@ -6,23 +6,31 @@ defmodule Rete.Memory do
   durability, checkpointing, and advanced tooling will need to reach in here. Treat its
   functions as liable to change.
 
-  Six memories, plus one flag:
+  Five memories, one index over them, and one flag:
 
       elements    node_id => join_key => Bucket of Element   right of a beta node
       tokens      node_id => join_key => Bucket of Token     left of a beta node
       accum       node_id => join_key => group_key => [member] what a collection gathered
       insertions  node_id => token => [[fact]]               truth maintenance
-      inserters   fact => {node_id, token} => count          the same, read backwards
       facts       fact => count                              what it was told
 
-  `inserters` holds nothing `insertions` does not. It is the same relation indexed the
-  other way, and it is maintained in step rather than derived on demand, because the two
-  readers both ask "which matches inserted *this fact*" — `Rete.Engine.well_founded/3` on
-  every conclusion that is already present, and `Rete.Inspect.derivations/2` per fact. Both
-  used to answer that with a pass over every insertion record in the session, which made
-  two rules concluding one fact quadratic. It is a multiset keyed on `{node_id, token}`,
-  rather than a list, so that two memories holding the same matches compare equal whatever
-  order they were reached in.
+      inserters   fact => {node_id, token} => count          `insertions`, reversed
+
+  `inserters` is not a memory. It holds nothing `insertions` does not — it is the same
+  relation indexed the other way, for the two readers that ask "which matches inserted
+  *this fact*": `Rete.Engine.well_founded/3`, on a conclusion that is already present, and
+  `Rete.Inspect.derivations/2`. Answering either from `insertions` costs a pass over every
+  insertion record in the session, which made two rules concluding one fact quadratic.
+
+  **It is `nil` until something needs it.** A ruleset where no rule ever concludes a fact
+  another rule already concluded never consults it, and maintaining it on every insertion
+  would be pure cost. `index_inserters/1` builds it in one pass and everything after is
+  maintained in step. It is a multiset keyed on `{node_id, token}`, rather than a list of
+  tokens, so it does not depend on the order the session reached it in.
+
+  Being a cache and not a memory, it is left out of `dump/1`: whether it happens to be
+  built is not part of what a session *is*, and two sessions fed the same facts in
+  different orders can legitimately disagree about it.
 
   Three properties are load-bearing. See `docs/design/engine.md` §4.
 
@@ -61,7 +69,7 @@ defmodule Rete.Memory do
           tokens: %{node_id() => %{key() => Bucket.t()}},
           accum: %{node_id() => %{key() => %{key() => [term()]}}},
           insertions: %{node_id() => %{Token.t() => [[term()]]}},
-          inserters: %{term() => %{inserter() => pos_integer()}},
+          inserters: %{term() => %{inserter() => pos_integer()}} | nil,
           facts: %{term() => pos_integer()},
           root_seeded?: boolean()
         }
@@ -70,7 +78,7 @@ defmodule Rete.Memory do
             tokens: %{},
             accum: %{},
             insertions: %{},
-            inserters: %{},
+            inserters: nil,
             facts: %{},
             root_seeded?: false
 
@@ -275,12 +283,10 @@ defmodule Rete.Memory do
         &Map.update(&1, token, [facts], fn batches -> batches ++ [facts] end)
       )
 
-    ref = {node_id, token}
-
     %__MODULE__{
       memory
       | insertions: insertions,
-        inserters: Enum.reduce(facts, memory.inserters, &add_inserter(&2, &1, ref))
+        inserters: index_add(memory.inserters, {node_id, token}, facts)
     }
   end
 
@@ -302,8 +308,7 @@ defmodule Rete.Memory do
       [batch | rest] ->
         by_token = store_at(by_token, token, rest)
         insertions = store_at(memory.insertions, node_id, by_token)
-        ref = {node_id, token}
-        inserters = Enum.reduce(batch, memory.inserters, &drop_inserter(&2, &1, ref))
+        inserters = index_drop(memory.inserters, {node_id, token}, batch)
 
         {%__MODULE__{memory | insertions: insertions, inserters: inserters}, batch}
     end
@@ -318,11 +323,47 @@ defmodule Rete.Memory do
   This is the index behind well-founded support. Reading it is a map lookup, which is the
   whole point: the answer used to be recomputed from every insertion record in the
   session, on every conclusion that was already present.
+
+  Falls back to that recomputation when the index has not been built, so a one-off reader
+  like `Rete.Inspect.derivations/2` gets a correct answer without forcing a build on a
+  session that would otherwise never need one. A caller that will ask repeatedly should
+  call `index_inserters/1` first and keep what it returns.
   """
   @spec inserters(t(), term()) :: [inserter()]
+  def inserters(%__MODULE__{inserters: nil, insertions: insertions}, fact) do
+    for {node_id, by_token} <- insertions,
+        {token, batches} <- by_token,
+        Enum.any?(batches, &(fact in &1)),
+        do: {node_id, token}
+  end
+
   def inserters(%__MODULE__{inserters: inserters}, fact) do
     inserters |> Map.get(fact, %{}) |> Map.keys()
   end
+
+  @doc """
+  Builds the `inserters` index if it is not built, and returns the memory holding it.
+
+  One pass over every insertion record. After this, `add_insertion/4` and
+  `take_insertion/3` keep it in step, so the pass happens at most once per session — and
+  not at all in a session where no rule ever concludes what another already concluded,
+  which is the only thing that consults it.
+  """
+  @spec index_inserters(t()) :: t()
+  def index_inserters(%__MODULE__{inserters: nil} = memory) do
+    index =
+      for {node_id, by_token} <- memory.insertions,
+          {token, batches} <- by_token,
+          batch <- batches,
+          fact <- batch,
+          reduce: %{} do
+        acc -> add_inserter(acc, fact, {node_id, token})
+      end
+
+    %__MODULE__{memory | inserters: presence(index)}
+  end
+
+  def index_inserters(%__MODULE__{} = memory), do: memory
 
   # --- the fact multiset ----------------------------------------------------------
 
@@ -378,7 +419,6 @@ defmodule Rete.Memory do
           tokens: %{node_id() => %{key() => [Token.t()]}},
           accum: %{node_id() => %{key() => %{key() => [term()]}}},
           insertions: %{node_id() => %{Token.t() => [[term()]]}},
-          inserters: %{term() => %{inserter() => pos_integer()}},
           facts: %{term() => pos_integer()},
           root_seeded?: boolean()
         }
@@ -388,7 +428,6 @@ defmodule Rete.Memory do
       tokens: listed(memory.tokens),
       accum: memory.accum,
       insertions: memory.insertions,
-      inserters: memory.inserters,
       facts: memory.facts,
       root_seeded?: memory.root_seeded?
     }
@@ -419,7 +458,7 @@ defmodule Rete.Memory do
       Enum.reduce(targets, {bucket(by_key, key), []}, fn target, {bucket, removed} ->
         case Bucket.take(bucket, target) do
           {:ok, bucket} -> {bucket, [target | removed]}
-          :error -> {bucket, removed}
+          {:error, bucket} -> {bucket, removed}
         end
       end)
 
@@ -433,6 +472,29 @@ defmodule Rete.Memory do
   # a binding value, so an entry pointing at nothing leaks.
   defp store_at(map, key, contents) when contents in [[], %{}], do: Map.delete(map, key)
   defp store_at(map, key, contents), do: Map.put(map, key, contents)
+
+  # Both no-ops while the index is unbuilt. `index_inserters/1` reads `insertions`, which
+  # is maintained either way, so there is nothing to catch up on when it is built later.
+  defp index_add(nil, _ref, _facts), do: nil
+
+  defp index_add(inserters, ref, facts),
+    do: Enum.reduce(facts, inserters, &add_inserter(&2, &1, ref))
+
+  defp index_drop(nil, _ref, _facts), do: nil
+
+  # Back to `nil` once it holds nothing. An empty index and no index are the same claim,
+  # and collapsing them means a session that drains fully returns to exactly the memory a
+  # fresh one starts with — which several invariants compare against directly. Rebuilding
+  # from an empty `insertions` costs nothing.
+  defp index_drop(inserters, ref, facts) do
+    facts |> Enum.reduce(inserters, &drop_inserter(&2, &1, ref)) |> presence()
+  end
+
+  # `nil` means "no entries", whether because nothing built the index or because it
+  # emptied. Both readings are safe, since an absent index is rebuilt from `insertions`,
+  # and collapsing them is what lets a fully drained session compare equal to a fresh one.
+  defp presence(index) when index == %{}, do: nil
+  defp presence(index), do: index
 
   # `inserters` mirrors `insertions`, one entry per occurrence of a fact in a batch. A
   # batch that names the same fact twice counts twice, so that taking the batch back

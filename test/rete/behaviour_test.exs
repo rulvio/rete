@@ -1734,7 +1734,6 @@ defmodule Rete.BehaviourTest do
         assert expected.facts == actual.facts
         assert expected.accum == actual.accum
         assert expected.insertions == actual.insertions
-        assert expected.inserters == actual.inserters
         assert expected.tokens == actual.tokens
       end
     end

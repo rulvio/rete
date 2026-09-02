@@ -1024,7 +1024,7 @@ defmodule Rete.EngineTest do
                tokens: %{},
                accum: %{},
                insertions: %{},
-               inserters: %{}
+               inserters: nil
              } ==
                memories(session)
     end
@@ -1080,7 +1080,7 @@ defmodule Rete.EngineTest do
                tokens: %{},
                accum: %{},
                insertions: %{},
-               inserters: %{}
+               inserters: nil
              } ==
                memories(session)
     end
@@ -1130,7 +1130,7 @@ defmodule Rete.EngineTest do
                tokens: %{},
                accum: %{},
                insertions: %{},
-               inserters: %{}
+               inserters: nil
              } ==
                memories(session)
     end

@@ -170,6 +170,10 @@ defmodule Rete.PropertyTest do
   # the view that means something.
   defp canon(%Session{state: %{memory: memory}}), do: Canon.dump(memory)
 
+  # The exact view: every match, in order, but without the derived state a
+  # `Rete.Bucket` carries — its tombstones, and whether its index has been built.
+  defp dump(%Session{state: %{memory: memory}}), do: Rete.Memory.dump(memory)
+
   # --- the oracle ---------------------------------------------------------------------
 
   # What the ruleset means over a fact multiset: the asserted facts with their
@@ -385,7 +389,12 @@ defmodule Rete.PropertyTest do
         # Equality with a fresh session, not "everything is empty": that is what
         # pins "exactly one root token" and "no join key left pointing at an
         # empty map", neither of which an emptiness check can see.
-        assert fresh().state.memory == drained.state.memory
+        #
+        # Through the dump, which is what `Rete.Memory.dump/1` exists for. The
+        # struct additionally carries derived state — a bucket's tombstones and
+        # whether its index has been built — and a session that drained something
+        # legitimately differs there from one that never held anything.
+        assert dump(fresh()) == dump(drained)
       end
     end
 
@@ -393,7 +402,7 @@ defmodule Rete.PropertyTest do
       check all(facts <- multiset(), max_runs: 40) do
         drained = facts |> build() |> Session.retract(facts) |> Session.fire_rules()
 
-        assert fresh().state.memory == drained.state.memory
+        assert dump(fresh()) == dump(drained)
       end
     end
 
@@ -467,12 +476,18 @@ defmodule Rete.PropertyTest do
     end
 
     property "the inserters index says exactly what the insertion records say" do
-      # `inserters` is `insertions` turned around. It is maintained in step rather
-      # than derived, which means it can drift in a way nothing else notices: the
-      # engine reads it only for a conclusion that is already present, so a stale
-      # entry stays invisible until the one ruleset that re-concludes something
-      # trips over it. Rebuild it the slow way and compare, after retractions have
-      # had a chance to leave one behind.
+      # `inserters` is `insertions` turned around. It is built on first use and
+      # maintained in step after that, which means it can drift in a way nothing
+      # else notices: the engine reads it only for a conclusion that is already
+      # present, so a stale entry stays invisible until the one ruleset that
+      # re-concludes something trips over it. Rebuild it the slow way and compare,
+      # after retractions have had a chance to leave one behind.
+      #
+      # `index_inserters/1` returns the memory unchanged when the session already
+      # built one, so this checks the *maintained* index wherever the run reached
+      # for it, and a fresh build where it never did. `Everything` re-concludes —
+      # two thresholds under one order flag the same fact twice — so the
+      # maintained path is the usual one here.
       check all(facts <- multiset(), facts != [], max_runs: 60) do
         session = build(facts)
 
@@ -483,9 +498,27 @@ defmodule Rete.PropertyTest do
             |> Session.fire_rules()
             |> Map.fetch!(:state)
             |> Map.fetch!(:memory)
+            |> Rete.Memory.index_inserters()
 
           assert rebuilt_inserters(memory) == memory.inserters,
                  "the index disagrees with the records after retracting #{inspect(dropped)}"
+        end
+      end
+    end
+
+    property "an unbuilt index answers the same as a built one" do
+      # The fallback path in `Rete.Memory.inserters/2`, which scans `insertions`
+      # rather than forcing a build. `Rete.Inspect.derivations/2` takes it, so it
+      # has to agree with the index for every fact the session holds.
+      check all(facts <- multiset(), facts != [], max_runs: 40) do
+        memory = facts |> build() |> Map.fetch!(:state) |> Map.fetch!(:memory)
+        unbuilt = %Rete.Memory{memory | inserters: nil}
+        built = Rete.Memory.index_inserters(unbuilt)
+
+        for fact <- Rete.Memory.facts(memory) do
+          assert Enum.sort(Rete.Memory.inserters(unbuilt, fact)) ==
+                   Enum.sort(Rete.Memory.inserters(built, fact)),
+                 "the scan and the index disagree about #{inspect(fact)}"
         end
       end
     end
@@ -680,7 +713,7 @@ defmodule Rete.PropertyTest do
         s |> Session.retract(f) |> Session.fire_rules()
       end)
 
-    assert fresh().state.memory == drained.state.memory
+    assert dump(fresh()) == dump(drained)
   end
 
   # --- queries follow the same facts ------------------------------------------------------------------
@@ -772,7 +805,7 @@ defmodule Rete.PropertyTest do
             {:take, item}, bucket ->
               case Bucket.take(bucket, item) do
                 {:ok, bucket} -> bucket
-                :error -> bucket
+                {:error, bucket} -> bucket
               end
           end)
 
@@ -822,11 +855,56 @@ defmodule Rete.PropertyTest do
             {:take, item}, bucket ->
               case Bucket.take(bucket, item) do
                 {:ok, bucket} -> bucket
-                :error -> bucket
+                {:error, bucket} -> bucket
               end
           end)
 
         assert Bucket.to_list(bucket) == drain_bucket(bucket)
+      end
+    end
+
+    # The index exists only to make `take/2` O(1), so a bucket nothing is ever
+    # taken from should not be paying for it. Pinned because the saving is
+    # invisible in behaviour: an eagerly-indexed bucket answers every question
+    # identically, just slower.
+    test "the index is not built until something is taken" do
+      pushed = Bucket.new([el(:a), el(:b), el(:a)])
+
+      refute pushed.indexed?
+      assert %{} == pushed.counts
+
+      {:ok, popped, _} = Bucket.pop(pushed)
+      assert el(:a) == popped
+      refute pushed.indexed?, "popping built the index"
+
+      {:ok, taken} = Bucket.take(pushed, el(:b))
+      assert taken.indexed?
+      assert %{el(:a) => 2} == taken.counts
+    end
+
+    # A miss is what a cancelled-but-already-fired activation looks like, and it
+    # is the call that builds the index. Handing the bucket back on that path is
+    # what stops the next miss rebuilding it.
+    test "a miss builds the index and hands the bucket back" do
+      {:error, indexed} = Bucket.new([el(:a)]) |> Bucket.take(el(:c))
+
+      assert indexed.indexed?
+      assert %{el(:a) => 1} == indexed.counts
+    end
+
+    # Whether the index was built or not must not change a single answer.
+    property "a lazily indexed bucket answers exactly as an eagerly indexed one" do
+      check all(ops <- list_of(one_of([{:push, element()}, {:take, element()}]), max_length: 60)) do
+        lazy = replay(ops, Bucket.new())
+
+        # Same operations, but with the index forced up front by a take that
+        # cannot match anything the generator produces.
+        {:error, seeded} = Bucket.take(Bucket.new(), el(:never))
+        eager = replay(ops, seeded)
+
+        assert Bucket.to_list(lazy) == Bucket.to_list(eager)
+        assert Bucket.size(lazy) == Bucket.size(eager)
+        assert drain_bucket(lazy) == drain_bucket(eager)
       end
     end
 
@@ -851,6 +929,19 @@ defmodule Rete.PropertyTest do
       :empty -> Enum.reverse(acc)
       {:ok, item, rest} -> drain_bucket(rest, [item | acc])
     end
+  end
+
+  defp replay(ops, bucket) do
+    Enum.reduce(ops, bucket, fn
+      {:push, item}, bucket ->
+        Rete.Bucket.push(bucket, [item])
+
+      {:take, item}, bucket ->
+        case Rete.Bucket.take(bucket, item) do
+          {:ok, bucket} -> bucket
+          {:error, bucket} -> bucket
+        end
+    end)
   end
 
   defp el(fact), do: %Rete.Element{fact: fact, bindings: %{}}

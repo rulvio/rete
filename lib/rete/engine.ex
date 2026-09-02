@@ -474,7 +474,7 @@ defmodule Rete.Engine do
   # The engine records facts against the token before inserting them. So retracting the
   # token later finds them, even if the insertion cascades.
   defp conclude(%State{} = state, %Activation{token: token}, node, result) do
-    facts =
+    {state, facts} =
       result
       |> unwrap!(node, token)
       |> check_facts!(state, node, token)
@@ -515,12 +515,17 @@ defmodule Rete.Engine do
   # Drops a conclusion the match already rests on, so it cannot support itself. This runs
   # only when the fact is already present, since that is the only way the cycle can
   # close. See `docs/design/engine.md` §8.
+  #
+  # Returns the state, because reaching the support index is what builds it. A ruleset
+  # where no rule ever re-concludes never gets here, and so never pays for it.
   defp well_founded(facts, %State{} = state, token) do
     if Enum.any?(facts, &Map.has_key?(state.memory.facts, &1)) do
+      state = %State{state | memory: Memory.index_inserters(state.memory)}
       support = support_closure(state, token)
-      Enum.reject(facts, &MapSet.member?(support, &1))
+
+      {state, Enum.reject(facts, &MapSet.member?(support, &1))}
     else
-      facts
+      {state, facts}
     end
   end
 

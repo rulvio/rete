@@ -130,9 +130,18 @@ compares. It is a multiset keyed on `{node_id, token}`, rather than a list of to
 that two memories holding the same matches compare equal whatever order they reached them
 in.
 
-Keeping it costs about 13% of a settling pass that never re-concludes anything, measured
-on 4,000 facts through a three-rule chain. That is the trade: a constant on every
-conclusion, against a quadratic on the conclusions that repeat.
+**It is built on first use, not maintained from the start.** Only `well_founded/3` needs
+it, and only on a conclusion that is already present. A ruleset where no rule ever
+re-concludes never reaches for it, and maintaining it on every insertion would be a
+constant charged for nothing — measured at about 13% of a settling pass. So `inserters` is
+`nil` until `Rete.Memory.index_inserters/1` builds it in one pass, and maintained in step
+after that. Rebuilding is always safe, which is why `nil` also stands for "emptied": an
+index and its absence are the same claim when it holds nothing, and collapsing them is
+what lets a fully drained session compare equal to a fresh one.
+
+Being a cache rather than a memory, it is left out of `dump/1`. Whether it happens to be
+built is not part of what a session *is*, and two sessions fed the same facts in different
+orders can legitimately disagree about it.
 
 `root_seeded?` is the one field that is not a memory — see §6.
 
@@ -566,11 +575,27 @@ the rule instead.
   to provide. See `network.md` §3.
 
   Two of the fixes are indexes, and an index is a trade, not a free lunch. Maintaining
-  `inserters` costs about 13% of a settling pass that never re-concludes anything, and
-  making `Rete.Agenda.remove/2` O(1) costs about another 13% of one that never cancels
-  anything. Both were measured by disabling the maintenance and re-running, not inferred.
-  Firing 4,000 activations went from 10.5 ms to 13.9 ms across the two. That is the price
-  of the table above.
+  `inserters` cost about 13% of a settling pass that never re-concludes anything, and
+  making `Rete.Agenda.remove/2` O(1) cost about another 13% of one that never cancels
+  anything. Both were measured by disabling the maintenance and re-running, not inferred:
+  firing 4,000 activations went from 10.5 ms to 13.9 ms across the two.
+
+  Both are now **built on first use** instead, which is what that measurement is for. A
+  session that only inserts never takes from a beta memory or cancels an activation, so no
+  `Rete.Bucket` builds its `:counts`; a ruleset where no rule re-concludes never reaches
+  `well_founded/3`, so `inserters` stays `nil`. Neither is asymptotically worse for a
+  session that does retract — pushing k items and taking one costs k bumps eagerly and one
+  k-item build lazily — and the shape that pays most is the shape that gains most, since a
+  bucket only crosses Erlang's 32-key flatmap threshold into hashing when a rule has that
+  many matches pending, which is also the only time O(1) cancellation matters.
+
+  Measured on insertion-only workloads, which is where the whole cost used to fall:
+
+  | workload | eager indexes | built on first use |
+  |---|---|---|
+  | insert 4,000, one conclusion each | 12.3 ms | **8.5 ms** |
+  | insert 4,000 through a three-rule chain | 38.2 ms | **25.2 ms** |
+  | 4,000 activations pending at once, then fire | 12.1 ms | **8.6 ms** |
 
   Still unmeasured: wide disjunctions, many rules over one fact type, and sessions large
   enough to matter for memory, not just time. Working-memory cost also grows with the

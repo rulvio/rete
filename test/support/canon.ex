@@ -12,6 +12,10 @@ defmodule Rete.Test.Canon do
   ones a collection produced. That is sound for these suites because no fact in their
   fixtures carries a list of its own. It hides order and nothing else — multiplicity and
   content still show, so a support imbalance or a lost member is still caught.
+
+  `Rete.Memory.dump/1` already leaves out `:inserters`, which is a cache built on first
+  use rather than part of what a session is: two feeds of the same facts can legitimately
+  disagree about whether it exists yet. It has its own property instead.
   """
 
   alias Rete.Memory
@@ -29,10 +33,6 @@ defmodule Rete.Test.Canon do
       tokens: sort_leaves(map_leaves(dumped.tokens, &Enum.map(&1, fn t -> token(t) end))),
       accum: Map.new(dumped.accum, fn {id, by_key} -> {id, sort_leaves(by_key)} end),
       insertions: Map.new(dumped.insertions, fn {id, by_token} -> {id, batches(by_token)} end),
-      inserters:
-        Map.new(dumped.inserters, fn {fact, refs} ->
-          {fact, Map.new(refs, fn {{id, t}, n} -> {{id, token(t)}, n} end)}
-        end),
       facts: dumped.facts,
       root_seeded?: dumped.root_seeded?
     }
