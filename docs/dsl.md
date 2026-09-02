@@ -525,9 +525,11 @@ Two things to know:
 * a query reads the session as it stands. If you query one with pending activations, you
   see what was true before they fired.
 
-Row order is unspecified. It does not vary with the order facts were inserted in, so a
-given set of facts always answers the same way. Sort the result yourself if order matters
-to you.
+Row order is unspecified. Rows come back in the order the facts arrived in, so the same
+facts fed in a different order answer in a different order. **Sort the result yourself if
+order matters to you.**
+
+The *set* of rows never varies, and one feed always answers the same way.
 
 ## The right hand side
 

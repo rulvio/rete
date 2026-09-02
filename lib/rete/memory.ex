@@ -16,21 +16,16 @@ defmodule Rete.Memory do
 
       inserters   fact => {node_id, token} => count          `insertions`, reversed
 
-  `inserters` is not a memory. It holds nothing `insertions` does not — it is the same
-  relation indexed the other way, for the two readers that ask "which matches inserted
-  *this fact*": `Rete.Engine.well_founded/3`, on a conclusion that is already present, and
-  `Rete.Inspect.derivations/2`. Answering either from `insertions` costs a pass over every
-  insertion record in the session, which made two rules concluding one fact quadratic.
+  `inserters` is not a memory. It holds nothing `insertions` does not, indexed the other way,
+  for the two readers that ask "which matches inserted *this fact*":
+  `Rete.Engine.well_founded/3` on a conclusion already present, and
+  `Rete.Inspect.derivations/2`. Answering from `insertions` costs a pass over every insertion
+  record, which made two rules concluding one fact quadratic.
 
-  **It is `nil` until something needs it.** A ruleset where no rule ever concludes a fact
-  another rule already concluded never consults it, and maintaining it on every insertion
-  would be pure cost. `index_inserters/1` builds it in one pass and everything after is
-  maintained in step. It is a multiset keyed on `{node_id, token}`, rather than a list of
-  tokens, so it does not depend on the order the session reached it in.
-
-  Being a cache and not a memory, it is left out of `dump/1`: whether it happens to be
-  built is not part of what a session *is*, and two sessions fed the same facts in
-  different orders can legitimately disagree about it.
+  **It is `nil` until something needs it.** A ruleset where no rule re-concludes never
+  consults it, so `index_inserters/1` builds it on first use and everything after is
+  maintained in step. It is a multiset keyed on `{node_id, token}`, so it does not depend on
+  the order the session reached it in. Being a cache, it is left out of `dump/1`.
 
   Three properties are load-bearing. See `docs/design/engine.md` §4.
 
@@ -207,7 +202,7 @@ defmodule Rete.Memory do
   @doc """
   The members of one collection group, or `nil` if there is no such group. O(1).
 
-  `nil` and `[]` are different answers. A group with no members does not exist; an empty
+  `nil` and `[]` are different answers. A group with no members does not exist. An empty
   collection a rule can legitimately see is `[]`, and only `Rete.Engine.Nodes` knows which
   of the two an absent group means. See `remove_from_group/5`.
 

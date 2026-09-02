@@ -163,12 +163,10 @@ defmodule Rete.Compiler.BetaGraph do
   # alone would share nodes across different parents, which would let tokens from one rule
   # join another rule's elements.
   #
-  # `:shared` is that pair indexed, rather than searched for. The search used to scan every
-  # child of every parent — and r rules whose first condition differs all hang off the
-  # root, so each one scanned the r-1 already there, comparing a sharing key and building a
-  # parent set per candidate. Compiling r rules over one fact type was quadratic in r.
-  # A node with exactly this parent set is a child of every parent in it, so the index
-  # answers the same question the scan did.
+  # `:shared` indexes that pair rather than searching for it. A node with exactly this
+  # parent set is a child of every parent in it, so the index answers what the old scan of
+  # every child of every parent did. The scan was quadratic in the rules under one parent,
+  # and r rules that share nothing all hang off the root.
   defp add_node(%__MODULE__{} = graph, node, parents) do
     parent_set = MapSet.new(parents)
     shared_key = {Node.sharing_key(node), parent_set}
@@ -194,16 +192,14 @@ defmodule Rete.Compiler.BetaGraph do
     end
   end
 
-  # Children are stored newest first and reversed by `children/2`, which is the only thing
-  # that reads them. Appending instead was O(children) per node added, and r rules that
-  # share nothing all hang off the root, so building them was quadratic in r. Reversing on
-  # read costs nothing by comparison: every caller of `children/2` immediately builds one
-  # op per child, so it was already doing O(children) work with the answer.
+  # Children are stored newest first and reversed by `children/2`, the only reader.
+  # Appending was O(children) per node added, the same quadratic `add_node/3` avoids.
+  # Reversing on read costs nothing beside it, since every caller of `children/2`
+  # immediately builds one op per child.
   #
   # `parent_set` rather than the parent list, because a disjunction whose branches share a
-  # terminal can name the same parent twice, and a child must be linked to it once. That
-  # is what the membership check here used to be for; the child itself is always new, since
-  # `add_node/3` only links one it has just created.
+  # terminal can name one parent twice. The child is always new, so it needs no membership
+  # check.
   defp link(%__MODULE__{} = graph, parent_set, child_id) do
     forward =
       Enum.reduce(parent_set, graph.forward, fn parent, forward ->

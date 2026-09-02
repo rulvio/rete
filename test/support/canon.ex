@@ -3,24 +3,21 @@ defmodule Rete.Test.Canon do
   Puts a session's memory into a form two differently-fed sessions can be compared in.
 
   A collection is kept in **reverse arrival order** (`Rete.Memory.add_to_group/5`), so two
-  sessions holding exactly the same members list them differently. `docs/dsl.md` says that
-  order is not a contract, and this is what saying so costs: anything carrying a collection
-  — a token, and therefore every memory keyed on one — has to be sorted before two feeds
-  can be compared.
+  sessions holding the same members list them differently. That order is not a contract.
+  Anything carrying a collection has to be sorted before two feeds can be compared, which
+  means a token, and every memory keyed on one.
 
-  **Only collections are sorted.** This takes a session rather than a memory so it can ask
-  the network which nodes are collections, and a token's matches are `{matched, node_id}`
-  pairs, so the node that produced each one is known exactly. A binding is sorted only when
-  the same token has a match at a collection node that writes that name — so a rule binding
-  a list out of a fact's own field is left alone, and so is another rule that happens to
-  reuse a collection's variable name for something else.
+  **Only collections are sorted.** This takes a session rather than a memory, so it can ask
+  the network which nodes are collections. A token's matches are `{matched, node_id}` pairs,
+  so the node that produced each one is known. A binding is sorted only when that same token
+  has a match at a collection node writing that name. A rule binding a list out of a fact's
+  own field is left alone, and so is a rule that reuses a collection's variable name.
 
-  It hides order and nothing else. Multiplicity and content still show, so a support
-  imbalance, a lost member or a duplicated one is still caught.
+  Order is all it hides. Multiplicity and content still show, so a lost member, a duplicated
+  one, or a support imbalance is still caught.
 
-  `Rete.Memory.dump/1` already leaves out `:inserters`, which is a cache built on first
-  use rather than part of what a session is: two feeds of the same facts can legitimately
-  disagree about whether it exists yet. It has its own properties instead.
+  `Rete.Memory.dump/1` already leaves out `:inserters`, a cache built on first use rather
+  than part of what a session is. It has its own properties.
   """
 
   alias Rete.Memory

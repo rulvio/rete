@@ -119,30 +119,23 @@ for the same reason. The engine retracts them one occurrence at a time.
 facts" — read backwards, this is exactly the edge that `Rete.Inspect.explain/2` walks. No
 separate bookkeeping exists for explanation.
 
-`inserters` is that same relation, indexed the other way, and it is the one derived thing
-in here. Both its readers ask "which matches inserted *this fact*": `well_founded/3` on
-every conclusion that turns out to be already present, and `Rete.Inspect.derivations/2`
-per fact. Answering that from `insertions` costs a pass over every insertion record in the
-session, which made two rules concluding one fact quadratic in the number of conclusions —
-and two rules concluding one fact is the ordinary shape of truth maintenance, not a
-pathology. It is maintained in `Rete.Memory.add_insertion/4` and `take_insertion/3`, the
-only two places `insertions` is written, and a property rebuilds it the slow way and
-compares. It is a multiset keyed on `{node_id, token}`, rather than a list of tokens, so
-that two memories holding the same matches compare equal whatever order they reached them
-in.
+`inserters` is that same relation indexed the other way, and the one derived thing in here.
+Both its readers ask "which matches inserted *this fact*". `well_founded/3` asks on every
+conclusion already present, and `Rete.Inspect.derivations/2` asks per fact. Answering from
+`insertions` costs a pass over every insertion record, which made two rules concluding one
+fact quadratic. Two rules concluding one fact is the ordinary shape of truth maintenance,
+not a pathology.
 
-**It is built on first use, not maintained from the start.** Only `well_founded/3` needs
-it, and only on a conclusion that is already present. A ruleset where no rule ever
-re-concludes never reaches for it, and maintaining it on every insertion would be a
-constant charged for nothing — measured at about 13% of a settling pass. So `inserters` is
-`nil` until `Rete.Memory.index_inserters/1` builds it in one pass, and maintained in step
-after that. Rebuilding is always safe, which is why `nil` also stands for "emptied": an
-index and its absence are the same claim when it holds nothing, and collapsing them is
-what lets a fully drained session compare equal to a fresh one.
+**It is built on first use.** A ruleset where no rule re-concludes never reaches for it, and
+maintaining it on every insertion would cost about 13% of a settling pass for nothing. So it
+stays `nil` until `Rete.Memory.index_inserters/1` builds it in one pass. After that
+`add_insertion/4` and `take_insertion/3` keep it in step, and a property rebuilds it the
+slow way and compares.
 
-Being a cache rather than a memory, it is left out of `dump/1`. Whether it happens to be
-built is not part of what a session *is*, and two sessions fed the same facts in different
-orders can legitimately disagree about it.
+`nil` also stands for "emptied", since an index and its absence are the same claim when it
+holds nothing. Collapsing them is what lets a fully drained session compare equal to a fresh
+one. It is a multiset keyed on `{node_id, token}`, so it does not depend on the order the
+session reached it in. Being a cache, it is left out of `dump/1`.
 
 `root_seeded?` is the one field that is not a memory — see §6.
 
@@ -193,7 +186,7 @@ cheap: the old collection and the new one are both in hand, sharing every cons c
 one, with nothing built to produce either. Sorting instead would mean walking the group to
 find each member's position, which is O(k) per change and quadratic over a group's life.
 
-A collection's *order* is therefore not a function of its fact set; its *membership* is.
+A collection's *order* is therefore not a function of its fact set. Its *membership* is.
 The engine used to sort to make the order one too, which nothing had asked for and every
 collection paid for. See `network.md` §3, and `docs/dsl.md` for the rule it puts on rule
 authors.
@@ -491,29 +484,23 @@ the rule instead.
 ## 12. Known gaps
 
 * **Removing a collection member is O(position), and a filtered collection is O(k) per
-  token.** Adding is O(1) — the stored list is the binding, and a member is prepended — but
-  removal walks to the member, and an `AccumulateJoin` has to re-decide membership per
+  token.** Adding is O(1), because the stored list is the binding and a member is
+  prepended. Removal walks to the member. An `AccumulateJoin` re-decides membership per
   token from the bindings its alpha produced, so it cannot share one value the way a plain
   collection does. Neither is quadratic in a session, and both are measured.
 
-  Neither is fixed by Clara's accumulator abstraction, and it is worth being exact about
-  that, because the abstraction is otherwise worth having. Clara's `acc/all` removes with
-  `drop-one-of`, which walks the collection twice and rebuilds it into a fresh vector,
-  where `List.delete/2` here walks once and shares the tail past the removal point. Its
-  `min` and `max` carry no `retract-fn` at all and re-reduce the whole group on every
-  retraction. On removal from a gathered collection this engine is the faster of the two.
+  Clara's accumulator abstraction fixes neither, and it is worth being exact about that.
+  Its `acc/all` retracts with `drop-one-of`, which walks the collection twice and rebuilds
+  it, where `List.delete/2` here walks once and shares the tail past the removal point. Its
+  `min` and `max` carry no `retract-fn` at all and re-reduce the whole group.
 
-  What the abstraction is actually for is **not gathering a collection in the first
-  place**. `count`, `sum` and `average` bind a number, with `retract-fn` of `dec` and `-`,
-  so both directions are O(1); `distinct` binds a frequency map. The saving is not the
-  arithmetic, it is that the token then carries a scalar: nothing allocates a k-element
-  list per member change, and nothing hashes or compares one in the memories downstream.
+  What that abstraction is *for* is not gathering a collection at all. `count`, `sum` and
+  `average` bind a number with an invertible `retract-fn`, so the token carries a scalar and
+  nothing allocates or hashes a k-element list per member change. The benchmark rule here is
+  the case in miniature: `orders = [...]` then `length(orders)` builds the whole list so the
+  body can measure it and throw it away. Most collection rules reduce like that, which is
+  why a `defrule` that could say so is the natural next step.
 
-  The benchmark rule here is the case in miniature — `orders = [...]` followed by
-  `length(orders)` builds the whole list on every change so that the body can measure it
-  and discard it. Most collection rules reduce. A `defrule` that could say so is the
-  natural next step if collections turn out to matter in practice; a rule that genuinely
-  wants the list would be no better off.
 * **A dropped circular support is not reconsidered.** See §8.
 * **The loop guard counts activations, not activation-group transitions.** Clara's signal
   is better in principle — a ruleset that legitimately fires 50,000 activations in one
@@ -539,148 +526,108 @@ the rule instead.
   checkpoint API, versioned migration, and distributed sync. The receiving process also
   needs the same compiled ruleset and listener modules loaded, since the function
   references resolve against them.
-* **Performance is measured by shape, and only along the axes the suite covers.**
-  `mix bench` (`bench/run.exs`) reports the empirical exponent rather than a wall-clock
-  number, so a reintroduced quadratic shows up as `~n^2` instead of as a figure nobody has
-  a baseline for.
+---
 
-  A first profiling pass found three quadratics in the size of a single join key's bucket
-  and fixed all three: `Rete.Agenda` became buckets by sort key instead of one sorted list,
-  each bucket became an ordered multiset instead of a list, and `insert/3` and `retract/3`
-  stopped appending to their op accumulator once per fact. Inserting 4,000 facts under one
-  key went from 250 ms to under 10 ms.
+## 13. Performance
 
-  A second pass added the scenarios that pass could not see, and found five more. All five
-  are fixed:
+`mix bench` (`bench/run.exs`) reports the empirical exponent of each scenario, not a
+wall-clock number. A reintroduced quadratic then shows up as `~n^2`, instead of as a figure
+nobody has a baseline for.
 
-  | scenario | was | now | fix |
-  |---|---|---|---|
-  | two rules concluding the same fact | `~n^1.93`, 193 ms | `~n^0.9`, 6 ms | the `inserters` index, §4 |
-  | filling one collection behind a live token | `~n^2.37`, 48 ms | `~n^0.9`, 0.6 ms | the stored list *is* the binding, §5 |
-  | filling one collection, no token yet | `~n^1.99`, 14 ms | `~n^1.0`, 0.7 ms | the same |
-  | filling one collection one member at a time | `~n^1.78`, 31 ms | `~n^1.1`, 4 ms | the same; this is the shape batching cannot hide |
-  | an unkeyed negation taking n blockers | `~n^1.72`, 30 ms | `~n^1.1`, 5 ms | a plain negation is an emptiness edge, §5 |
-  | cancel n pending activations of one rule | `~n^1.51`, 17 ms | `~n^1.1`, 8 ms | `Rete.Agenda` over `Rete.Bucket`, §7 |
+### What two passes found
 
-  Each has a **control** beside it in the suite, because an exponent alone does not say
-  which half of a scenario is slow. Two rules concluding the same fact used to run 37× the
-  *disjoint* conclusion of the same two rules over the same fact count, and now runs level
-  with it. The unkeyed negation runs against the keyed one; the collection runs at both
-  batch shapes and at one member per call, which is the only one of the three that no
-  amount of batching helps.
+The first pass found three quadratics in the size of one join key's bucket. `Rete.Agenda`
+became buckets by sort key instead of one sorted list. Each bucket became an ordered
+multiset instead of a list. `insert/3` and `retract/3` stopped appending to their op
+accumulator once per fact. Inserting 4,000 facts under one key went from 250 ms to under
+10 ms.
 
-  The three collection rows are one fix, and it is the only one that changed what the
-  engine guarantees. It withdrew a guarantee that should never have been made: collections
-  were sorted so that their order, and not merely their membership, was a function of the
-  fact set. Nothing in the contract asked for that, and it cost O(k) on every member change
-  to provide. See `network.md` §3.
+The second pass added the scenarios the first could not see, and found five more:
 
-  Two of the fixes are indexes, and an index is a trade, not a free lunch. Maintaining
-  `inserters` cost about 13% of a settling pass that never re-concludes anything, and
-  making `Rete.Agenda.remove/2` O(1) cost about another 13% of one that never cancels
-  anything. Both were measured by disabling the maintenance and re-running, not inferred:
-  firing 4,000 activations went from 10.5 ms to 13.9 ms across the two.
+| scenario | was | now | fix |
+|---|---|---|---|
+| two rules concluding the same fact | `~n^1.93`, 193 ms | `~n^0.9`, 6 ms | the `inserters` index, §4 |
+| filling one collection behind a live token | `~n^2.37`, 48 ms | `~n^0.9`, 0.6 ms | the stored list *is* the binding, §5 |
+| filling one collection, no token yet | `~n^1.99`, 14 ms | `~n^1.0`, 0.7 ms | the same |
+| filling one collection one member at a time | `~n^1.78`, 31 ms | `~n^1.1`, 4 ms | the same, and the shape batching cannot hide |
+| an unkeyed negation taking n blockers | `~n^1.72`, 30 ms | `~n^1.1`, 5 ms | a plain negation is an emptiness edge, §5 |
+| cancel n pending activations of one rule | `~n^1.51`, 17 ms | `~n^1.1`, 8 ms | `Rete.Agenda` over `Rete.Bucket`, §7 |
 
-  Both are now **built on first use** instead, which is what that measurement is for. A
-  session that only inserts never takes from a beta memory or cancels an activation, so no
-  `Rete.Bucket` builds its `:counts`; a ruleset where no rule re-concludes never reaches
-  `well_founded/3`, so `inserters` stays `nil`. Neither is asymptotically worse for a
-  session that does retract — pushing k items and taking one costs k bumps eagerly and one
-  k-item build lazily — and the shape that pays most is the shape that gains most, since a
-  bucket only crosses Erlang's 32-key flatmap threshold into hashing when a rule has that
-  many matches pending, which is also the only time O(1) cancellation matters.
+Each has a **control** beside it in the suite, because an exponent alone does not say which
+half of a scenario is slow. Two rules concluding the same fact used to run 37× the
+*disjoint* conclusion of the same two rules, and now runs level with it. The unkeyed
+negation runs against the keyed one. The collection runs at both batch shapes and at one
+member per call.
 
-  Measured on insertion-only workloads, which is where the whole cost used to fall:
+The three collection rows are one fix, and the only one that changed what the engine
+guarantees. See `network.md` §3.
 
-  | workload | eager indexes | built on first use |
-  |---|---|---|
-  | insert 4,000, one conclusion each | 12.3 ms | **8.5 ms** |
-  | insert 4,000 through a three-rule chain | 38.2 ms | **25.2 ms** |
-  | 4,000 activations pending at once, then fire | 12.1 ms | **8.6 ms** |
+### Indexes are built on first use
 
-  **Disjunctions** are measured now, and the claim `network.md` §3 makes holds. A rule with
-  d disjunctions of three branches compiles to `3d + 1` beta nodes — linear in d, where
-  flattening the left hand side to disjunctive normal form would give `3^d` paths: 25 nodes
-  at d = 8, against 6,561. `Rete.DisjunctionTest` pins the node count at four sizes rather
-  than the wall clock, since the claim is about work rather than milliseconds.
+Two of the fixes are indexes, and an index charges every operation for a benefit only some
+workloads collect. Maintaining `inserters` cost about 13% of a settling pass that never
+re-concludes. Making `Rete.Agenda.remove/2` O(1) cost about another 13% of one that never
+cancels. Both were measured by disabling the maintenance and re-running, not inferred.
 
-  Width is bounded rather than linear. Compile time is roughly quadratic in the branch
-  count of one gate — 0.11 ms at 32 branches, 0.31 at 64, 1.77 at 128, 7.34 at 256 — and
-  `Rete.DSL.Normalize` refuses a gate past 256, so the worst case is a few milliseconds,
-  once, at build time. That cap now has a test; it had none.
+Both are built on first use now. A session that only inserts never takes from a beta memory
+and never cancels an activation, so no `Rete.Bucket` builds its `:counts`. A ruleset where
+no rule re-concludes never reaches `well_founded/3`, so `inserters` stays `nil`. Neither is
+asymptotically worse for a session that does retract.
 
-  **Many rules over one fact type** is measured now too, and it was hiding two compile-time
-  quadratics rather than a runtime one. Firing is linear in the rule count, and inherently
-  so: every fact is offered to every alpha its type routes to. Compiling was O(r²) twice
-  over — `BetaGraph` found a shareable node by scanning every child of every parent, and r
-  rules that share nothing all hang off the root; and `link/3` appended to that child list,
-  which is O(children) per node added. Sharing is an index now, and children are stored
-  newest first and reversed by `children/2`, whose every caller was already doing
-  O(children) work with the answer. `Rete.Network.alpha_types/2` was a third, smaller one,
-  running `Enum.uniq/1` over a list that grew with each condition on a type.
+| insertion-only workload | eager indexes | built on first use |
+|---|---|---|
+| insert 4,000, one conclusion each | 12.3 ms | **8.5 ms** |
+| insert 4,000 through a three-rule chain | 38.2 ms | **25.2 ms** |
+| 4,000 activations pending at once, then fire | 12.1 ms | **8.6 ms** |
 
-  Compiling 1,024 rules over one fact type went from an extrapolated ~225 ms to 7.7 ms, and
-  the exponent from ~1.9 to ~1.3. `mix bench` keeps it there.
+### Compile time
 
-  **Memory** is measured too, with `:erts_debug.size_shared/1`, which counts a shared
-  subterm once — the honest measure for a structure that shares as heavily as this. It is
-  flat in the fact count and leak-free:
+Disjunctions hold to the claim `network.md` §3 makes. A rule with d disjunctions of three
+branches compiles to `3d + 1` beta nodes. That is linear in d, where flattening the left
+hand side to disjunctive normal form would give `3^d` paths — 25 nodes at d = 8, against
+6,561. `Rete.DisjunctionTest` pins the node count rather than the wall clock, since the
+claim is about work. Width is bounded instead of linear: compile time is roughly quadratic
+in one gate's branch count, and `Rete.DSL.Normalize` refuses a gate past 256, so the worst
+case is 7.3 ms once.
 
-  | shape | 1,000 facts | 8,000 facts | per fact |
-  |---|---|---|---|
-  | two-condition join | 533 KB | 4,275 KB | 546 B, unchanged across 8× |
-  | one collection | 90 KB | 359 KB (4,001) | ~91 B |
+Many rules over one fact type was hiding two compile-time quadratics rather than a runtime
+one. Firing is linear in the rule count, and inherently so, since every fact is offered to
+every alpha its type routes to. `BetaGraph` found a shareable node by scanning every child
+of every parent, and r rules that share nothing all hang off the root. `link/3` then
+appended to that child list, which is O(children) per node added. Sharing is an index now,
+and children are stored newest first and reversed by `children/2`. Compiling 1,024 rules
+over one fact type went from an extrapolated ~225 ms to 7.7 ms.
 
-  A session that inserts n facts and retracts them all comes back to **184 bytes**, whatever
-  n was — no tombstone residue, no level left pointing at an empty map. The structural
-  version of that claim is a property, not a byte count: "retracting everything returns the
-  memory to a fresh session's" compares the whole dump.
+### Memory
 
-  `inserters` measures zero in both shapes, since neither ruleset re-concludes and the index
-  is built on first use. It costs nothing to have when nothing wants it.
+Measured with `:erts_debug.size_shared/1`, which counts a shared subterm once. That is the
+honest measure for a structure that shares as heavily as this one.
 
-  One caveat when reading a breakdown by field: the totals are honest, but per-field figures
-  double-count, because a fact term is shared between `elements`, `tokens`, `insertions` and
-  `facts` and each field's own measurement counts it.
+| shape | 1,000 facts | 8,000 facts | per fact |
+|---|---|---|---|
+| two-condition join | 533 KB | 4,275 KB | 546 B, unchanged across 8× |
+| one collection | 90 KB | 359 KB (4,001) | ~91 B |
 
-  Nothing is left on the unmeasured list. What is left is judgement: 546 B per fact for a
-  two-condition join over three-element tuples is roughly seventeen times the raw fact, and
-  whether that is acceptable depends on a session size nobody has stated. Working-memory cost also grows with the **size** of a fact, not
-  only the count: a bucket keys its multiset on the whole item, so every push and take
-  hashes it. 500 facts at a 1-field payload cost 1.4 ms; the same 500 at 512 fields cost
-  4.2 ms.
+A session that inserts n facts and retracts them all comes back to **184 bytes**, whatever
+n was. `inserters` measures zero in both shapes, since neither ruleset re-concludes.
 
-  One method note worth keeping: the first attempt fixed the **wrong** quadratic. Beta
-  memory's append was real, and it had to go, but it was not what dominated. The agenda
-  dominated instead, and an earlier version of this list had already named it. The tell: a
-  query terminal, which has no agenda, was near-linear, while a production terminal was
-  not. Split the measurement, before you believe an attribution.
+Two cautions. Per-field figures double-count, because a fact term is shared between
+`elements`, `tokens`, `insertions` and `facts`, so only the totals are honest. And cost
+grows with the **size** of a fact as well as the count, since a bucket keys its multiset on
+the whole item: 500 facts cost 1.4 ms at a 1-field payload and 4.2 ms at 512 fields.
 
-  That mistake has now been made twice, in the other direction. This list previously read
-  "filling one collection measures `~n^1.94`, because `insert_ordered/2` is O(k) per
-  member" — a since-removed function that walked the group list to find where an arriving
-  member sorted. A probe seemed to confirm it: feed the members in descending term order,
-  making that walk a prepend, and the scenario goes linear. The attribution was still
-  wrong. The fixture inserted `{:cust, 1}` **first**, which puts that token's `:left` op
-  *behind* all n order ops in the queue, so every member arrived at a node with no tokens
-  under the key and the collection was never read back. The scenario was not reaching the
-  incremental path at all. Settle the token first and a second, independent quadratic
-  appears. A control that agrees with the hypothesis is not a control; vary the thing the
-  hypothesis says is irrelevant.
+### Three wrong attributions
 
-  A third variant of the same error, from the pass that fixed these. Keeping the group in a
-  `:gb_trees` was supposed to make filling a collection cheap, since ordered insertion drops
-  from O(k) to O(log k). On its own it made both collection scenarios **slower**, because
-  reading a group back then has to materialise it, which a list did not need to do. Batching
-  rescued the numbers by cutting read-backs from two per member to two per call, and the
-  tree got the credit.
+Every quadratic here was first blamed on the wrong thing. The first attempt blamed beta
+memory's append, which was real but not dominant — the agenda was. The tell: a query
+terminal, which has no agenda, was near-linear while a production terminal was not. The
+second blamed `insert_ordered/2` for the collection, and a probe agreed: feed members in
+descending order, making that walk a prepend, and the scenario goes linear. The fixture was
+hiding the real cause, because it inserted the token last and so never read a group back.
+The third credited a `:gb_trees` group for a win that batching had delivered, when the tree
+had in fact made both collection scenarios slower on its own.
 
-  It did not deserve it. The tree was answering the wrong question: the expensive thing was
-  never the ordered insert, it was that the stored group and the emitted binding were two
-  different values, so every change built one from the other. Dropping the sort — which the
-  contract never promised — makes the stored list *be* the binding, and the tree, the
-  materialisation and the batching-dependence all go away together. Filling a collection one
-  member at a time went from 31 ms to 4 ms, on top of what batching had already done.
-
-  Measure the fix, not just the bug. And when a fix needs a second fix to look good, check
-  whether the first one was the right one.
+Three rules come out of that. Split the measurement before believing an attribution. A
+control that agrees with the hypothesis is not a control — vary what the hypothesis says is
+irrelevant. And when a fix needs a second fix to look good, check whether the first one was
+right.

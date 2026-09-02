@@ -1776,7 +1776,7 @@ defmodule Rete.BehaviourTest do
 
         # Sorted: a collection is kept in reverse arrival order, so a member taken
         # out and put back comes back at the front rather than where it was. The
-        # members have to be the same ones; where they sit is not a contract.
+        # members have to be the same ones. Where they sit is not a contract.
         # `insertions` needs the same treatment, because it is keyed on the token
         # that carries the collection.
         canon_base = Canon.dump(base)

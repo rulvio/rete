@@ -481,17 +481,15 @@ defmodule Rete.Engine.Nodes do
     {state, retractions ++ additions}
   end
 
-  # `{was, is}` per token per changed group, token-major so that a rule's matches reach the
+  # `{was, is}` per token per changed group, token-major so a rule's matches reach the
   # agenda in token order however many groups the batch touched.
   #
-  # A token whose match is unchanged must not appear at all. Retracting and re-sending it
-  # nets to the same facts, so the only trace is that the rule ran again — which is exactly
-  # what a listener sees, and what a right hand side with an effect in it would do twice.
+  # A token whose match is unchanged must not appear. Retracting and re-sending it nets to
+  # the same facts, but the rule runs again, and a listener sees that.
   #
-  # A plain collection cannot hide a change from a token, because every token sees the same
-  # members: a group that changed changed for all of them, and the comparison is skipped. A
-  # filtered one decides membership per token, so an element landing outside one token's
-  # filter leaves that token's match exactly as it was.
+  # A plain collection cannot hide a change from a token, since every token sees the same
+  # members. A filtered one decides membership per token, so an element outside one token's
+  # filter leaves that match as it was.
   defp transitions(%Node.Accumulate{} = node, touched, before, now, tokens) do
     for token <- tokens, group_key <- touched do
       {group_tokens(node, group_key, before[group_key], token),
@@ -580,7 +578,7 @@ defmodule Rete.Engine.Nodes do
   #
   # A group that loses its last member is dropped, by `Rete.Memory.remove_from_group/5`.
   # The key holds binding values, so keeping empties would leak one per entity the session
-  # has seen; `group_members/4` conjures the virtual empty group when a token asks for one.
+  # has seen. `group_members/4` conjures the virtual empty group when a token asks for one.
   defp update_groups(memory, node, key, elements, direction) do
     Enum.reduce(elements, {memory, MapSet.new()}, fn element, {memory, changed} ->
       group_key = group_key(node, key, element)

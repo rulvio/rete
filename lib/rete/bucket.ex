@@ -19,20 +19,12 @@ defmodule Rete.Bucket do
   that went. Tombstones are compacted once they outnumber the living occurrences. See
   `docs/design/engine.md` §7.
 
-  ## The index is built on first use
+  `:counts` is what makes `take/2` O(1), and `take/2` is the only thing that reads it. So it
+  is not maintained until the first `take/2` builds it from the queue in one pass. A session
+  that only inserts never takes from a bucket, and pays nothing for an index it never uses.
 
-  `:counts` is what makes `take/2` O(1), and `take/2` is the only thing that reads it. A
-  bucket nothing is ever taken from — every beta memory of a session that only inserts,
-  and every agenda bucket of one that never cancels an activation — would maintain it for
-  nothing, hashing each item on the way in and again on the way out.
-
-  So it is not maintained until the first `take/2`, which builds it from the queue in one
-  pass and sets `:indexed?`. That build is safe precisely because `take/2` is also the only
-  thing that writes `:dead`: while `:indexed?` is false there are no tombstones, so the
-  queue holds exactly the live items.
-
-  This is never asymptotically worse. Pushing k items and taking one costs k bumps eagerly
-  and one k-item build lazily; after the first take both are O(1) per operation.
+  That build is safe because `take/2` is also the only writer of `:dead`. While `:indexed?`
+  is false there are no tombstones, so the queue holds exactly the live items.
 
       iex> alias Rete.Bucket
       iex> {:ok, bucket} = Bucket.new([:a, :b, :a]) |> Bucket.take(:a)
@@ -86,9 +78,9 @@ defmodule Rete.Bucket do
   @doc """
   Adds one item behind the ones already there.
 
-  The single-item clause of `push/2` delegates here, because that is the common call: an
-  agenda takes one activation at a time, and so does an alpha node feeding one fact. The
-  list form walks its argument three times and takes its length; this does neither.
+  The single-item clause of `push/2` delegates here, because one at a time is the common
+  call. The list form walks its argument three times and takes its length. This does
+  neither.
   """
   @spec push_one(t(), term()) :: t()
   def push_one(%__MODULE__{indexed?: false} = bucket, item) do
@@ -107,9 +99,9 @@ defmodule Rete.Bucket do
   @doc """
   Removes the oldest live occurrence of `target`.
 
-  Returns `{:ok, bucket}`, or `{:error, bucket}` if there is no such occurrence. Both carry
-  a bucket, because the miss is what builds the index and throwing that away would rebuild
-  it on the next call — `Rete.Agenda` misses once per activation that has already fired.
+  Returns `{:ok, bucket}`, or `{:error, bucket}` if there is no such occurrence. A miss
+  carries a bucket too, because the miss is what builds the index. `Rete.Agenda` misses
+  once per activation that has already fired, so discarding it would rebuild every time.
 
   A miss is reported rather than silently doing nothing. A caller that propagated a
   retraction of something the bucket never held would corrupt every count below it, and

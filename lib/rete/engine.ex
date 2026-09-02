@@ -103,17 +103,13 @@ defmodule Rete.Engine do
     batches |> Enum.reverse() |> Enum.concat() |> coalesce()
   end
 
-  # Merges the ops of one call that go the same way to the same node, so a node is handed
-  # the whole batch at once instead of one element per call. `alpha_ops/3` emits one op per
-  # fact per child, and a node's per-call work is not all per item: `Rete.Engine.Nodes`
-  # dispatches, groups by join key, and — at a negation or a collection — reads back what
-  # it already holds. Paying that once per fact is what made an unkeyed negation quadratic.
+  # Merges the ops of one call that go the same way to the same node, so a node is handed a
+  # batch instead of one element per call. A node's per-call work is not all per item. It
+  # dispatches, groups by join key, and at a negation or a collection reads back what it
+  # already holds. Paying that once per fact is what made an unkeyed negation quadratic.
   #
-  # **This decides an order.** Ops keep the position of the first fact that produced one
-  # for a given child, so a rule's own matches still arrive in fact order. What changes is
-  # that a rule reached through two different parents now sees all of one parent's tokens
-  # before any of the other's, where it used to see them interleaved fact by fact. Both are
-  # arrival orders; only the first is stable when a fact type feeds several conditions. See
+  # **This decides an order.** A rule's own matches still arrive in fact order. A rule
+  # reached by two routes now sees all of one route's matches before the other's. See
   # `docs/design/engine.md` §5.
   defp coalesce([]), do: []
   defp coalesce([_only] = ops), do: ops
@@ -202,8 +198,11 @@ defmodule Rete.Engine do
   `filters` narrows the matches by equality on the *bindings*, before the body runs. It
   may name any variable the left hand side binds.
 
-  Row order is **unspecified**. It is deterministic for a given set of facts. But nothing
-  about that order is a guarantee to build on.
+  Row order is **unspecified**. Rows follow the order the facts arrived in.
+
+  This used to sort every result, so that one fact set always answered the same way. The
+  contract never promised that, and the sort cost O(n log n) on every call. The rows are
+  the same without it. Only their sequence moves.
   """
   @spec query(State.t(), {module(), atom()}, keyword() | %{atom() => term()}) :: [term()]
   def query(state, ref, filters \\ [])
@@ -220,9 +219,6 @@ defmodule Rete.Engine do
       Enum.all?(filters, fn {key, value} -> Map.get(bindings, key) == value end)
     end)
     |> Enum.map(&node.rhs.(node.hash, &1.bindings))
-    # Beta memory is arrival ordered. Without this sort, the same facts, inserted in a
-    # different order, would answer the same query in a different order.
-    |> Enum.sort()
   end
 
   def query(%State{} = state, name, _filters) when is_atom(name) do

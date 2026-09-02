@@ -110,7 +110,7 @@ defmodule Rete.DisjunctionTest do
 
     test "matches are still the cross product of the branches that match" do
       # Every branch of all three disjunctions matches x = 1, so the rule holds
-      # 2 * 2 * 2 ways. That product is the semantics; only the *network* is
+      # 2 * 2 * 2 ways. That product is the semantics. Only the *network* is
       # linear.
       module = deep(DeepCross, 3, 2)
 
