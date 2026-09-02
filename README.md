@@ -28,7 +28,7 @@ becomes dormant again. You do no bookkeeping yourself.
 ```elixir
 def deps do
   [
-    {:rete, "~> 0.2.0"}
+    {:rete, "~> 0.3.0"}
   ]
 end
 ```
