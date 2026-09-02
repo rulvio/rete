@@ -26,8 +26,8 @@ release, so none was a promise. Each was costing real time to hold steady.
 
 ### Performance
 
-`mix bench` grew from nine scenarios to sixteen. The seven added cover the shapes the
-original suite could not see, and each has a control beside it. All sixteen are linear.
+`mix bench` grew from nine scenarios to seventeen. The eight added cover the shapes the
+original suite could not see, and each has a control beside it. All seventeen are linear.
 
 | scenario | was | now |
 |---|---|---|
@@ -43,6 +43,11 @@ node sharing is an index now, rather than a scan of every child of every parent.
 
 Sessions that only insert got about 30% faster. The two indexes that make retraction cheap
 are built on first use, so a session that never retracts never pays for them.
+
+Gathering into a collection is linear now, so a rule that reduces its collection in the
+right hand side costs 21 ms over 4,000 members. A rule that concludes a fact **holding** the
+collection costs 410 ms over the same members, because the engine hashes a fact that grows
+with the group. Conclude what you computed, not what you gathered. See `docs/dsl.md`.
 
 `docs/design/engine.md` §13 carries the measurements, the trades, and the three wrong
 attributions made along the way.

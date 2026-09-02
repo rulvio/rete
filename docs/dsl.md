@@ -320,6 +320,17 @@ There is one activation per group, holding the whole list, not one activation pe
 fact. Change any member, and the list changes. A different list is a different match, so
 the old conclusion is retracted and a new one takes its place.
 
+### What a collection costs
+
+Gathering is cheap. A member is prepended, so a change costs the engine one cons cell, and
+the list the body receives is the one the engine already holds. Reducing that list to a
+number in the right hand side, as above, is the shape the engine is built for.
+
+**Do not put the collection itself into a conclusion.** `{:spend, name, orders}` concludes a
+fact that grows with the group, and the engine hashes that whole fact on every member
+change. Measured over 4,000 members added one at a time, that is 410 ms against 21 ms for
+the reducing form. Conclude what you computed, not what you gathered.
+
 ### The empty-collection rule
 
 Whether a collection can match *nothing* depends on whether it introduces a variable of

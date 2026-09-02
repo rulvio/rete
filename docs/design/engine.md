@@ -495,11 +495,31 @@ the rule instead.
   `min` and `max` carry no `retract-fn` at all and re-reduce the whole group.
 
   What that abstraction is *for* is not gathering a collection at all. `count`, `sum` and
-  `average` bind a number with an invertible `retract-fn`, so the token carries a scalar and
-  nothing allocates or hashes a k-element list per member change. The benchmark rule here is
-  the case in miniature: `orders = [...]` then `length(orders)` builds the whole list so the
-  body can measure it and throw it away. Most collection rules reduce like that, which is
-  why a `defrule` that could say so is the natural next step.
+  `average` bind a number with an invertible `retract-fn`, so the token carries a scalar
+  rather than a list.
+
+  **How much that is worth here has changed, and this list said otherwise for a while.**
+  It read "`orders = [...]` then `length(orders)` builds the whole list so the body can
+  measure it and throw it away". That was true when a collection was rebuilt on every member
+  change. Since the stored list became the binding, nothing rebuilds it — the new value is
+  the old one with a cons on the front, and the token holds the same term the group does.
+
+  What is left, measured by inserting members one at a time and firing after each:
+
+  | n | body reads `os` | body ignores `os` | the body's share |
+  |---|---|---|---|
+  | 1,000 | 3.4 ms | 2.7 ms | 0.7 ms |
+  | 2,000 | 8.2 ms | 5.2 ms | 3.0 ms |
+  | 4,000 | 21.5 ms | 10.2 ms | 11.2 ms |
+
+  The engine's half is linear. The quadratic that remains is the **rule body**, re-reducing
+  a list that grew by one: `length/1` over k members, n times. At 4,000 members that is
+  already 52% of the total and rising.
+
+  So an accumulator would still pay, but for a different reason than this list used to give.
+  It would not save the engine work. It would stop the body redoing a fold whose answer the
+  engine could have carried forward. Whether that is worth a change to what `defrule`
+  accepts depends on collections large enough for the body's half to matter.
 
 * **A dropped circular support is not reconsidered.** See §8.
 * **The loop guard counts activations, not activation-group transitions.** Clara's signal
@@ -561,6 +581,35 @@ member per call.
 
 The three collection rows are one fix, and the only one that changed what the engine
 guarantees. See `network.md` §3.
+
+### What is left in a collection is the rule body
+
+That fix moved the cost rather than removing all of it, and this section claimed otherwise
+for several passes. The claim was that a rule which only reduces a collection — `orders`
+then `length(orders)` — still pays to build the list. It does not, and has not since the
+stored list became the binding.
+
+Inserting members one at a time and firing after each, with the same rule written twice:
+
+| n | body reads the collection | body ignores it | the body's share |
+|---|---|---|---|
+| 1,000 | 3.4 ms | 2.7 ms | 0.7 ms |
+| 2,000 | 8.2 ms | 5.2 ms | 3.0 ms |
+| 4,000 | 21.5 ms | 10.2 ms | 11.2 ms |
+
+The middle column is the engine, and it is linear: each doubling costs 1.95×. The right
+column is `length/1` over a list that grew by one, n times, and it is quadratic: 3.8× per
+doubling. At 4,000 members the body is over half the total.
+
+Two things follow. The engine has no collection gap left to close against Clara at these
+shapes. And an accumulator — a `defrule` that could say *count* rather than *gather, then
+count* — would still pay, but for the body's half, not the engine's. The gap this document
+used to describe is gone. A smaller one, in different code, is not.
+
+One shape is worse than either column. A body that puts the collection **into** its
+conclusion, rather than reducing it, runs at `~n^1.97` and 410 ms at n = 4,000, because
+`Memory.add_fact/2` hashes a k-element fact per member change. That is inherent to
+concluding a value that grows, not a defect in the collection.
 
 ### Indexes are built on first use
 
