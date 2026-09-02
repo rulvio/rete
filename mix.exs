@@ -83,6 +83,15 @@ defmodule Rete.MixProject do
         "docs/design/observability.md": [title: "Observability"],
         LICENSE: [title: "License"]
       ],
+      # The design docs name internals by their real name. These have no page to link to —
+      # the first three are private, and the last is hidden in OTP — so ExDoc renders them
+      # as plain code instead of trying, and warning that it cannot.
+      skip_code_autolink_to: [
+        "Rete.Engine.coalesce/1",
+        "Rete.Engine.well_founded/3",
+        "Rete.Inspect.derivations/2",
+        ":erts_debug.size_shared/1"
+      ],
       groups_for_extras: [
         Guides: ["README.md", "docs/dsl.md"],
         Design: ~r"docs/design/",
