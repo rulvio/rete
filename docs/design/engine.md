@@ -614,6 +614,19 @@ filter covers.
 Per call that is 0.3 µs, against Clara's 0.5 µs on the same probe. Flat in the match count,
 where the scan is linear in it.
 
+An index buys that with write cost, one bucket entry per match per declared set. Over 4,000
+facts reaching a query node:
+
+| | insert | retract |
+|---|---|---|
+| no index | 2.4 ms | 10.0 ms |
+| one index | 3.0 ms | 16.5 ms |
+| three indexes | 4.6 ms | 28.4 ms |
+
+Retraction pays more than insertion, because taking from a bucket is what builds its
+`Rete.Bucket` index. Both stay linear in the fact count. Declaring three indexes to serve a
+query nobody filters selectively is a straight loss.
+
 The unbucketed store stays whether or not an index exists. `Memory.all_tokens/2` unions a
 node's buckets in map order, so an unfiltered query read out of an index would order its
 rows by binding value rather than by arrival. `Rete.Inspect` also counts a node's tokens by

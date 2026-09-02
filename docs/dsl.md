@@ -567,8 +567,12 @@ Rete.Inspect.query_plan(session, {MyApp.Orders, :flagged_for}, amt: 250) #=> :sc
 ```
 
 An index costs one bucket entry per match per declared set, and nothing at all when none is
-declared. Measured at 4,000 matches with one returned: 97 ms for 200 unindexed calls against
+declared. Measured at 4,000 matches with one returned: 200 calls take 97 ms unindexed and
 0.07 ms indexed.
+
+The cost falls on writes. Inserting those 4,000 facts takes 2.4 ms with no index, 3.0 ms
+with one and 4.6 ms with three. Retracting them takes 10.0 ms, 16.5 ms and 28.4 ms. So
+declare the indexes your calls actually use, and check with `query_plan/3` that they do.
 
 ## The right hand side
 
