@@ -622,7 +622,30 @@ the rule instead.
   Compiling 1,024 rules over one fact type went from an extrapolated ~225 ms to 7.7 ms, and
   the exponent from ~1.9 to ~1.3. `mix bench` keeps it there.
 
-  Still unmeasured: sessions large enough to matter for memory, not just time. Working-memory cost also grows with the **size** of a fact, not
+  **Memory** is measured too, with `:erts_debug.size_shared/1`, which counts a shared
+  subterm once — the honest measure for a structure that shares as heavily as this. It is
+  flat in the fact count and leak-free:
+
+  | shape | 1,000 facts | 8,000 facts | per fact |
+  |---|---|---|---|
+  | two-condition join | 533 KB | 4,275 KB | 546 B, unchanged across 8× |
+  | one collection | 90 KB | 359 KB (4,001) | ~91 B |
+
+  A session that inserts n facts and retracts them all comes back to **184 bytes**, whatever
+  n was — no tombstone residue, no level left pointing at an empty map. The structural
+  version of that claim is a property, not a byte count: "retracting everything returns the
+  memory to a fresh session's" compares the whole dump.
+
+  `inserters` measures zero in both shapes, since neither ruleset re-concludes and the index
+  is built on first use. It costs nothing to have when nothing wants it.
+
+  One caveat when reading a breakdown by field: the totals are honest, but per-field figures
+  double-count, because a fact term is shared between `elements`, `tokens`, `insertions` and
+  `facts` and each field's own measurement counts it.
+
+  Nothing is left on the unmeasured list. What is left is judgement: 546 B per fact for a
+  two-condition join over three-element tuples is roughly seventeen times the raw fact, and
+  whether that is acceptable depends on a session size nobody has stated. Working-memory cost also grows with the **size** of a fact, not
   only the count: a bucket keys its multiset on the whole item, so every push and take
   hashes it. 500 facts at a 1-field payload cost 1.4 ms; the same 500 at 512 fields cost
   4.2 ms.
