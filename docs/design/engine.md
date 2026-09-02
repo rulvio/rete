@@ -90,15 +90,16 @@ matches.
 **`Rete.Activation`** — a production node plus the token that satisfied it, plus the
 salience and compile order it will be sorted by.
 
-## 4. The six memories
+## 4. The five memories, and one index over them
 
 ```
-elements    node_id => join_key => Bucket of Element   right side of a beta node
-tokens      node_id => join_key => Bucket of Token     left side of a beta node
-accum       node_id => join_key => group_key => tree   what a collection gathered
-insertions  node_id => token => [[fact]]               truth maintenance
-inserters   fact => {node_id, token} => count          the same, read backwards
-facts       fact => count                              what the session holds
+elements    node_id => join_key => Bucket of Element     right side of a beta node
+tokens      node_id => join_key => Bucket of Token       left side of a beta node
+accum       node_id => join_key => group_key => [member] what a collection gathered
+insertions  node_id => token => [[fact]]                 truth maintenance
+facts       fact => count                                what the session holds
+
+inserters   fact => {node_id, token} => count            `insertions`, reversed
 ```
 
 Three properties matter more than the shapes.
@@ -608,8 +609,20 @@ the rule instead.
   `Rete.DSL.Normalize` refuses a gate past 256, so the worst case is a few milliseconds,
   once, at build time. That cap now has a test; it had none.
 
-  Still unmeasured: many rules over one fact type, and sessions large enough to matter for
-  memory, not just time. Working-memory cost also grows with the **size** of a fact, not
+  **Many rules over one fact type** is measured now too, and it was hiding two compile-time
+  quadratics rather than a runtime one. Firing is linear in the rule count, and inherently
+  so: every fact is offered to every alpha its type routes to. Compiling was O(r²) twice
+  over — `BetaGraph` found a shareable node by scanning every child of every parent, and r
+  rules that share nothing all hang off the root; and `link/3` appended to that child list,
+  which is O(children) per node added. Sharing is an index now, and children are stored
+  newest first and reversed by `children/2`, whose every caller was already doing
+  O(children) work with the answer. `Rete.Network.alpha_types/2` was a third, smaller one,
+  running `Enum.uniq/1` over a list that grew with each condition on a type.
+
+  Compiling 1,024 rules over one fact type went from an extrapolated ~225 ms to 7.7 ms, and
+  the exponent from ~1.9 to ~1.3. `mix bench` keeps it there.
+
+  Still unmeasured: sessions large enough to matter for memory, not just time. Working-memory cost also grows with the **size** of a fact, not
   only the count: a bucket keys its multiset on the whole item, so every push and take
   hashes it. 500 facts at a 1-field payload cost 1.4 ms; the same 500 at 512 fields cost
   4.2 ms.

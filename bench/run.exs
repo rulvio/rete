@@ -217,6 +217,41 @@ defmodule Bench.Shared do
   defrule from_y({:y, i}), do: {:derived, i}
 end
 
+defmodule Bench.Width do
+  @moduledoc false
+
+  # r rules, each a distinct condition on one fact type, so no alpha is shared and
+  # every one of them hangs off the beta root. Generated rather than written out,
+  # because the shape only shows at a width nobody writes by hand.
+  #
+  # This measures **compile** time, not firing. Sharing a beta node requires the same
+  # sharing key and the same parent set, and looking that up used to be a scan of
+  # every sibling — quadratic in the number of rules over one type.
+  def module(r) do
+    name = Module.concat(Bench.Width.Generated, "R#{r}")
+
+    defs =
+      for i <- 1..r do
+        quote do
+          defrule unquote(:"r#{i}")({:ping, x} when rem(x, unquote(i)) == 0) do
+            {:pong, unquote(i), x}
+          end
+        end
+      end
+
+    Module.create(
+      name,
+      quote do
+        use Rete.Ruleset
+        unquote_splicing(defs)
+      end,
+      Macro.Env.location(__ENV__)
+    )
+
+    name
+  end
+end
+
 defmodule Bench.Blocking do
   @moduledoc false
   use Rete.Ruleset
@@ -464,6 +499,19 @@ Bench.scenario(
   note:
     "the same members through n calls instead of one, so nothing can be batched — " <>
       "this is the shape the scenario above hides"
+)
+
+# Compiled up front: the scenario times `Rete.Compiler.build/1`, not the macro
+# expansion that defines the rules.
+width_modules = for r <- [128, 256, 512, 1024], into: %{}, do: {r, Bench.Width.module(r)}
+
+Bench.scenario(
+  "compile r rules over one fact type",
+  [128, 256, 512, 1024],
+  fn r -> Rete.Compiler.build([width_modules[r]]) end,
+  note:
+    "every rule hangs off the beta root, so sharing has to look past all the others — " <>
+      "was O(r\u00B2) while that was a scan"
 )
 
 Bench.compare(

@@ -37,10 +37,15 @@ defmodule Rete.Compiler.BetaGraph do
           nodes: %{id() => Node.t()},
           forward: %{id() => [id()]},
           backward: %{id() => MapSet.t(id())},
+          shared: %{{term(), MapSet.t(id())} => id()},
           next_id: id()
         }
 
-  defstruct nodes: %{}, forward: %{@root_id => []}, backward: %{}, next_id: 1
+  defstruct nodes: %{},
+            forward: %{@root_id => []},
+            backward: %{},
+            shared: %{},
+            next_id: 1
 
   @doc """
   The id of the artificial root every rule hangs from.
@@ -84,7 +89,9 @@ defmodule Rete.Compiler.BetaGraph do
   The children of a node, in the order they were added.
   """
   @spec children(t(), id()) :: [id()]
-  def children(%__MODULE__{forward: forward}, id), do: Map.get(forward, id, [])
+  def children(%__MODULE__{forward: forward}, id) do
+    forward |> Map.get(id, []) |> Enum.reverse()
+  end
 
   @doc """
   The parents of a node.
@@ -152,11 +159,25 @@ defmodule Rete.Compiler.BetaGraph do
 
   # --- node insertion and sharing ---------------------------------------------
 
+  # Sharing requires the same key **and** exactly the same parent set. Keying on the key
+  # alone would share nodes across different parents, which would let tokens from one rule
+  # join another rule's elements.
+  #
+  # `:shared` is that pair indexed, rather than searched for. The search used to scan every
+  # child of every parent — and r rules whose first condition differs all hang off the
+  # root, so each one scanned the r-1 already there, comparing a sharing key and building a
+  # parent set per candidate. Compiling r rules over one fact type was quadratic in r.
+  # A node with exactly this parent set is a child of every parent in it, so the index
+  # answers the same question the scan did.
   defp add_node(%__MODULE__{} = graph, node, parents) do
     parent_set = MapSet.new(parents)
+    shared_key = {Node.sharing_key(node), parent_set}
 
-    case find_shared(graph, node, parents, parent_set) do
-      nil ->
+    case Map.fetch(graph.shared, shared_key) do
+      {:ok, id} ->
+        {graph, id}
+
+      :error ->
         id = graph.next_id
         node = Node.put_id(node, id)
 
@@ -165,40 +186,28 @@ defmodule Rete.Compiler.BetaGraph do
           | nodes: Map.put(graph.nodes, id, node),
             forward: Map.put(graph.forward, id, []),
             backward: Map.put(graph.backward, id, parent_set),
+            shared: Map.put(graph.shared, shared_key, id),
             next_id: id + 1
         }
 
-        {link(graph, parents, id), id}
-
-      id ->
-        {graph, id}
+        {link(graph, parent_set, id), id}
     end
   end
 
-  # A candidate must be a child of the parents, AND have exactly this parent set.
-  # Checking only the key would share nodes across different parents. That would let
-  # tokens from one rule join another rule's elements.
-  defp find_shared(%__MODULE__{} = graph, node, parents, parent_set) do
-    key = Node.sharing_key(node)
-
-    parents
-    |> Enum.flat_map(&children(graph, &1))
-    |> Enum.uniq()
-    |> Enum.find(fn id ->
-      candidate = Map.get(graph.nodes, id)
-
-      candidate != nil and
-        Node.sharing_key(candidate) == key and
-        MapSet.equal?(parents(graph, id), parent_set)
-    end)
-  end
-
-  defp link(%__MODULE__{} = graph, parents, child_id) do
+  # Children are stored newest first and reversed by `children/2`, which is the only thing
+  # that reads them. Appending instead was O(children) per node added, and r rules that
+  # share nothing all hang off the root, so building them was quadratic in r. Reversing on
+  # read costs nothing by comparison: every caller of `children/2` immediately builds one
+  # op per child, so it was already doing O(children) work with the answer.
+  #
+  # `parent_set` rather than the parent list, because a disjunction whose branches share a
+  # terminal can name the same parent twice, and a child must be linked to it once. That
+  # is what the membership check here used to be for; the child itself is always new, since
+  # `add_node/3` only links one it has just created.
+  defp link(%__MODULE__{} = graph, parent_set, child_id) do
     forward =
-      Enum.reduce(parents, graph.forward, fn parent, forward ->
-        Map.update(forward, parent, [child_id], fn existing ->
-          if child_id in existing, do: existing, else: existing ++ [child_id]
-        end)
+      Enum.reduce(parent_set, graph.forward, fn parent, forward ->
+        Map.update(forward, parent, [child_id], &[child_id | &1])
       end)
 
     %__MODULE__{graph | forward: forward}
