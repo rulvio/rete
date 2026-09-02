@@ -1728,8 +1728,8 @@ defmodule Rete.BehaviourTest do
         # else is compared exactly: multiplicity, support counts and the truth
         # maintenance records all still have to match, or one order built an
         # imbalance the fact list cannot show.
-        expected = Canon.dump(base.state.memory)
-        actual = Canon.dump(session.state.memory)
+        expected = Canon.dump(base)
+        actual = Canon.dump(session)
 
         assert expected.facts == actual.facts
         assert expected.accum == actual.accum
@@ -1779,8 +1779,8 @@ defmodule Rete.BehaviourTest do
         # members have to be the same ones; where they sit is not a contract.
         # `insertions` needs the same treatment, because it is keyed on the token
         # that carries the collection.
-        canon_base = Canon.dump(base.state.memory)
-        canon_restored = Canon.dump(restored.state.memory)
+        canon_base = Canon.dump(base)
+        canon_restored = Canon.dump(restored)
 
         assert canon_base.accum == canon_restored.accum,
                "collection groups changed for #{inspect(fact)}"

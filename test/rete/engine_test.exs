@@ -460,8 +460,7 @@ defmodule Rete.EngineTest do
       # says not to write one. What must still hold is everything else — the group
       # holds the same members, there is still exactly one `:seq`, and the round
       # trip left no support behind.
-      assert Canon.dump(base.state.memory).accum ==
-               Canon.dump(cycled.state.memory).accum
+      assert Canon.dump(base).accum == Canon.dump(cycled).accum
 
       assert [{1, [10, 20, 30]}] ==
                for({:seq, cid, amts} <- derived(cycled, :seq), do: {cid, Enum.sort(amts)})

@@ -597,11 +597,22 @@ the rule instead.
   | insert 4,000 through a three-rule chain | 38.2 ms | **25.2 ms** |
   | 4,000 activations pending at once, then fire | 12.1 ms | **8.6 ms** |
 
-  Still unmeasured: wide disjunctions, many rules over one fact type, and sessions large
-  enough to matter for memory, not just time. Working-memory cost also grows with the
-  **size** of a fact, not only the count: a bucket keys its multiset on the whole item, so
-  every push and take hashes it. 500 facts at a 1-field payload cost 1.4 ms; the same 500
-  at 512 fields cost 4.2 ms.
+  **Disjunctions** are measured now, and the claim `network.md` §3 makes holds. A rule with
+  d disjunctions of three branches compiles to `3d + 1` beta nodes — linear in d, where
+  flattening the left hand side to disjunctive normal form would give `3^d` paths: 25 nodes
+  at d = 8, against 6,561. `Rete.DisjunctionTest` pins the node count at four sizes rather
+  than the wall clock, since the claim is about work rather than milliseconds.
+
+  Width is bounded rather than linear. Compile time is roughly quadratic in the branch
+  count of one gate — 0.11 ms at 32 branches, 0.31 at 64, 1.77 at 128, 7.34 at 256 — and
+  `Rete.DSL.Normalize` refuses a gate past 256, so the worst case is a few milliseconds,
+  once, at build time. That cap now has a test; it had none.
+
+  Still unmeasured: many rules over one fact type, and sessions large enough to matter for
+  memory, not just time. Working-memory cost also grows with the **size** of a fact, not
+  only the count: a bucket keys its multiset on the whole item, so every push and take
+  hashes it. 500 facts at a 1-field payload cost 1.4 ms; the same 500 at 512 fields cost
+  4.2 ms.
 
   One method note worth keeping: the first attempt fixed the **wrong** quadratic. Beta
   memory's append was real, and it had to go, but it was not what dominated. The agenda

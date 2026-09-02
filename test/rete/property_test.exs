@@ -168,7 +168,7 @@ defmodule Rete.PropertyTest do
   # retracted items as tombstones until it compacts, so two memories holding
   # exactly the same matches can hold different bucket internals. The dump is
   # the view that means something.
-  defp canon(%Session{state: %{memory: memory}}), do: Canon.dump(memory)
+  defp canon(%Session{} = session), do: Canon.dump(session)
 
   # The exact view: every match, in order, but without the derived state a
   # `Rete.Bucket` carries — its tombstones, and whether its index has been built.
