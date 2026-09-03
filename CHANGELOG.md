@@ -69,7 +69,7 @@ them in one module costs.
 * `ir.md` §8 still described the pre-0.4.0 rule, that every code two modules contributed
   was qualified.
 
-None of these is a behaviour change.
+None of these is a behavior change.
 
 ## 0.3.0
 
@@ -170,7 +170,7 @@ Documentation and a dependency bump. No change to the DSL, the compiler or the e
   Every technical fact, hedge and caveat carries over unchanged — only the sentence
   structure does.
 * Two stale claims in the README's Limitations section corrected. Neither is a
-  behaviour change; both describe what 0.1.0 already did.
+  behavior change; both describe what 0.1.0 already did.
   * "No parallel or async rule evaluation" was wrong: `fire_rules/2`'s `:concurrency`
     option already runs one activation group's rule bodies on tasks, and has since
     0.1.0.
@@ -256,7 +256,7 @@ in `docs/design/`.
   in sight, and a count cannot separate a runaway from a large settling pass, so any
   default eventually fails correct code. It counts **cycles** — one pass of the fire loop,
   which is one activation at the default concurrency and one whole activation group above
-  it. An unrecognised value raises rather than quietly meaning no cap, which is what
+  it. An unrecognized value raises rather than quietly meaning no cap, which is what
   `max_cycles: nil` would do by accident of Erlang term order.
   `docs/design/observability.md` §3 has the numbers for picking one.
 * **`:concurrency` and `:timeout` on `fire_rules/2`.** `concurrency: 1` by default, which
@@ -320,7 +320,7 @@ keeps saying so.
 * Two matches of one rule fire in **arrival order**, at any scale. A batch arriving at a
   node is split into join groups in the order each key first appeared rather than in map
   order; Elixir iterates a map of up to 32 keys in term order and a larger one in an
-  internal hash order, so the previous behaviour changed a rule's firing sequence the
+  internal hash order, so the previous behavior changed a rule's firing sequence the
   moment a node saw its 33rd join key.
 * The runaway error says how much it left out. Both of its lists are cut to five, and a
   cut that says nothing reads as the whole story: it reports

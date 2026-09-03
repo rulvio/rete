@@ -419,18 +419,21 @@ gap.
 Wall-clock thresholds are not in CI. On shared runners, they fail for reasons that mean
 nothing.
 
-## Acknowledgements
+## Acknowledgments
 
-**[Clara](https://github.com/cerner/clara-rules)** is the semantic reference for this
-engine. When a question about behaviour had no obvious answer, Clara's answer became the
+**[Clara](https://github.com/gateless/clara-rules)** is the semantic reference for this
+engine. When a question about behavior had no obvious answer, Clara's answer became the
 specification. Examples of such questions:
 
 * what a negated conjunction means when its conjuncts share a variable
 * when the engine may share two nodes
 * how truth maintenance interacts with a fact concluded twice
 
-Two of Clara's issues are implemented and regression-tested here: issue 433 on node
-sharing, and issue 304 on scoped negation markers.
+Two of Clara's issues are implemented and regression-tested here:
+[issue 433](https://github.com/oracle-samples/clara-rules/issues/433) on node sharing, and
+[issue 304](https://github.com/oracle-samples/clara-rules/issues/304) on scoped negation
+markers. Both numbers come from Clara's original issue tracker, now at
+[oracle-samples/clara-rules](https://github.com/oracle-samples/clara-rules).
 
 This engine ports none of Clara's code. Clara is Clojure on the JVM, and its architecture
 reflects that: transient-versus-persistent memory, a transport abstraction, four activation
@@ -443,6 +446,22 @@ place.
 **[taxo](https://github.com/rulvio/taxo)** provides the type hierarchies behind `derive`
 and `underive`.
 
-## Licence
+## How this was built
+
+This project started as an exploration of the Elixir macro system. It became a passion
+project for one reason: Elixir's pattern matching fits a rules engine well. Destructuring,
+variable binding, and join identification all come from the argument list. That is what
+lets a rule read as a function instead of as a configuration format. That observation
+sparked the initial idea for how the DSL and engine are designed.
+
+The architecture and the direction are human, grown from experience building expert systems
+with [Clara](https://github.com/gateless/clara-rules), so this project's semantics and
+behavior are in some ways similar to Clara's.
+
+**AI disclosure.** AI assistance accelerated the development of this project, under human
+direction and review. The design decisions, the semantics, and the trade-offs recorded in
+`docs/design/` are the author's.
+
+## License
 
 Apache-2.0. See [LICENSE](LICENSE).

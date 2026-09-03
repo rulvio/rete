@@ -41,7 +41,7 @@ defmodule Rete.NetworkTest do
   # --- cross module node sharing ------------------------------------------------
   #
   # Each pair below writes the *same* condition in two modules. They differ only in
-  # whether that condition's behaviour can be read off its AST alone. A plain pattern
+  # whether that condition's behavior can be read off its AST alone. A plain pattern
   # and a qualified call can. An imported or local call cannot, because the bare name
   # is all the hash sees.
 
@@ -220,7 +220,7 @@ defmodule Rete.NetworkTest do
   describe "alpha sharing" do
     test "conditions with the same expression share one alpha", %{net: net} do
       # {:order, cid, _amt} in the collection and {:order, cid, _} in the
-      # negation are byte identical once discarded names are canonicalised, so
+      # negation are byte identical once discarded names are canonicalized, so
       # they share an alpha that feeds two different beta nodes.
       shared =
         net.alphas
@@ -519,7 +519,7 @@ defmodule Rete.NetworkTest do
 
     # `params:` used to declare which bindings a caller could supply. Silently
     # ignoring a leftover one would be the worst outcome for something that used
-    # to change behaviour.
+    # to change behavior.
     test "the obsolete params option is rejected where it is written" do
       source = """
       defmodule Rete.NetworkTest.OldParams do

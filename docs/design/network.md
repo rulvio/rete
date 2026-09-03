@@ -125,7 +125,7 @@ it. Only the sequence moves, and the sequence was never promised.
 
 Two conditions collapse onto one node when they are **equal**, and they have the **same
 parent set**. Equality alone is not enough. Getting this wrong is a correctness bug, not a
-missed optimisation:
+missed optimization:
 
 ```elixir
 defrule a({:customer, cid}, {:order, cid, amt})
@@ -135,7 +135,7 @@ defrule b({:vendor, cid},   {:order, cid, amt})
 The two `{:order, cid, amt}` conditions are equal, but they sit under different parents.
 Sharing them would let a token from `{:vendor, ...}` join elements that only ever belonged
 to `{:customer, ...}`. Rule `a` would then fire on rule `b`'s facts. Clara records the same
-requirement as issue 433.
+requirement as [issue 433](https://github.com/oracle-samples/clara-rules/issues/433).
 
 `Rete.Network.Node.sharing_key/1` defines equality, built from **expression codes**. It
 never uses captured functions, since two functions are never equal to each other. It never
@@ -143,7 +143,7 @@ uses a struct holding `:__ast__` either, since that would compare quoted AST, wh
 part of identity.
 
 Invariant W1 guarantees that a code is deterministic across compilations, and that two
-codes are equal exactly when the underlying behaviour is equal. This is what makes sharing
+codes are equal exactly when the underlying behavior is equal. This is what makes sharing
 reproducible, between a full build and an incremental one.
 
 A terminal keys on its production's identity. So two rules with an identical left hand
@@ -151,7 +151,7 @@ side still get one terminal each, and each fires independently.
 
 **Alpha sharing** is the same idea, one level up. The compiler groups conditions by
 expression code, so a condition written in four rules is matched once per fact.
-`{:order, cid, _amt}` and `{:order, cid, _}` share a node, because W1 canonicalises
+`{:order, cid, _amt}` and `{:order, cid, _}` share a node, because W1 canonicalizes
 discarded variables.
 
 **Across modules**, the same code shares the same node, so composing rulesets costs what
@@ -201,7 +201,8 @@ Three properties make this correct:
 * **The marker is scoped.** It carries the ancestor bindings the conjunction joins on, and
   the negation matches on those bindings. Otherwise, one customer with both an order and a
   refund would suppress the rule for *every* customer — the negation would ask "does any
-  match exist" instead of "does one exist for this `cid`". This is Clara's issue 304.
+  match exist" instead of "does one exist for this `cid`". This is Clara's
+  [issue 304](https://github.com/oracle-samples/clara-rules/issues/304).
 * **The helper repeats the prefix.** The prefix is what binds those bindings, so the
   marker is produced only for groups that reached the negation.
 * **The helper fires first**, via `:internal_salience`. Otherwise, the negating rule would

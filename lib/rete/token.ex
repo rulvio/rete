@@ -1,6 +1,6 @@
 defmodule Rete.Token do
   @moduledoc """
-  A partial match travelling down the beta network: what a rule has established so far.
+  A partial match traveling down the beta network: what a rule has established so far.
 
   **Internal**, but its fields reach you through `Rete.Listener` events. Read them
   freely. Do not depend on its functions.

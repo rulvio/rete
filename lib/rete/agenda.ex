@@ -12,7 +12,7 @@ defmodule Rete.Agenda do
   Every activation of one production node shares a sort key. So the agenda is a small
   number of ordered buckets, not one sorted list, and each bucket is a `Rete.Bucket` — the
   same tombstoned ordered multiset working memory keys per join key. `add/2`, `pop/1` and
-  `remove/2` are all O(1) amortised. `remove/2` used to be linear in one bucket, which is
+  `remove/2` are all O(1) amortized. `remove/2` used to be linear in one bucket, which is
   one rule's pending matches, so retracting the support of a rule with many of them was
   quadratic. See `docs/design/engine.md` §7.
 

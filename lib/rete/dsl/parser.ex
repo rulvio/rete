@@ -95,7 +95,7 @@ defmodule Rete.DSL.Parser do
   # `:params` used to declare which bindings a query's caller could supply. There is no
   # such declaration any more. `Rete.Session.query/3` accepts any variable the left hand
   # side binds. So a leftover `:params` would be silently ignored — the worst outcome for
-  # something that used to change behaviour.
+  # something that used to change behavior.
   # `:internal_salience` and `:generated` are set by `Rete.Compiler.Negation` on the
   # helper it extracts, not written by hand. They are listed because they are legal on a
   # production, not because anyone should type them.
@@ -393,7 +393,7 @@ defmodule Rete.DSL.Parser do
   Resolves every alias and `__MODULE__` in the AST to the module it names.
 
   Expression codes are shared across modules, so two conditions with the same code must
-  have the same behaviour. An alias is lexical. `H.ok?(amt)` is the same AST in two
+  have the same behavior. An alias is lexical. `H.ok?(amt)` is the same AST in two
   modules that alias `H` to different things. Hashing it unresolved would give both the
   same code, and let `Rete.get_expr_data/1` collapse them onto whichever function it saw
   first. Resolving the alias before hashing makes the code depend on the module actually

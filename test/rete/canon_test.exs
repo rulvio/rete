@@ -1,7 +1,7 @@
 defmodule Rete.CanonTest do
   @moduledoc """
   `Rete.Test.Canon` decides what the property suite is allowed to see, so what it
-  normalises away has to be pinned as carefully as any engine behaviour. A canon
+  normalizes away has to be pinned as carefully as any engine behavior. A canon
   that sorted too much would hide real ordering bugs and every suite would stay
   green.
   """
@@ -64,11 +64,11 @@ defmodule Rete.CanonTest do
     end
   end
 
-  describe "what is normalised" do
+  describe "what is normalized" do
     test "a collection binding is sorted" do
       # Fed in descending order, so reverse arrival order is ascending and a
       # canon that did nothing would still look sorted. Assert against the
-      # feed instead: both orders have to canonicalise the same way.
+      # feed instead: both orders have to canonicalize the same way.
       parts = [{:part, 1, 1}, {:part, 1, 2}, {:part, 1, 3}]
 
       forwards = build(Lists, [{:crate, 1} | parts])
@@ -91,7 +91,7 @@ defmodule Rete.CanonTest do
       backwards = build(Lists, Enum.reverse(facts))
 
       assert Canon.dump(forwards) == Canon.dump(backwards),
-             "the collection made two feeds differ after canonicalising"
+             "the collection made two feeds differ after canonicalizing"
 
       assert [3, 1, 2] in binding(forwards, :items),
              "the fact's own list was sorted"

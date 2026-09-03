@@ -55,7 +55,7 @@ defmodule Rete.DSL.HashingTest do
     end
   end
 
-  describe "codes ignore differences that do not change behaviour" do
+  describe "codes ignore differences that do not change behavior" do
     defmodule Discarded do
       use Rete.Ruleset
 
@@ -65,7 +65,7 @@ defmodule Rete.DSL.HashingTest do
 
     # `_x` and `_y` are never bindings, so both conditions compile to byte
     # identical functions and must share one alpha node.
-    test "discarded variables are canonicalised" do
+    test "discarded variables are canonicalized" do
       assert [one] =
                Discarded.get_rule_data()
                |> Enum.map(&hd(&1.lhs).alpha.code)

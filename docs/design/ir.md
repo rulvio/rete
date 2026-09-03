@@ -286,7 +286,7 @@ variable *every* branch binds is fine, since that variable is then guaranteed.
 | `:args` | `[condition]` | parsed arguments, may nest further gates |
 | `:code` | nested list `[gate \| arg_codes]` | structural id, e.g. `[:or, :fact_user_bind_id_expr_1, [:not, :fact_order_bind_id_expr_2]]` |
 
-The parser recognises gates, and parses their arguments. It performs **no** normalization.
+The parser recognizes gates, and parses their arguments. It performs **no** normalization.
 `Rete.DSL.Normalize` replaces every `Gate` with plain conditions, `Negation` and
 `CompoundNegation` nodes, and `{:or, [[condition, ...], ...]}` disjunctions. So a `Gate`
 never survives into a compiled module.
@@ -556,12 +556,12 @@ exactly as the user wrote it. Pinned values and `@x` are never bindings.
 
 ### Determinism
 
-`Codegen.ast_hash/1` normalises the AST before hashing it. Each normalisation exists so
+`Codegen.ast_hash/1` normalizes the AST before hashing it. Each normalization exists so
 that the hash is a function of what the code *means*:
 
 * **metadata is stripped**, so a production keeps its hash when it moves to a different
   line.
-* **discarded variables are canonicalised to `_`**. So `{:order, _x}` and `{:order, _y}` —
+* **discarded variables are canonicalized to `_`**. So `{:order, _x}` and `{:order, _y}` —
   byte-identical once compiled, since a `_`-prefixed name is never a binding — share one
   expression.
 * **the bindings map is sorted**, wherever it is spliced into a hashed AST.
@@ -587,7 +587,7 @@ second rule silently reuse the first rule's compiled function.
 ### Sharing
 
 Codes are the node-sharing key for W2. Two conditions with the same code have
-byte-identical behaviour, and they must map to the same alpha node. Within a module,
+byte-identical behavior, and they must map to the same alpha node. Within a module,
 `Codegen.expr_defs/1` guards each definition with `Module.defines?/2`. So the compiler
 compiles a shared condition once, and both `Expr` structs capture the same function.
 
@@ -608,7 +608,7 @@ two functions.
 `Codegen` answers this while it still holds the AST and the caller's `Macro.Env`, and
 records the answer in `Expr.share`. A call is portable when
 `Macro.Env.lookup_import/2` resolves it to `Kernel`, or when `Macro.special_form?/2`
-recognises it. One call that is not portable clears the flag for the whole expression.
+recognizes it. One call that is not portable clears the flag for the whole expression.
 
 `Rete.Compiler.disambiguate_codes/1` reads the flag at build time, after `escape/1` has
 dropped the AST. It qualifies a code as `<code>@<module>` when more than one module

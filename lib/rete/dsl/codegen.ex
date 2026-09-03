@@ -279,11 +279,11 @@ defmodule Rete.DSL.Codegen do
   @doc """
   The stable hash of an AST fragment.
 
-  Two normalisations run first. Both exist so the hash is a function of what the code
+  Two normalizations run first. Both exist so the hash is a function of what the code
   *means*, not of how it was typed:
 
     * metadata is stripped, so a rule keeps its hash when it moves down a file.
-    * discarded variables are canonicalised to `_`. So `{:order, _x}` and
+    * discarded variables are canonicalized to `_`. So `{:order, _x}` and
       `{:order, _y}` — byte-identical once compiled, since a `_`-prefixed name is never
       a binding — share one expression, and therefore one alpha node.
 

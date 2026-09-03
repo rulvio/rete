@@ -139,7 +139,7 @@ session reached it in. Being a cache, it is left out of `dump/1`.
 
 `root_seeded?` is the one field that is not a memory — see §6.
 
-## 5. Node behaviour
+## 5. Node behavior
 
 Every clause of `Rete.Engine.Nodes` has the same shape. It takes the state and the items.
 It returns the new state, and the work produced.
@@ -266,7 +266,7 @@ and the settled facts are identical either way.
 That is pinned by a test rather than left to the suite, because the suite stayed green
 through the change: nothing else reads the sequence, only what the session settles to.
 
-Batching is not a micro-optimisation. A node's per-call work is not all per item — it
+Batching is not a micro-optimization. A node's per-call work is not all per item — it
 dispatches, groups by join key, and at a negation or a collection reads back what it
 already holds. Paying that once per fact is what made an unkeyed negation and a live
 collection quadratic. The `{:propagated, op, node_id, count}` event coarsens with it:
@@ -369,7 +369,7 @@ state or the network would copy the whole compiled network into every task.
 ### Why the default is 1
 
 A body that builds a tuple is **1.5%** of `fire_rules`. The other 98.5% is propagation. A
-task costs about 3.5 µs per activation, so parallelising cheap bodies is a large net loss.
+task costs about 3.5 µs per activation, so parallelizing cheap bodies is a large net loss.
 Measured over 2,000 activations, on 16 cores:
 
 | body cost | sequential | concurrent | speedup |
