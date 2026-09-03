@@ -34,8 +34,10 @@ defmodule Rete do
 
   This is not how a network decides what to share. `Rete.Compiler.build/2` reads
   `get_rule_data/1` instead, where every expression still carries the function of the
-  module that wrote it. It qualifies any code more than one module contributed. See
-  `docs/design/ir.md` §5.
+  module that wrote it, and its `:share` flag. It qualifies a code that more than one
+  module contributed and that the front end did not mark shared. An unqualified call is
+  what clears that flag, so the network keeps the two functions apart where this
+  aggregation would not. See `docs/design/ir.md` §5.
 
       iex> Rete.get_expr_data([Rete.Doc.Orders]) |> length()
       3

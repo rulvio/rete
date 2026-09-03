@@ -38,6 +38,16 @@ defmodule Rete.IR do
     `:test` is `(bindings_map) -> boolean`, and `:join_filter` is
     `(token_bindings, fact_bindings) -> boolean`. `:fun` is `nil` until the expression is
     escaped. `:__ast__` is compile-time only.
+
+    `:share` says whether two modules that produce this code may be put on one node.
+    It states the conclusion, not the reason. Today one reason sets it: an unqualified call
+    hashes as its bare name, so `ok?(amt)` under two different imports gives one code for
+    two functions. A later reason to refuse a share sets the same field.
+
+    `Rete.DSL.Codegen` decides it while `:__ast__` is still in hand, because `escape/1`
+    drops the AST and `Rete.Compiler.disambiguate_codes/1` runs after that. It defaults to
+    `false`, so an expression built somewhere this is not set is kept apart rather than
+    merged on an assumption nobody checked.
     """
 
     @typedoc "What an expression is used for; fixes its calling convention."
@@ -49,10 +59,11 @@ defmodule Rete.IR do
             arity: 1 | 2,
             kind: kind() | nil,
             fun: (... -> any()) | nil,
+            share: boolean(),
             __ast__: %{args: Macro.t(), body: Macro.t()} | nil
           }
 
-    defstruct [:code, :name, :arity, :kind, :fun, :__ast__]
+    defstruct [:code, :name, :arity, :kind, :fun, :__ast__, share: false]
   end
 
   defmodule Fact do
@@ -464,12 +475,13 @@ defmodule Rete.IR do
 
   defp escape_expr(nil), do: nil
 
-  defp escape_expr(%Expr{code: code, name: name, arity: arity, kind: kind}) do
+  defp escape_expr(%Expr{code: code, name: name, arity: arity, kind: kind} = expr) do
     struct_ast(Expr,
       code: Macro.escape(code),
       name: Macro.escape(name),
       arity: Macro.escape(arity),
       kind: Macro.escape(kind),
+      share: Macro.escape(expr.share),
       fun: quote(do: Function.capture(__MODULE__, unquote(name), unquote(arity)))
     )
   end

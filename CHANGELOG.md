@@ -4,6 +4,36 @@ All notable changes to `rete` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Performance
+
+* **Rulesets in separate modules now share nodes.** A condition written in two modules used
+  to compile to one alpha node per module, so a fact was matched against it once per
+  module. It now compiles to one node, matched once, feeding every rule below it. Every
+  beta join under that alpha is shared too.
+
+  The split was there because an *unqualified* call hashes as its bare name. Two modules
+  that import a different `ok?/1` and both write `{:bar, amt} when ok?(amt)` produce one
+  code for two functions, so the compiler kept every cross-module code apart rather than
+  tell a safe case from an unsafe one.
+
+  `Rete.DSL.Codegen` now answers that question while it still holds the AST and the
+  caller's environment, and records the answer in `Rete.IR.Expr`'s new `:share` field.
+  `Rete.Compiler.disambiguate_codes/1` splits only the codes that field refuses.
+  An imported call, a local call, and a compound negation marker are still kept apart. A
+  plain pattern, a literal guard, and a qualified call are shared.
+
+  This changes the shape of a network built from more than one module. It changes no
+  result: the same facts fire the same rules and conclude the same facts either way.
+
+### Changed
+
+* `Rete.IR.Expr` gains `:share`, and it defaults to `false`. Internals are not covered
+  by semantic versioning — see "What is public" in the README.
+* `Rete.DSL.Codegen.alpha_expr`, `test_expr` and `join_filter_expr` each take the
+  caller's `Macro.Env` as a new first argument. They are now `/6`, `/3` and `/4`.
+
 ## 0.3.0
 
 A performance pass. Six quadratics removed, and three orderings changed.

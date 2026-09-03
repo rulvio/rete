@@ -16,10 +16,20 @@ defmodule Rete.Compiler do
   **Cross-module expression codes.** A code is equal exactly when two expressions behave
   the same — with one hole. An *unqualified* call hashes as the bare name. So two modules
   that each define `ok?/1` differently produce the same code for
-  `{:bar, amt} when ok?(amt)`. The compiler qualifies a code more than one module
-  contributed as `<code>@<module>`, before building anything from it. Sharing within a
-  module is untouched. Sharing across modules is only an optimisation, and getting it
-  wrong is silent corruption. See `docs/design/ir.md` §5.
+  `{:bar, amt} when ok?(amt)`.
+
+  `Rete.DSL.Codegen` clears `Rete.IR.Expr`'s `:share` for such an expression, while
+  the AST and the caller's environment are still in hand. This qualifies a code the front end
+  did not mark shared, and that more than one module contributed, as `<code>@<module>`, before building
+  anything from it.
+
+  Everything else is shared across modules, because nothing left in it can differ. Aliases
+  resolve to the module they name, `@x` carries its defining module, and a pin is
+  unwrapped — all before hashing. See `docs/design/ir.md` §5. So two modules that write
+  `{:customer, cid}` match it once per fact, not once each.
+
+  Sharing within a module is untouched. Getting a cross-module share wrong is silent
+  corruption, so `:share` defaults to `false` and only a positive answer shares.
   """
 
   alias Rete.Compiler.BetaGraph
@@ -100,11 +110,11 @@ defmodule Rete.Compiler do
   # --- cross module expression codes -------------------------------------------
 
   @doc """
-  Qualifies every expression code that more than one module contributed.
+  Qualifies every unshared expression code that more than one module contributed.
 
-  If only one module produces an expression's code, this leaves it alone. So
-  nothing changes for a single-module network. See the module doc for why a
-  shared code cannot be trusted across modules.
+  If only one module produces an expression's code, this leaves it alone. So nothing
+  changes for a single-module network. See the module doc for when a shared code can be
+  trusted across modules and when it cannot.
 
   This is exposed so a test can check the disambiguation, without building a network.
   """
@@ -119,17 +129,30 @@ defmodule Rete.Compiler do
     end
   end
 
-  # Codes contributed by two or more distinct modules. `Enum.uniq/1` runs first, so a
-  # code written twice in one module does not look shared.
+  # Codes that two or more distinct modules contributed, and that at least one of them
+  # refused to share.
+  #
+  # One refusal splits the code for **every** contributor. Qualifying only the refusing
+  # side would leave the rest on a node whose function came from whichever module the
+  # reduce reached first — the original bug, narrowed rather than fixed.
+  #
+  # The module list is deduplicated before it is counted, so a code written twice in one
+  # module does not look like two contributors.
   defp shared_codes(productions) do
     productions
     |> Enum.flat_map(fn production ->
-      Enum.map(IR.exprs(production), &{&1.code, production.module})
+      Enum.map(IR.exprs(production), &{&1.code, production.module, &1.share})
     end)
-    |> Enum.uniq()
-    |> Enum.frequencies_by(fn {code, _module} -> code end)
-    |> Enum.filter(fn {_code, modules} -> modules > 1 end)
-    |> MapSet.new(fn {code, _modules} -> code end)
+    |> Enum.group_by(fn {code, _module, _share} -> code end)
+    |> Enum.filter(fn {_code, entries} -> split?(entries) end)
+    |> MapSet.new(fn {code, _entries} -> code end)
+  end
+
+  defp split?(entries) do
+    contributors = entries |> Enum.map(fn {_code, module, _s} -> module end) |> Enum.uniq()
+
+    length(contributors) > 1 and
+      Enum.any?(entries, fn {_code, _module, share} -> not share end)
   end
 
   defp qualify_production(%IR.Production{lhs: lhs, module: module} = production, shared) do

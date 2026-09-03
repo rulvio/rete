@@ -61,7 +61,7 @@ defmodule Rete.DSL.Parser do
 
     test = %IR.Test{
       bind: bind_vars(bind),
-      expr: build_test_expr(guard, bind),
+      expr: build_test_expr(env, guard, bind),
       __ast__: %{guard: guard, bind: bind}
     }
 
@@ -215,7 +215,7 @@ defmodule Rete.DSL.Parser do
       type: type,
       coll_binding: acc.binding,
       bind: bind_vars(bind),
-      alpha: build_alpha_expr(type, pattern, args_ast, guard, bind),
+      alpha: build_alpha_expr(env, type, pattern, args_ast, guard, bind),
       __ast__: %{pattern: pattern, guard: guard, bind: bind, source: source}
     }
   end
@@ -228,7 +228,7 @@ defmodule Rete.DSL.Parser do
       type: type,
       fact_binding: acc.binding,
       bind: bind_vars(bind),
-      alpha: build_alpha_expr(type, pattern, args_ast, acc.guard, bind),
+      alpha: build_alpha_expr(env, type, pattern, args_ast, acc.guard, bind),
       __ast__: %{pattern: pattern, guard: acc.guard, bind: bind, source: pattern}
     }
   end
@@ -310,17 +310,18 @@ defmodule Rete.DSL.Parser do
   per-condition guard AST, or `nil`. `bind` maps every bound variable to its AST.
 
   The generated function returns the bindings map when the fact matches and the guard
-  holds, and `nil` otherwise. This delegates to `Rete.DSL.Codegen.alpha_expr/5`, which
-  owns the naming and hashing scheme.
+  holds, and `nil` otherwise. This delegates to `Rete.DSL.Codegen.alpha_expr/6`, which
+  owns the naming and hashing scheme. `env` resolves the guard's unqualified calls.
   """
   @spec build_alpha_expr(
+          Macro.Env.t(),
           atom() | module(),
           Macro.t(),
           Macro.t(),
           Macro.t() | nil,
           %{atom() => Macro.t()}
         ) :: IR.Expr.t()
-  defdelegate build_alpha_expr(type, pattern, args_ast, guard, bind),
+  defdelegate build_alpha_expr(env, type, pattern, args_ast, guard, bind),
     to: Codegen,
     as: :alpha_expr
 
@@ -328,10 +329,10 @@ defmodule Rete.DSL.Parser do
   Builds the `Rete.IR.Expr` of a test over bindings only.
 
   The generated function takes the bindings map and returns the value of the
-  guard. Delegates to `Rete.DSL.Codegen.test_expr/2`.
+  guard. Delegates to `Rete.DSL.Codegen.test_expr/3`.
   """
-  @spec build_test_expr(Macro.t(), %{atom() => Macro.t()}) :: IR.Expr.t()
-  defdelegate build_test_expr(guard, bind), to: Codegen, as: :test_expr
+  @spec build_test_expr(Macro.Env.t(), Macro.t(), %{atom() => Macro.t()}) :: IR.Expr.t()
+  defdelegate build_test_expr(env, guard, bind), to: Codegen, as: :test_expr
 
   @doc """
   Collects the variables bound by a pattern.

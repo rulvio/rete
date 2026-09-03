@@ -38,6 +38,113 @@ defmodule Rete.NetworkTest do
     end
   end
 
+  # --- cross module node sharing ------------------------------------------------
+  #
+  # Each pair below writes the *same* condition in two modules. They differ only in
+  # whether that condition's behaviour can be read off its AST alone. A plain pattern
+  # and a qualified call can. An imported or local call cannot, because the bare name
+  # is all the hash sees.
+
+  defmodule QualifiedHelper do
+    @moduledoc false
+    def ok?(amt), do: amt > 10
+  end
+
+  # Nothing that ties either to its module: a plain pattern and a literal guard.
+  defmodule PlainA do
+    use Rete.Ruleset
+
+    defrule plain_a({:customer, cid}, {:order, cid, amt} when amt > 100) do
+      {:flagged_a, cid, amt}
+    end
+  end
+
+  defmodule PlainB do
+    use Rete.Ruleset
+
+    defrule plain_b({:customer, cid}, {:order, cid, amt} when amt > 100) do
+      {:flagged_b, cid, amt}
+    end
+  end
+
+  # The same two rules in one module. This is the baseline the split is measured
+  # against: within a module, sharing has always worked.
+  defmodule PlainBoth do
+    use Rete.Ruleset
+
+    defrule plain_a({:customer, cid}, {:order, cid, amt} when amt > 100) do
+      {:flagged_a, cid, amt}
+    end
+
+    defrule plain_b({:customer, cid}, {:order, cid, amt} when amt > 100) do
+      {:flagged_b, cid, amt}
+    end
+  end
+
+  # A qualified call. The alias resolves before hashing, so both modules name the
+  # same function and the code is safe to share.
+  defmodule QualA do
+    use Rete.Ruleset
+    alias Rete.NetworkTest.QualifiedHelper
+
+    defrule qual_a({:bar, amt} when QualifiedHelper.ok?(amt)) do
+      {:qual_a, amt}
+    end
+  end
+
+  defmodule QualB do
+    use Rete.Ruleset
+    alias Rete.NetworkTest.QualifiedHelper
+
+    defrule qual_b({:bar, amt} when QualifiedHelper.ok?(amt)) do
+      {:qual_b, amt}
+    end
+  end
+
+  # A *local* call. Same spelling, different function, and the hash cannot tell.
+  # This is the `Lenient`/`Strict` hazard reached by definition instead of import.
+  defmodule LocalA do
+    use Rete.Ruleset
+
+    def ok?(amt), do: amt > 10
+
+    defrule local_a({:baz, amt} when ok?(amt)) do
+      {:local_a, amt}
+    end
+  end
+
+  defmodule LocalB do
+    use Rete.Ruleset
+
+    def ok?(amt), do: amt > 1000
+
+    defrule local_b({:baz, amt} when ok?(amt)) do
+      {:local_b, amt}
+    end
+  end
+
+  # The same attribute name holding different values. Already safe before this
+  # pass runs: `@x` hashes as `{:@, _, [{:x, _, DefiningModule}]}`.
+  defmodule AttrA do
+    use Rete.Ruleset
+
+    @limit 10
+
+    defrule attr_a({:qux, amt} when amt > @limit) do
+      {:attr_a, amt}
+    end
+  end
+
+  defmodule AttrB do
+    use Rete.Ruleset
+
+    @limit 1000
+
+    defrule attr_b({:qux, amt} when amt > @limit) do
+      {:attr_b, amt}
+    end
+  end
+
   defmodule Demo do
     use Rete.Ruleset
 
@@ -183,8 +290,38 @@ defmodule Rete.NetworkTest do
                productions |> Compiler.disambiguate_codes() |> Enum.map(&codes/1)
     end
 
-    test "disambiguate_codes/1 qualifies every code two modules contribute" do
+    test "disambiguate_codes/1 qualifies an unshared code two modules contribute" do
       productions = [production(Lenient, :one), production(Strict, :two)]
+
+      assert [
+               [
+                 :"shared_alpha@Rete.NetworkTest.Lenient",
+                 :"shared_test@Rete.NetworkTest.Lenient"
+               ],
+               [
+                 :"shared_alpha@Rete.NetworkTest.Strict",
+                 :"shared_test@Rete.NetworkTest.Strict"
+               ]
+             ] == productions |> Compiler.disambiguate_codes() |> Enum.map(&codes/1)
+    end
+
+    test "disambiguate_codes/1 leaves a shared code two modules contribute" do
+      productions = [
+        production(Lenient, :one, share: true),
+        production(Strict, :two, share: true)
+      ]
+
+      assert [[:shared_alpha, :shared_test], [:shared_alpha, :shared_test]] ==
+               productions |> Compiler.disambiguate_codes() |> Enum.map(&codes/1)
+    end
+
+    # One refusal splits the code for both. Qualifying only the refusing side would leave
+    # the other on a node holding the wrong module's function.
+    test "disambiguate_codes/1 splits both sides when only one refuses" do
+      productions = [
+        production(Lenient, :one, share: true),
+        production(Strict, :two, share: false)
+      ]
 
       assert [
                [
@@ -200,7 +337,9 @@ defmodule Rete.NetworkTest do
 
     defp codes(production), do: production |> IR.exprs() |> Enum.map(& &1.code)
 
-    defp production(module, name) do
+    defp production(module, name, opts \\ []) do
+      share = Keyword.get(opts, :share, false)
+
       %IR.Production{
         name: name,
         type: :rule,
@@ -214,15 +353,120 @@ defmodule Rete.NetworkTest do
             bind: [:amt],
             join_bind: [],
             new_bind: [:amt],
-            alpha: expr(:shared_alpha, :alpha)
+            alpha: expr(:shared_alpha, :alpha, share)
           },
-          %IR.Test{bind: [:amt], expr: expr(:shared_test, :test)}
+          %IR.Test{bind: [:amt], expr: expr(:shared_test, :test, share)}
         ]
       }
     end
 
-    defp expr(code, kind) do
-      %IR.Expr{code: code, name: :"__#{code}__", arity: 1, kind: kind, fun: fn _ -> nil end}
+    defp expr(code, kind, share \\ false) do
+      %IR.Expr{
+        code: code,
+        name: :"__#{code}__",
+        arity: 1,
+        kind: kind,
+        fun: fn _ -> nil end,
+        share: share
+      }
+    end
+  end
+
+  describe "cross module node sharing" do
+    # `Rete.Engine.alpha_ops/2` calls `alpha.fun.(fact)` exactly once per alpha the
+    # taxonomy routes a fact to. So this count *is* the number of times a condition is
+    # evaluated per fact. Nothing needs instrumenting to measure it.
+    defp evaluations(net, fact), do: length(Network.alphas_for(net, fact))
+
+    # Terminals never share across modules — a production's sharing key is
+    # `{:production, module, name, hash}` — so counting them would hide the join
+    # chain, which is the part that duplicates.
+    defp joins(net), do: net |> Network.beta_nodes() |> Enum.reject(&Node.terminal?/1) |> length()
+
+    test "two rules in one module evaluate a shared condition once" do
+      net = Compiler.build([PlainBoth])
+
+      assert 1 == evaluations(net, {:customer, 1})
+      assert 1 == evaluations(net, {:order, 1, 250})
+      assert 2 == joins(net)
+    end
+
+    test "the same two rules in separate modules evaluate it once too" do
+      net = Compiler.build([PlainA, PlainB])
+
+      assert 1 == evaluations(net, {:customer, 1})
+      assert 1 == evaluations(net, {:order, 1, 250})
+      assert 2 == joins(net)
+    end
+
+    test "splitting a ruleset across modules does not change the network" do
+      together = Compiler.build([PlainBoth])
+      apart = Compiler.build([PlainA, PlainB])
+
+      assert map_size(together.alphas) == map_size(apart.alphas)
+      assert joins(together) == joins(apart)
+    end
+
+    test "a qualified call is shared across modules" do
+      net = Compiler.build([QualA, QualB])
+
+      assert 1 == evaluations(net, {:bar, 50})
+      assert 1 == joins(net)
+    end
+
+    test "an imported call is not shared across modules" do
+      net = Compiler.build([Lenient, Strict])
+
+      assert 2 == evaluations(net, {:bar, 50})
+      assert 2 == joins(net)
+    end
+
+    test "a local call is not shared across modules" do
+      net = Compiler.build([LocalA, LocalB])
+
+      assert 2 == evaluations(net, {:baz, 50})
+      assert 2 == joins(net)
+    end
+
+    test "an attribute of the same name holding different values is not shared" do
+      net = Compiler.build([AttrA, AttrB])
+
+      assert 2 == evaluations(net, {:qux, 50})
+    end
+
+    # Sharing changes how much work a fact causes, never what a session concludes.
+    test "sharing does not change what fires" do
+      fire = fn modules ->
+        modules
+        |> Compiler.build()
+        |> Rete.Session.from_network()
+        |> Rete.Session.insert([{:customer, 1}, {:order, 1, 250}])
+        |> Rete.Session.fire_rules()
+        |> Rete.Session.facts()
+        |> Enum.sort()
+      end
+
+      assert fire.([PlainBoth]) == fire.([PlainA, PlainB])
+
+      assert [{:customer, 1}, {:flagged_a, 1, 250}, {:flagged_b, 1, 250}, {:order, 1, 250}] ==
+               fire.([PlainA, PlainB])
+    end
+
+    # The guards that make the split worth keeping. Each module must still run its own
+    # compiled function, not whichever one the reduce happened to reach first.
+    test "each module keeps its own predicate when a code is not shared" do
+      net = Compiler.build([LocalA, LocalB])
+
+      predicates =
+        for root <- Network.beta_nodes(net),
+            match?(%Node.RootJoin{}, root),
+            [child] = Network.children(net, root.id),
+            into: %{},
+            do: {Network.node(net, child).name, net.alphas[root.alpha_code].fun}
+
+      assert %{amt: 50} == predicates[:local_a].({:baz, 50})
+      assert nil == predicates[:local_b].({:baz, 50})
+      assert %{amt: 5000} == predicates[:local_b].({:baz, 5000})
     end
   end
 

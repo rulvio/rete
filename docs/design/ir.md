@@ -485,7 +485,7 @@ struct:
 alpha = Parser.build_alpha_expr(type, fact.__ast__.pattern, args, alpha_guard, fact.__ast__.bind)
 ```
 
-`build_alpha_expr/5` (a delegate to `Codegen.alpha_expr/5`) hashes `{pattern, body}`. So a
+`build_alpha_expr/6` (a delegate to `Codegen.alpha_expr/6`) hashes `{pattern, body}`. So a
 condition whose guard was fully lifted out produces exactly the same code as if it had
 been written without a guard at all. This is the point: it lets the condition share the
 alpha node. A test checks this.
@@ -590,9 +590,41 @@ Codes are the node-sharing key for W2. Two conditions with the same code have
 byte-identical behaviour, and they must map to the same alpha node. Within a module,
 `Codegen.expr_defs/1` guards each definition with `Module.defines?/2`. So the compiler
 compiles a shared condition once, and both `Expr` structs capture the same function.
-Across modules, `Rete.get_expr_data/1` deduplicates by code, and it keeps the first module
-that defines each one. Never derive new codes from anything unstable: line numbers,
-`make_ref`, or the map iteration order of a rebuilt map.
+
+Never derive new codes from anything unstable: line numbers, `make_ref`, or the map
+iteration order of a rebuilt map.
+
+#### Across modules
+
+A code is equal exactly when two expressions behave the same. Three of the four ways an
+expression could depend on the module that wrote it are closed above: an alias resolves to
+the module it names, `@x` carries its defining module, and a pin is unwrapped. All three
+happen before the hash is taken.
+
+The fourth is the unqualified call. `ok?(amt)` hashes as the bare name, whether it resolves
+to an import or to a function of the calling module. So two modules produce one code for
+two functions.
+
+`Codegen` answers this while it still holds the AST and the caller's `Macro.Env`, and
+records the answer in `Expr.share`. A call is portable when
+`Macro.Env.lookup_import/2` resolves it to `Kernel`, or when `Macro.special_form?/2`
+recognises it. One call that is not portable clears the flag for the whole expression.
+
+`Rete.Compiler.disambiguate_codes/1` reads the flag at build time, after `escape/1` has
+dropped the AST. It qualifies a code as `<code>@<module>` when more than one module
+contributed it **and** at least one of them did not mark it shared. One refusal splits the
+code for every contributor: qualifying only the refusing side would leave the rest on a
+node holding another module's function.
+
+Everything else is shared. Two modules that write `{:customer, cid}` match it once per
+fact, and every beta node below it is shared too, because a beta node's sharing key holds
+the alpha code.
+
+`Expr.share` defaults to `false`. An expression built where nothing set it is kept
+apart, rather than merged on an assumption nobody checked.
+
+`Rete.get_expr_data/1` is a different thing, and it still deduplicates by code alone. It
+feeds the generated function table, not the network.
 
 ---
 
@@ -687,7 +719,7 @@ same rule written that way round. What remains is:
   would only trade this error for Elixir's own "the underscored variable is used after
   being set" warning — which is fatal under `--warnings-as-errors`.
 
-That is why `Codegen.join_filter_expr/3` may keep deriving the guard's variables with
+That is why `Codegen.join_filter_expr/4` may keep deriving the guard's variables with
 `Parser.parse_bind/1`, which drops `_`-prefixed names. A join filter can never contain
 one.
 

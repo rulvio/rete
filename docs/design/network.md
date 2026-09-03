@@ -52,6 +52,11 @@ to the network.
 3. Matching elements go to the beta nodes in `alpha_beta`. The engine propagates them along
    the graph's forward edges.
 
+Step 2 runs once per alpha, not once per rule. So the number of alphas a type routes to is
+the number of times a fact is matched. Conditions written in several rules collapse onto
+one alpha, and that holds across modules as well as within one: `Rete.IR.Expr`'s `:share`
+flag decides, and only an unqualified call clears it. See `ir.md` §5.
+
 ---
 
 ## 3. Node kinds
