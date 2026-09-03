@@ -1,4 +1,4 @@
-# Warnings that are the intended behaviour rather than a defect.
+# Warnings that are the intended behavior rather than a defect.
 #
 # `list_unused_filters: true` is set in mix.exs, so an entry that stops matching
 # is reported instead of quietly rotting.

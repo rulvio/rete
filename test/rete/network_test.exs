@@ -360,7 +360,7 @@ defmodule Rete.NetworkTest do
       }
     end
 
-    defp expr(code, kind, share \\ false) do
+    defp expr(code, kind, share) do
       %IR.Expr{
         code: code,
         name: :"__#{code}__",
