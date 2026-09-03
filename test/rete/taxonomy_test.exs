@@ -104,7 +104,7 @@ defmodule Rete.TaxonomyTest do
       assert_raise ArgumentError, fn -> Taxonomy.new([{:derive, :dog, :dog}]) end
     end
 
-    test "an unrecognised declaration raises naming it" do
+    test "an unrecognized declaration raises naming it" do
       assert_raise ArgumentError,
                    ~r/unsupported taxonomy declaration \{:isa, :dog, :mammal\}/,
                    fn ->

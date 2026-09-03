@@ -61,7 +61,7 @@ defmodule Rete.DSL.Parser do
 
     test = %IR.Test{
       bind: bind_vars(bind),
-      expr: build_test_expr(guard, bind),
+      expr: build_test_expr(env, guard, bind),
       __ast__: %{guard: guard, bind: bind}
     }
 
@@ -95,7 +95,7 @@ defmodule Rete.DSL.Parser do
   # `:params` used to declare which bindings a query's caller could supply. There is no
   # such declaration any more. `Rete.Session.query/3` accepts any variable the left hand
   # side binds. So a leftover `:params` would be silently ignored — the worst outcome for
-  # something that used to change behaviour.
+  # something that used to change behavior.
   # `:internal_salience` and `:generated` are set by `Rete.Compiler.Negation` on the
   # helper it extracts, not written by hand. They are listed because they are legal on a
   # production, not because anyone should type them.
@@ -215,7 +215,7 @@ defmodule Rete.DSL.Parser do
       type: type,
       coll_binding: acc.binding,
       bind: bind_vars(bind),
-      alpha: build_alpha_expr(type, pattern, args_ast, guard, bind),
+      alpha: build_alpha_expr(env, type, pattern, args_ast, guard, bind),
       __ast__: %{pattern: pattern, guard: guard, bind: bind, source: source}
     }
   end
@@ -228,7 +228,7 @@ defmodule Rete.DSL.Parser do
       type: type,
       fact_binding: acc.binding,
       bind: bind_vars(bind),
-      alpha: build_alpha_expr(type, pattern, args_ast, acc.guard, bind),
+      alpha: build_alpha_expr(env, type, pattern, args_ast, acc.guard, bind),
       __ast__: %{pattern: pattern, guard: acc.guard, bind: bind, source: pattern}
     }
   end
@@ -310,17 +310,18 @@ defmodule Rete.DSL.Parser do
   per-condition guard AST, or `nil`. `bind` maps every bound variable to its AST.
 
   The generated function returns the bindings map when the fact matches and the guard
-  holds, and `nil` otherwise. This delegates to `Rete.DSL.Codegen.alpha_expr/5`, which
-  owns the naming and hashing scheme.
+  holds, and `nil` otherwise. This delegates to `Rete.DSL.Codegen.alpha_expr/6`, which
+  owns the naming and hashing scheme. `env` resolves the guard's unqualified calls.
   """
   @spec build_alpha_expr(
+          Macro.Env.t(),
           atom() | module(),
           Macro.t(),
           Macro.t(),
           Macro.t() | nil,
           %{atom() => Macro.t()}
         ) :: IR.Expr.t()
-  defdelegate build_alpha_expr(type, pattern, args_ast, guard, bind),
+  defdelegate build_alpha_expr(env, type, pattern, args_ast, guard, bind),
     to: Codegen,
     as: :alpha_expr
 
@@ -328,10 +329,10 @@ defmodule Rete.DSL.Parser do
   Builds the `Rete.IR.Expr` of a test over bindings only.
 
   The generated function takes the bindings map and returns the value of the
-  guard. Delegates to `Rete.DSL.Codegen.test_expr/2`.
+  guard. Delegates to `Rete.DSL.Codegen.test_expr/3`.
   """
-  @spec build_test_expr(Macro.t(), %{atom() => Macro.t()}) :: IR.Expr.t()
-  defdelegate build_test_expr(guard, bind), to: Codegen, as: :test_expr
+  @spec build_test_expr(Macro.Env.t(), Macro.t(), %{atom() => Macro.t()}) :: IR.Expr.t()
+  defdelegate build_test_expr(env, guard, bind), to: Codegen, as: :test_expr
 
   @doc """
   Collects the variables bound by a pattern.
@@ -392,7 +393,7 @@ defmodule Rete.DSL.Parser do
   Resolves every alias and `__MODULE__` in the AST to the module it names.
 
   Expression codes are shared across modules, so two conditions with the same code must
-  have the same behaviour. An alias is lexical. `H.ok?(amt)` is the same AST in two
+  have the same behavior. An alias is lexical. `H.ok?(amt)` is the same AST in two
   modules that alias `H` to different things. Hashing it unresolved would give both the
   same code, and let `Rete.get_expr_data/1` collapse them onto whichever function it saw
   first. Resolving the alias before hashing makes the code depend on the module actually

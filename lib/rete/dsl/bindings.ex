@@ -347,7 +347,7 @@ defmodule Rete.DSL.Bindings do
         join_guard ->
           %{
             condition
-            | join_filter: build_join_filter(condition.type, own, join_guard),
+            | join_filter: build_join_filter(env, condition.type, own, join_guard),
               __ast__: %{ast | guard: alpha_guard}
           }
       end
@@ -662,7 +662,7 @@ defmodule Rete.DSL.Bindings do
         self -> {{:=, [], [{self, [], nil}, args_ast]}, expose(bind, self, expose_self?)}
       end
 
-    %{condition | alpha: Parser.build_alpha_expr(type, pattern, args_ast, alpha_guard, bind)}
+    %{condition | alpha: Parser.build_alpha_expr(env, type, pattern, args_ast, alpha_guard, bind)}
   end
 
   defp expose(bind, _self, false), do: bind
@@ -670,7 +670,7 @@ defmodule Rete.DSL.Bindings do
 
   # `(token_bindings, fact_bindings) -> boolean`, built by Rete.DSL.Codegen so the naming
   # and hashing scheme has one implementation.
-  defp build_join_filter(type, own, join_guard) do
-    Codegen.join_filter_expr(type, own, join_guard)
+  defp build_join_filter(env, type, own, join_guard) do
+    Codegen.join_filter_expr(env, type, own, join_guard)
   end
 end

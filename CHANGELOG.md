@@ -4,6 +4,73 @@ All notable changes to `rete` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.4.0
+
+Node sharing now reaches across module boundaries. Composing rulesets costs what writing
+them in one module costs.
+
+### Performance
+
+* **Rulesets in separate modules now share nodes.** A condition written in two modules used
+  to compile to one alpha node per module, so a fact was matched against it once per
+  module. It now compiles to one node, matched once, feeding every rule below it. Every
+  beta join under that alpha is shared too.
+
+  The split was there because an *unqualified* call hashes as its bare name. Two modules
+  that import a different `ok?/1` and both write `{:bar, amt} when ok?(amt)` produce one
+  code for two functions, so the compiler kept every cross-module code apart rather than
+  tell a safe case from an unsafe one.
+
+  `Rete.DSL.Codegen` now answers that question while it still holds the AST and the
+  caller's environment, and records the answer in `Rete.IR.Expr`'s new `:share` field.
+  `Rete.Compiler.disambiguate_codes/1` splits only the codes that field refuses.
+  An imported call, a local call, and a compound negation marker are still kept apart. A
+  plain pattern, a literal guard, and a qualified call are shared.
+
+  This changes the shape of a network built from more than one module. It changes no
+  result: the same facts fire the same rules and conclude the same facts either way.
+
+  Measured over k modules writing the same two conditions:
+
+  | k modules | alpha nodes | join nodes | matches per fact |
+  |---|---|---|---|
+  | 1 | 2 | 2 | 1 |
+  | 8 | 2 | 2 | 1 |
+  | 32 | 2 | 2 | 1 |
+
+  Each of those was `k + 1`, `2k` and `k` before. A condition that still refuses to share
+  keeps the old shape, which is what the new `mix bench` scenario contrasts against.
+
+* `mix bench` grew from seventeen scenarios to eighteen. The added one matches 200 facts
+  against the same condition in k modules, with nothing firing, so it measures matching
+  alone. It is flat from k=4 to k=32. All eighteen are linear.
+
+### Changed
+
+* `Rete.IR.Expr` gains `:share`, and it defaults to `false`. Internals are not covered
+  by semantic versioning — see "What is public" in the README.
+* `Rete.DSL.Codegen.alpha_expr`, `test_expr` and `join_filter_expr` each take the
+  caller's `Macro.Env` as a new first argument. They are now `/6`, `/3` and `/4`.
+
+### Fixed
+
+* The README claimed every `mix bench` scenario was linear "except one", and pointed at
+  `docs/design/engine.md` §12 for it. No scenario has been superlinear since 0.3.0, whose
+  own entry records that all seventeen were linear, and §12 lists design gaps rather than a
+  measurement. The README also listed "many rules over one fact type" as unmeasured, which
+  a 0.3.0 scenario already covers.
+* `mix.exs` grouped the docs under `Rete.Memory.Bucket`, which does not exist. The module
+  is `Rete.Bucket`, and it was the one module rendering with no group on hexdocs.
+* The README omitted `Rete.Inspect.query_plan/3` from both its public API table and its
+  list of what `Rete.Inspect` offers.
+* Two section cross-references pointed at the wrong section: `Rete.IR` cited `ir.md` §2 for
+  the "alpha matches any type" rule, which is §4, and `engine.md` cited `network.md` §3 for
+  the no-DNF claim, which is §5.
+* `ir.md` §8 still described the pre-0.4.0 rule, that every code two modules contributed
+  was qualified.
+
+None of these is a behavior change.
+
 ## 0.3.0
 
 A performance pass. Six quadratics removed, and three orderings changed.
@@ -103,7 +170,7 @@ Documentation and a dependency bump. No change to the DSL, the compiler or the e
   Every technical fact, hedge and caveat carries over unchanged — only the sentence
   structure does.
 * Two stale claims in the README's Limitations section corrected. Neither is a
-  behaviour change; both describe what 0.1.0 already did.
+  behavior change; both describe what 0.1.0 already did.
   * "No parallel or async rule evaluation" was wrong: `fire_rules/2`'s `:concurrency`
     option already runs one activation group's rule bodies on tasks, and has since
     0.1.0.
@@ -189,7 +256,7 @@ in `docs/design/`.
   in sight, and a count cannot separate a runaway from a large settling pass, so any
   default eventually fails correct code. It counts **cycles** — one pass of the fire loop,
   which is one activation at the default concurrency and one whole activation group above
-  it. An unrecognised value raises rather than quietly meaning no cap, which is what
+  it. An unrecognized value raises rather than quietly meaning no cap, which is what
   `max_cycles: nil` would do by accident of Erlang term order.
   `docs/design/observability.md` §3 has the numbers for picking one.
 * **`:concurrency` and `:timeout` on `fire_rules/2`.** `concurrency: 1` by default, which
@@ -253,7 +320,7 @@ keeps saying so.
 * Two matches of one rule fire in **arrival order**, at any scale. A batch arriving at a
   node is split into join groups in the order each key first appeared rather than in map
   order; Elixir iterates a map of up to 32 keys in term order and a larger one in an
-  internal hash order, so the previous behaviour changed a rule's firing sequence the
+  internal hash order, so the previous behavior changed a rule's firing sequence the
   moment a node saw its 33rd join key.
 * The runaway error says how much it left out. Both of its lists are cut to five, and a
   cut that says nothing reads as the whole story: it reports

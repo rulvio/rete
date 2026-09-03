@@ -219,6 +219,11 @@ defmodule Rete.Compiler.Negation do
     }
   end
 
+  # `share` is stated rather than left to the default, because this is the one
+  # expression built at *build* time. There is no AST to read and no environment to read
+  # it against, and the code is derived from a name that carries no module. Two modules
+  # that each extract a compound negation from a rule of the same name reach the same
+  # code, so this keeps them on separate nodes.
   defp marker_alpha(name, _carried) do
     %IR.Expr{
       code: :"neg_marker_#{name}",
@@ -229,6 +234,7 @@ defmodule Rete.Compiler.Negation do
         {^name, bindings} when is_map(bindings) -> bindings
         _ -> nil
       end,
+      share: false,
       __ast__: nil
     }
   end

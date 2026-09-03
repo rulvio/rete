@@ -52,10 +52,20 @@ defmodule Rete.DSL.Codegen do
   The hash is taken over `{pattern, body}`. So a condition whose guard was wholly lifted
   into a join filter produces exactly the same code as the same condition written
   without a guard, and it shares that condition's alpha node.
+
+  `env` is the caller's environment. It resolves the unqualified calls of the guard, so
+  the expression can record whether its meaning depends on the module that wrote it.
   """
-  @spec alpha_expr(atom() | module(), Macro.t(), Macro.t(), Macro.t() | nil, bind()) ::
+  @spec alpha_expr(
+          Macro.Env.t(),
+          atom() | module(),
+          Macro.t(),
+          Macro.t(),
+          Macro.t() | nil,
+          bind()
+        ) ::
           IR.Expr.t()
-  def alpha_expr(type, pattern, args_ast, guard, bind) do
+  def alpha_expr(env, type, pattern, args_ast, guard, bind) do
     bind_ast = bind_pattern(bind)
 
     {prefix, body} =
@@ -82,6 +92,7 @@ defmodule Rete.DSL.Codegen do
       arity: 1,
       kind: :alpha,
       fun: nil,
+      share: share?(env, pattern, body),
       __ast__: %{args: args_ast, body: body}
     }
   end
@@ -91,8 +102,8 @@ defmodule Rete.DSL.Codegen do
 
   Produced by a rule level guard, `defrule r(...) when <guard> do`.
   """
-  @spec test_expr(Macro.t(), bind()) :: IR.Expr.t()
-  def test_expr(guard, bind) do
+  @spec test_expr(Macro.Env.t(), Macro.t(), bind()) :: IR.Expr.t()
+  def test_expr(env, guard, bind) do
     bind_ast = bind_pattern(bind)
     code = expr_code([:test, :bind], Map.keys(bind), expr_hash(bind_ast, guard))
 
@@ -102,6 +113,7 @@ defmodule Rete.DSL.Codegen do
       arity: 1,
       kind: :test,
       fun: nil,
+      share: share?(env, bind_ast, guard),
       __ast__: %{args: bind_ast, body: guard}
     }
   end
@@ -117,9 +129,13 @@ defmodule Rete.DSL.Codegen do
   The body is wrapped in `if ..., do: true, else: false`, so the documented boolean
   contract holds, whatever the user wrote.
   """
-  @spec join_filter_expr(atom() | module(), MapSet.t(atom()) | [atom()], Macro.t()) ::
-          IR.Expr.t()
-  def join_filter_expr(type, local, guard) do
+  @spec join_filter_expr(
+          Macro.Env.t(),
+          atom() | module(),
+          MapSet.t(atom()) | [atom()],
+          Macro.t()
+        ) :: IR.Expr.t()
+  def join_filter_expr(env, type, local, guard) do
     local = if is_list(local), do: local, else: MapSet.to_list(local)
 
     # A guard is an expression, so this asks what it *reads*, not what a pattern would
@@ -142,8 +158,70 @@ defmodule Rete.DSL.Codegen do
       arity: 2,
       kind: :join_filter,
       fun: nil,
+      share: share?(env, args, body),
       __ast__: %{args: args, body: body}
     }
+  end
+
+  # --------------------------------------------------------------------------
+  # sharing
+  # --------------------------------------------------------------------------
+
+  # Whether two modules that produce this code may be put on one node.
+  #
+  # Read over the same `{args, body}` pair `expr_hash/2` consumes, so the answer covers
+  # exactly what the code commits to. Most of the ways an expression could depend on the
+  # module that wrote it are already closed before this runs: `Rete.DSL.Parser` resolves
+  # aliases to the module they name, rewrites `@x` to carry its defining module, and
+  # unwraps pins. See `docs/design/ir.md` §5.
+  #
+  # What is left is the unqualified call. `ok?(amt)` hashes as the bare name, whether it
+  # resolves to an import or to a function of the calling module, so two modules produce
+  # one code for two functions. One such call is enough to refuse the share.
+  @spec share?(Macro.Env.t(), Macro.t(), Macro.t()) :: boolean()
+  defp share?(env, args, body) do
+    {_ast, blocked?} =
+      Macro.prewalk({args, body}, false, fn
+        # Already refused. Stop looking.
+        node, true ->
+          {node, true}
+
+        # A qualified call names its module outright. Returning the node without
+        # descending keeps the walk off the `:.` and the function name inside it, neither
+        # of which is an unqualified call.
+        {{:., _, _}, _, _} = node, false ->
+          {node, false}
+
+        # `&name/arity`. The inner `{name, meta, nil}` looks exactly like a variable, so
+        # the clause below would wave it through. It is a local capture.
+        {:&, _, [{:/, _, [{name, _, ctx}, arity]}]} = node, false
+        when is_atom(name) and is_atom(ctx) and is_integer(arity) ->
+          {node, not portable_call?(env, name, arity)}
+
+        {name, _, args} = node, false when is_atom(name) and is_list(args) ->
+          {node, not portable_call?(env, name, length(args))}
+
+        node, false ->
+          {node, false}
+      end)
+
+    not blocked?
+  end
+
+  # A call is portable when every module it could resolve to is one that every module has
+  # on the same terms. `Macro.Env.lookup_import/2` answers for operators and auto-imports
+  # alike: `>` comes back as `[function: Kernel]`, `and` as `[macro: Kernel]`. An empty
+  # answer means a local function of the calling module, which is the case this exists to
+  # catch.
+  defp portable_call?(env, name, arity) do
+    Macro.special_form?(name, arity) or
+      case Macro.Env.lookup_import(env, {name, arity}) do
+        [] ->
+          false
+
+        imports ->
+          Enum.all?(imports, fn {_kind, module} -> module in [Kernel, Kernel.SpecialForms] end)
+      end
   end
 
   # Sorted, always. `Map.to_list/1` on an atom-keyed map iterates in atom-table
@@ -201,11 +279,11 @@ defmodule Rete.DSL.Codegen do
   @doc """
   The stable hash of an AST fragment.
 
-  Two normalisations run first. Both exist so the hash is a function of what the code
+  Two normalizations run first. Both exist so the hash is a function of what the code
   *means*, not of how it was typed:
 
     * metadata is stripped, so a rule keeps its hash when it moves down a file.
-    * discarded variables are canonicalised to `_`. So `{:order, _x}` and
+    * discarded variables are canonicalized to `_`. So `{:order, _x}` and
       `{:order, _y}` — byte-identical once compiled, since a `_`-prefixed name is never
       a binding — share one expression, and therefore one alpha node.
 

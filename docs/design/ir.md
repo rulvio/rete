@@ -286,7 +286,7 @@ variable *every* branch binds is fine, since that variable is then guaranteed.
 | `:args` | `[condition]` | parsed arguments, may nest further gates |
 | `:code` | nested list `[gate \| arg_codes]` | structural id, e.g. `[:or, :fact_user_bind_id_expr_1, [:not, :fact_order_bind_id_expr_2]]` |
 
-The parser recognises gates, and parses their arguments. It performs **no** normalization.
+The parser recognizes gates, and parses their arguments. It performs **no** normalization.
 `Rete.DSL.Normalize` replaces every `Gate` with plain conditions, `Negation` and
 `CompoundNegation` nodes, and `{:or, [[condition, ...], ...]}` disjunctions. So a `Gate`
 never survives into a compiled module.
@@ -485,7 +485,7 @@ struct:
 alpha = Parser.build_alpha_expr(type, fact.__ast__.pattern, args, alpha_guard, fact.__ast__.bind)
 ```
 
-`build_alpha_expr/5` (a delegate to `Codegen.alpha_expr/5`) hashes `{pattern, body}`. So a
+`build_alpha_expr/6` (a delegate to `Codegen.alpha_expr/6`) hashes `{pattern, body}`. So a
 condition whose guard was fully lifted out produces exactly the same code as if it had
 been written without a guard at all. This is the point: it lets the condition share the
 alpha node. A test checks this.
@@ -556,12 +556,12 @@ exactly as the user wrote it. Pinned values and `@x` are never bindings.
 
 ### Determinism
 
-`Codegen.ast_hash/1` normalises the AST before hashing it. Each normalisation exists so
+`Codegen.ast_hash/1` normalizes the AST before hashing it. Each normalization exists so
 that the hash is a function of what the code *means*:
 
 * **metadata is stripped**, so a production keeps its hash when it moves to a different
   line.
-* **discarded variables are canonicalised to `_`**. So `{:order, _x}` and `{:order, _y}` —
+* **discarded variables are canonicalized to `_`**. So `{:order, _x}` and `{:order, _y}` —
   byte-identical once compiled, since a `_`-prefixed name is never a binding — share one
   expression.
 * **the bindings map is sorted**, wherever it is spliced into a hashed AST.
@@ -587,12 +587,44 @@ second rule silently reuse the first rule's compiled function.
 ### Sharing
 
 Codes are the node-sharing key for W2. Two conditions with the same code have
-byte-identical behaviour, and they must map to the same alpha node. Within a module,
+byte-identical behavior, and they must map to the same alpha node. Within a module,
 `Codegen.expr_defs/1` guards each definition with `Module.defines?/2`. So the compiler
 compiles a shared condition once, and both `Expr` structs capture the same function.
-Across modules, `Rete.get_expr_data/1` deduplicates by code, and it keeps the first module
-that defines each one. Never derive new codes from anything unstable: line numbers,
-`make_ref`, or the map iteration order of a rebuilt map.
+
+Never derive new codes from anything unstable: line numbers, `make_ref`, or the map
+iteration order of a rebuilt map.
+
+#### Across modules
+
+A code is equal exactly when two expressions behave the same. Three of the four ways an
+expression could depend on the module that wrote it are closed above: an alias resolves to
+the module it names, `@x` carries its defining module, and a pin is unwrapped. All three
+happen before the hash is taken.
+
+The fourth is the unqualified call. `ok?(amt)` hashes as the bare name, whether it resolves
+to an import or to a function of the calling module. So two modules produce one code for
+two functions.
+
+`Codegen` answers this while it still holds the AST and the caller's `Macro.Env`, and
+records the answer in `Expr.share`. A call is portable when
+`Macro.Env.lookup_import/2` resolves it to `Kernel`, or when `Macro.special_form?/2`
+recognizes it. One call that is not portable clears the flag for the whole expression.
+
+`Rete.Compiler.disambiguate_codes/1` reads the flag at build time, after `escape/1` has
+dropped the AST. It qualifies a code as `<code>@<module>` when more than one module
+contributed it **and** at least one of them did not mark it shared. One refusal splits the
+code for every contributor: qualifying only the refusing side would leave the rest on a
+node holding another module's function.
+
+Everything else is shared. Two modules that write `{:customer, cid}` match it once per
+fact, and every beta node below it is shared too, because a beta node's sharing key holds
+the alpha code.
+
+`Expr.share` defaults to `false`. An expression built where nothing set it is kept
+apart, rather than merged on an assumption nobody checked.
+
+`Rete.get_expr_data/1` is a different thing, and it still deduplicates by code alone. It
+feeds the generated function table, not the network.
 
 ---
 
@@ -687,7 +719,7 @@ same rule written that way round. What remains is:
   would only trade this error for Elixir's own "the underscored variable is used after
   being set" warning — which is fatal under `--warnings-as-errors`.
 
-That is why `Codegen.join_filter_expr/3` may keep deriving the guard's variables with
+That is why `Codegen.join_filter_expr/4` may keep deriving the guard's variables with
 `Parser.parse_bind/1`, which drops `_`-prefixed names. A join filter can never contain
 one.
 
@@ -710,12 +742,20 @@ cannot read a variable that only some branches bind.
   analysis of the conjunct being hoisted.
 * **An unqualified local or imported call in a guard still hashes the same across
   modules.** `valid?(amt)` is byte-identical in two modules that define `valid?/1`
-  differently. So both produce one code, and `Rete.get_expr_data/1` keeps only one of the
-  two functions. The compiler resolves aliases and `__MODULE__`, but not bare local calls.
-  Building a network stays safe: `Rete.Compiler` qualifies any code more than one module
-  contributed as `<code>@<module>`, before building anything from it. So the collision
-  costs sharing, not correctness. But `Rete.get_expr_data/1` itself still reports only one
-  function.
+  differently, so both produce one code. The parser resolves aliases and `__MODULE__`, but
+  not bare local calls.
+
+  Building a network stays safe. `Codegen` clears `Expr.share` for an expression holding
+  such a call, and `Rete.Compiler.disambiguate_codes/1` gives each contributing module its
+  own code. So the collision costs sharing for that one expression, not correctness. Since
+  0.4.0 it costs nothing else: every other cross-module code is shared.
+
+  The check is on the *call*, not on what it resolves to, so two modules importing the
+  **same** `valid?/1` are also kept apart. Resolving unqualified calls to their source at
+  hash time — `Macro.Env.lookup_import/2` already answers this — would close both halves.
+
+  `Rete.get_expr_data/1` is unchanged and still deduplicates by code alone, so it reports
+  only one of the two functions.
 * **Per-group firing is hard to reach.** A collection variable participates only when
   another condition's *pattern* matches on it, and `Rete.Compiler.Sort` defers
   collections. So a plain condition that matches the variable sorts before the collection,

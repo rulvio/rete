@@ -22,7 +22,7 @@ defmodule Rete.DSL.HashingTest do
   defp alpha_code(bind_pairs) do
     bind = Map.new(bind_pairs)
 
-    Codegen.alpha_expr(:order, quoted("{:order, a, b}"), quoted("{_, a, b}"), nil, bind).code
+    Codegen.alpha_expr(__ENV__, :order, quoted("{:order, a, b}"), quoted("{_, a, b}"), nil, bind).code
   end
 
   describe "codes are deterministic" do
@@ -41,7 +41,9 @@ defmodule Rete.DSL.HashingTest do
     test "the generated bindings pattern is sorted" do
       bind = Map.new(zeta: Macro.var(:zeta, nil), alpha: Macro.var(:alpha, nil))
 
-      expr = Codegen.alpha_expr(:order, quoted("{:order, a}"), quoted("{_, a}"), nil, bind)
+      expr =
+        Codegen.alpha_expr(__ENV__, :order, quoted("{:order, a}"), quoted("{_, a}"), nil, bind)
+
       {:%{}, _, pairs} = expr.__ast__.body
 
       assert [:alpha, :zeta] == Enum.map(pairs, &elem(&1, 0))
@@ -53,7 +55,7 @@ defmodule Rete.DSL.HashingTest do
     end
   end
 
-  describe "codes ignore differences that do not change behaviour" do
+  describe "codes ignore differences that do not change behavior" do
     defmodule Discarded do
       use Rete.Ruleset
 
@@ -63,7 +65,7 @@ defmodule Rete.DSL.HashingTest do
 
     # `_x` and `_y` are never bindings, so both conditions compile to byte
     # identical functions and must share one alpha node.
-    test "discarded variables are canonicalised" do
+    test "discarded variables are canonicalized" do
       assert [one] =
                Discarded.get_rule_data()
                |> Enum.map(&hd(&1.lhs).alpha.code)

@@ -28,7 +28,7 @@ becomes dormant again. You do no bookkeeping yourself.
 ```elixir
 def deps do
   [
-    {:rete, "~> 0.3.0"}
+    {:rete, "~> 0.4.0"}
   ]
 end
 ```
@@ -75,9 +75,10 @@ facts: keeping a conclusion true as the world changes is the engine's job, not y
 The name comes from the algorithm underneath. Rete compiles the rules into a network that
 shares work between them.
 
-A condition written in four rules is matched once per fact. The network remembers partial
-matches. Because of this, inserting one fact costs work proportional to what that fact
-actually affects, not to the size of the rulebase.
+A condition written in four rules is matched once per fact, whether those rules sit in one
+module or four. The network remembers partial matches. Because of this, inserting one fact
+costs work proportional to what that fact actually affects, not to the size of the
+rulebase.
 
 ## A worked example
 
@@ -291,6 +292,7 @@ before the fact itself goes.
 
 * `fired/2` — what has concluded something
 * `why_not/2` — how far a rule got, condition by condition
+* `query_plan/3` — which index a filter would use, or `:scan`
 * `collection/3`
 
 For history instead of a snapshot, attach `Rete.Listener.Collect` or `Rete.Listener.Trace`.
@@ -320,7 +322,7 @@ Seven modules are public. They are the ones the examples above use:
 | `Rete` | aggregating rule, expression and taxonomy data across ruleset modules |
 | `Rete.Ruleset` | `defrule`, `defquery`, `derive`, `underive` |
 | `Rete.Session` | building a session, inserting, retracting, firing, querying |
-| `Rete.Inspect` | `explain/2`, `fired/2`, `why_not/2`, `collection/3` |
+| `Rete.Inspect` | `explain/2`, `fired/2`, `why_not/2`, `query_plan/3`, `collection/3` |
 | `Rete.Listener` (+ `.Collect`, `.Trace`) | watching what a session does |
 
 **Everything else is internal**: the DSL front end, the IR, the compiler, the network, the
@@ -365,13 +367,13 @@ docs under `docs/design/` record why.
   requirement: the receiving process must have the same compiled ruleset and listener
   modules loaded, since the function references resolve against them.
 * **Performance is measured by shape, not tuned for a number.** The algorithm is the right
-  one: alpha and beta node sharing, hash joins, incremental retraction. Two profiling
-  passes have run, and `mix bench` keeps their results honest by reporting the empirical
-  exponent of each scenario rather than a wall-clock figure. Every scenario in the suite is
-  linear except one, which is left in deliberately and named in
-  [docs/design/engine.md](docs/design/engine.md) §12 along with what it would take to fix.
-  What has *not* been done is tuning for absolute throughput, or measuring wide
-  disjunctions, many rules over one fact type, or memory rather than time.
+  one: alpha and beta node sharing across modules as well as within one, hash joins,
+  incremental retraction. Two profiling passes have run, and `mix bench` keeps their
+  results honest by reporting the empirical exponent of each scenario rather than a
+  wall-clock figure. All eighteen scenarios are linear.
+  [docs/design/engine.md](docs/design/engine.md) §12 lists the known gaps that remain, and
+  what each would take to close. What has *not* been done is tuning for absolute
+  throughput, or measuring wide disjunctions or memory rather than time.
 * **Per-group firing *within* a collection is awkward.** This differs from `salience`,
   which already groups the *agenda* — every activation at one salience tier fires before
   any activation at a lower one. What is awkward is grouping the *facts inside one rule's
@@ -379,7 +381,13 @@ docs under `docs/design/` record why.
   collection introducing a new variable. Reaching it in practice needs two collections.
   Collect everything instead, and use `Enum.group_by/2`.
 * **No rule subsumption or suffix sharing.** Two rules that share a condition prefix share
-  nodes. Two rules that share only a suffix do not.
+  nodes, whether they sit in one module or several. Two rules that share only a suffix do
+  not.
+
+  One case does not share across modules. A condition whose guard calls an *unqualified*
+  function is kept on its own node per module, because the name alone does not say which
+  function it means. Qualify the call to share it. See
+  [docs/design/ir.md](docs/design/ir.md) §5.
 
 ## Development
 
@@ -411,18 +419,21 @@ gap.
 Wall-clock thresholds are not in CI. On shared runners, they fail for reasons that mean
 nothing.
 
-## Acknowledgements
+## Acknowledgments
 
-**[Clara](https://github.com/cerner/clara-rules)** is the semantic reference for this
-engine. When a question about behaviour had no obvious answer, Clara's answer became the
+**[Clara](https://github.com/gateless/clara-rules)** is the semantic reference for this
+engine. When a question about behavior had no obvious answer, Clara's answer became the
 specification. Examples of such questions:
 
 * what a negated conjunction means when its conjuncts share a variable
 * when the engine may share two nodes
 * how truth maintenance interacts with a fact concluded twice
 
-Two of Clara's issues are implemented and regression-tested here: issue 433 on node
-sharing, and issue 304 on scoped negation markers.
+Two of Clara's issues are implemented and regression-tested here:
+[issue 433](https://github.com/oracle-samples/clara-rules/issues/433) on node sharing, and
+[issue 304](https://github.com/oracle-samples/clara-rules/issues/304) on scoped negation
+markers. Both numbers come from Clara's original issue tracker, now at
+[oracle-samples/clara-rules](https://github.com/oracle-samples/clara-rules).
 
 This engine ports none of Clara's code. Clara is Clojure on the JVM, and its architecture
 reflects that: transient-versus-persistent memory, a transport abstraction, four activation
@@ -435,6 +446,22 @@ place.
 **[taxo](https://github.com/rulvio/taxo)** provides the type hierarchies behind `derive`
 and `underive`.
 
-## Licence
+## How this was built
+
+This project started as an exploration of the Elixir macro system. It became a passion
+project for one reason: Elixir's pattern matching fits a rules engine well. Destructuring,
+variable binding, and join identification all come from the argument list. That is what
+lets a rule read as a function instead of as a configuration format. That observation
+sparked the initial idea for how the DSL and engine are designed.
+
+The architecture and the direction are human, grown from experience building expert systems
+with [Clara](https://github.com/gateless/clara-rules), so this project's semantics and
+behavior are in some ways similar to Clara's.
+
+**AI disclosure.** AI assistance accelerated the development of this project, under human
+direction and review. The design decisions, the semantics, and the trade-offs recorded in
+`docs/design/` are the author's.
+
+## License
 
 Apache-2.0. See [LICENSE](LICENSE).

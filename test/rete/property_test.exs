@@ -162,7 +162,7 @@ defmodule Rete.PropertyTest do
   # Deep-sorts every leaf list of the memory, and every collection a token
   # carries. Order of arrival is not part of what a session means, but
   # multiplicity is: nothing here dedups. See `Rete.Test.Canon` for exactly what
-  # is normalised away and why that is safe over this fixture.
+  # is normalized away and why that is safe over this fixture.
   #
   # Goes through `Rete.Memory.dump/1` rather than the struct: a bucket keeps
   # retracted items as tombstones until it compacts, so two memories holding
@@ -749,7 +749,7 @@ defmodule Rete.PropertyTest do
   # level up, and every property in this file passes with the filtering removed.
   #
   # So the contract is pinned here instead, where it can be violated on purpose.
-  # It is the last line of defence: if any node ever does start retracting what
+  # It is the last line of defense: if any node ever does start retracting what
   # it never propagated, this is what stops the phantom cascading through every
   # memory below it.
   describe "removing from a memory" do
@@ -868,7 +868,7 @@ defmodule Rete.PropertyTest do
 
     # The index exists only to make `take/2` O(1), so a bucket nothing is ever
     # taken from should not be paying for it. Pinned because the saving is
-    # invisible in behaviour: an eagerly-indexed bucket answers every question
+    # invisible in behavior: an eagerly-indexed bucket answers every question
     # identically, just slower.
     test "the index is not built until something is taken" do
       pushed = Bucket.new([el(:a), el(:b), el(:a)])

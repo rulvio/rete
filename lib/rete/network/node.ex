@@ -2,7 +2,7 @@ defmodule Rete.Network.Node do
   @moduledoc """
   The node descriptions the engine runs.
 
-  **Internal.** A node is **data**, not behaviour. It holds the join keys and captured
+  **Internal.** A node is **data**, not behavior. It holds the join keys and captured
   expression functions the engine needs, and nothing else. `Rete.Engine.Nodes` implements
   activation against these structs.
 

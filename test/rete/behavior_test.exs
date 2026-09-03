@@ -1,8 +1,8 @@
-defmodule Rete.BehaviourTest do
+defmodule Rete.BehaviorTest do
   @moduledoc """
-  Behaviours mined from Clara's ~8,000 lines of accumulated behavioural tests.
+  Behaviors mined from Clara's ~8,000 lines of accumulated behavioral tests.
 
-  Organised by what a rules engine has to *do*, not by the Clara file the case
+  Organized by what a rules engine has to *do*, not by the Clara file the case
   came from. Each test says what it protects. Where a case exists to guard a
   specific historical defect, the test names the Clara issue number, so the
   intent survives.
@@ -135,7 +135,7 @@ defmodule Rete.BehaviourTest do
     # queued before a fire are applied in the order they were given, so a
     # retraction of an absent fact followed by its insertion leaves the fact
     # present. An engine that sorted retractions ahead of insertions — an
-    # attractive optimisation — would silently swallow it.
+    # attractive optimization — would silently swallow it.
     test "a retraction before the matching insertion does not cancel it" do
       retract_first =
         [Lifecycle]
@@ -309,7 +309,7 @@ defmodule Rete.BehaviourTest do
       end
     end
 
-    # Clara issue 433, stated behaviourally. The two `{:order, cid, amt}`
+    # Clara issue 433, stated behaviorally. The two `{:order, cid, amt}`
     # conditions are byte identical but sit under different parents. Sharing the
     # node would let a vendor token join elements that only ever belonged to the
     # customer chain.

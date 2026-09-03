@@ -218,7 +218,7 @@ defmodule Rete.Memory do
 
   This is the list the node hands to the rule, not a view built for the occasion. That is
   the point of it: a member change has to produce the collection's old value and its new
-  one, and materialising either would be O(k) on the hottest path there is.
+  one, and materializing either would be O(k) on the hottest path there is.
   """
   @spec group(t(), node_id(), key(), key()) :: [term()] | nil
   def group(%__MODULE__{} = memory, node_id, key, group_key) do

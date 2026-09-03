@@ -3,7 +3,7 @@ defmodule Rete.Bucket do
   An ordered multiset: add, remove one occurrence, and read back in arrival order.
 
   **Internal.** Everything above it sees a list in arrival order, which `to_list/1`
-  produces. Adding and removing one occurrence are both O(1) amortised, however large the
+  produces. Adding and removing one occurrence are both O(1) amortized, however large the
   bucket grows — a plain list cannot do both, and neither can a queue on its own.
 
   Two things in the engine need exactly this, which is why it is one module rather than

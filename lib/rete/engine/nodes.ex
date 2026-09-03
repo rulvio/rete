@@ -394,7 +394,7 @@ defmodule Rete.Engine.Nodes do
   end
 
   defp dispatch(node, kind, _items, _state) do
-    raise ArgumentError, "no #{kind} behaviour for #{inspect(node)}"
+    raise ArgumentError, "no #{kind} behavior for #{inspect(node)}"
   end
 
   # Applies `fun` to each index's store. Tokens are grouped by the key set first, so one

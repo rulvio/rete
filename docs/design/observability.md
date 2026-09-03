@@ -119,7 +119,7 @@ retraction look broken.
 * **Generated helpers.** `fired/2` hides them, unless you pass `generated: true`.
   `why_not/2` never suggests them in its "no such rule" error.
 * **Collections.** A token records the gathered *list*. `explain/2` expands it into its
-  members instead, since that is what the user recognises.
+  members instead, since that is what the user recognizes.
 
 ### Reading `why_not/2`
 
@@ -163,7 +163,7 @@ An uncapped run has the opposite failure. An oscillating ruleset spins with no o
 until something interrupts it.
 
 Between a wrong answer and a visible hang, this engine chooses the hang. It hands the
-judgement to the caller, who knows whether they are running a test suite or a batch job.
+judgment to the caller, who knows whether they are running a test suite or a batch job.
 
 ### Choosing a number
 

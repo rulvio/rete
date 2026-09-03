@@ -34,7 +34,7 @@ defmodule Rete.DSL.BindingsTest do
   defp put_lhs(%IR.Production{} = production, lhs), do: %IR.Production{production | lhs: lhs}
 
   # Evaluates an expression the way `Parser.expr_defs/1` emits it, so that the
-  # behaviour under test is the behaviour that will be compiled into the module.
+  # behavior under test is the behavior that will be compiled into the module.
   defp fun(%IR.Expr{arity: 1, __ast__: %{args: args, body: body}}) do
     eval(
       quote do

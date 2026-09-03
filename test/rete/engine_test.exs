@@ -157,7 +157,7 @@ defmodule Rete.EngineTest do
     # Groups come out of a map, and Elixir iterates a map of up to 32 keys in
     # term order and a larger one in an internal hash order. Taking that order
     # would mean a rule firing its matches in a different sequence as soon as a
-    # node saw its 33rd join key — a behaviour change triggered by data volume,
+    # node saw its 33rd join key — a behavior change triggered by data volume,
     # on a session that is otherwise deterministic.
     test "matches fire in arrival order however many join keys there are" do
       assert Enum.to_list(1..5) == fired_order(5)
@@ -440,7 +440,7 @@ defmodule Rete.EngineTest do
     # was, because a collection gathers in arrival order. So the round trip
     # restores the membership and not the sequence, and a rule that puts its
     # collection into a conclusion sees that conclusion change. Pinned here so the
-    # behaviour is written down where someone will meet it, not so it is defended:
+    # behavior is written down where someone will meet it, not so it is defended:
     # the sequence was never something a rule was entitled to.
     test "retracting and reinserting a collection member moves it to the front" do
       base = run([Ordered], [{:customer, 1}, {:order, 1, 10}, {:order, 1, 20}, {:order, 1, 30}])
@@ -1657,9 +1657,9 @@ defmodule Rete.EngineTest do
     end
 
     # `fired >= nil` is false for every integer under Erlang term order, so an
-    # unrecognised value would quietly mean :infinity — the guard silently off,
+    # unrecognized value would quietly mean :infinity — the guard silently off,
     # which is worse than either setting.
-    test "an unrecognised max_cycles is rejected rather than read as no cap" do
+    test "an unrecognized max_cycles is rejected rather than read as no cap" do
       for bad <- [nil, -1, 1.5, "100"] do
         error =
           assert_raise ArgumentError, fn ->

@@ -30,7 +30,7 @@ defmodule Rete.Test.Canon do
   @type collections :: %{term() => atom() | nil}
 
   @doc """
-  A whole memory, canonicalised: every leaf list sorted, every collection sorted.
+  A whole memory, canonicalized: every leaf list sorted, every collection sorted.
   """
   @spec dump(Session.t()) :: map()
   def dump(%Session{state: %{memory: memory}} = session) do

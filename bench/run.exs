@@ -252,6 +252,41 @@ defmodule Bench.Width do
   end
 end
 
+defmodule Bench.Spread do
+  @moduledoc false
+
+  # k modules, each writing the *same* two conditions. Generated, because the shape only
+  # shows at a module count nobody writes by hand.
+  #
+  # This measures **matching**, not firing. The second condition never matches, so no rule
+  # fires and nothing is concluded: what is left is the cost of offering each fact to the
+  # alpha network and storing the tokens it produces.
+  #
+  # Every module writes a plain pattern and a literal guard, so nothing ties the condition
+  # to the module that wrote it and all k collapse onto one alpha and one root join. Flat
+  # is the goal. Before cross-module sharing this was linear in k — the same fact was
+  # matched once per module.
+  def modules(k) do
+    for i <- 1..k do
+      name = Module.concat(Bench.Spread.Generated, "M#{k}_#{i}")
+
+      Module.create(
+        name,
+        quote do
+          use Rete.Ruleset
+
+          defrule unquote(:"r#{i}")({:ping, x} when x > 0, {:never, x}) do
+            {:pong, unquote(i), x}
+          end
+        end,
+        Macro.Env.location(__ENV__)
+      )
+
+      name
+    end
+  end
+end
+
 defmodule Bench.Query do
   @moduledoc false
   use Rete.Ruleset
@@ -527,6 +562,26 @@ Bench.scenario(
   note:
     "every rule hangs off the beta root, so sharing has to look past all the others — " <>
       "was O(r\u00B2) while that was a scan"
+)
+
+# Compiled up front, for the reason the width scenario gives: the scenario times matching,
+# not the build that made the network.
+spread_sizes = [4, 8, 16, 32]
+
+spread_networks =
+  for k <- spread_sizes, into: %{}, do: {k, Rete.Compiler.build(Bench.Spread.modules(k))}
+
+Bench.scenario(
+  "match one condition written in k modules",
+  spread_sizes,
+  fn k ->
+    facts = for i <- 1..200, do: {:ping, i}
+
+    spread_networks[k] |> Bench.session() |> Rete.Session.insert(facts)
+  end,
+  note:
+    "200 facts against the same condition in k modules, nothing firing — flat is the " <>
+      "goal, since all k share one alpha and one root join"
 )
 
 Bench.compare(
