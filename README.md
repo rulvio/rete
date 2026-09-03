@@ -28,7 +28,7 @@ becomes dormant again. You do no bookkeeping yourself.
 ```elixir
 def deps do
   [
-    {:rete, "~> 0.3.0"}
+    {:rete, "~> 0.4.0"}
   ]
 end
 ```
@@ -75,9 +75,10 @@ facts: keeping a conclusion true as the world changes is the engine's job, not y
 The name comes from the algorithm underneath. Rete compiles the rules into a network that
 shares work between them.
 
-A condition written in four rules is matched once per fact. The network remembers partial
-matches. Because of this, inserting one fact costs work proportional to what that fact
-actually affects, not to the size of the rulebase.
+A condition written in four rules is matched once per fact, whether those rules sit in one
+module or four. The network remembers partial matches. Because of this, inserting one fact
+costs work proportional to what that fact actually affects, not to the size of the
+rulebase.
 
 ## A worked example
 
@@ -365,13 +366,13 @@ docs under `docs/design/` record why.
   requirement: the receiving process must have the same compiled ruleset and listener
   modules loaded, since the function references resolve against them.
 * **Performance is measured by shape, not tuned for a number.** The algorithm is the right
-  one: alpha and beta node sharing, hash joins, incremental retraction. Two profiling
-  passes have run, and `mix bench` keeps their results honest by reporting the empirical
-  exponent of each scenario rather than a wall-clock figure. Every scenario in the suite is
-  linear except one, which is left in deliberately and named in
-  [docs/design/engine.md](docs/design/engine.md) §12 along with what it would take to fix.
-  What has *not* been done is tuning for absolute throughput, or measuring wide
-  disjunctions, many rules over one fact type, or memory rather than time.
+  one: alpha and beta node sharing across modules as well as within one, hash joins,
+  incremental retraction. Two profiling passes have run, and `mix bench` keeps their
+  results honest by reporting the empirical exponent of each scenario rather than a
+  wall-clock figure. All eighteen scenarios are linear.
+  [docs/design/engine.md](docs/design/engine.md) §12 lists the known gaps that remain, and
+  what each would take to close. What has *not* been done is tuning for absolute
+  throughput, or measuring wide disjunctions or memory rather than time.
 * **Per-group firing *within* a collection is awkward.** This differs from `salience`,
   which already groups the *agenda* — every activation at one salience tier fires before
   any activation at a lower one. What is awkward is grouping the *facts inside one rule's
@@ -379,7 +380,13 @@ docs under `docs/design/` record why.
   collection introducing a new variable. Reaching it in practice needs two collections.
   Collect everything instead, and use `Enum.group_by/2`.
 * **No rule subsumption or suffix sharing.** Two rules that share a condition prefix share
-  nodes. Two rules that share only a suffix do not.
+  nodes, whether they sit in one module or several. Two rules that share only a suffix do
+  not.
+
+  One case does not share across modules. A condition whose guard calls an *unqualified*
+  function is kept on its own node per module, because the name alone does not say which
+  function it means. Qualify the call to share it. See
+  [docs/design/ir.md](docs/design/ir.md) §5.
 
 ## Development
 

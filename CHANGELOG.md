@@ -4,7 +4,10 @@ All notable changes to `rete` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.4.0
+
+Node sharing now reaches across module boundaries. Composing rulesets costs what writing
+them in one module costs.
 
 ### Performance
 
@@ -27,12 +30,35 @@ All notable changes to `rete` are recorded here. The format follows
   This changes the shape of a network built from more than one module. It changes no
   result: the same facts fire the same rules and conclude the same facts either way.
 
+  Measured over k modules writing the same two conditions:
+
+  | k modules | alpha nodes | join nodes | matches per fact |
+  |---|---|---|---|
+  | 1 | 2 | 2 | 1 |
+  | 8 | 2 | 2 | 1 |
+  | 32 | 2 | 2 | 1 |
+
+  Each of those was `k + 1`, `2k` and `k` before. A condition that still refuses to share
+  keeps the old shape, which is what the new `mix bench` scenario contrasts against.
+
+* `mix bench` grew from seventeen scenarios to eighteen. The added one matches 200 facts
+  against the same condition in k modules, with nothing firing, so it measures matching
+  alone. It is flat from k=4 to k=32. All eighteen are linear.
+
 ### Changed
 
 * `Rete.IR.Expr` gains `:share`, and it defaults to `false`. Internals are not covered
   by semantic versioning — see "What is public" in the README.
 * `Rete.DSL.Codegen.alpha_expr`, `test_expr` and `join_filter_expr` each take the
   caller's `Macro.Env` as a new first argument. They are now `/6`, `/3` and `/4`.
+
+### Fixed
+
+* The README claimed every `mix bench` scenario was linear "except one", and pointed at
+  `docs/design/engine.md` §12 for it. No scenario has been superlinear since 0.3.0, whose
+  own entry records that all seventeen were linear, and §12 lists design gaps rather than a
+  measurement. The README also listed "many rules over one fact type" as unmeasured, which
+  a 0.3.0 scenario already covers. Neither is a behaviour change.
 
 ## 0.3.0
 

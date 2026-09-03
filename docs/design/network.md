@@ -154,6 +154,13 @@ expression code, so a condition written in four rules is matched once per fact.
 `{:order, cid, _amt}` and `{:order, cid, _}` share a node, because W1 canonicalises
 discarded variables.
 
+**Across modules**, the same code shares the same node, so composing rulesets costs what
+writing them together costs. The one exception is an expression whose guard calls an
+unqualified function: the bare name does not say which function it means, so
+`Rete.Compiler.disambiguate_codes/1` gives each contributing module its own code. Every
+beta node under it separates too, because a sharing key holds the alpha code. See
+`ir.md` §5.
+
 ---
 
 ## 5. Disjunctions
@@ -231,3 +238,7 @@ wrapped in `Rete.IR.Expr`, not functions generated into a module.
   redundant condition build separate chains.
 * **Sharing is prefix-only.** Two rules that share a *suffix*, but not a prefix, share
   nothing. This limit is inherent to how a beta network is built.
+* **An unqualified call blocks cross-module sharing.** The check is on the call, not on
+  what it resolves to, so two modules that import the *same* `ok?/1` still get a node
+  each. Resolving unqualified calls to their source at hash time would close this. See
+  `ir.md` §5.

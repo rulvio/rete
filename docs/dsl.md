@@ -707,6 +707,12 @@ This compiles exactly as if the threshold had been written first. The sort is **
 conditions that are equally satisfiable keep the order they were written in. This is what
 lets two rules that share a prefix share their alpha and join nodes.
 
+Sharing works across modules too. Two rulesets you pass to `Rete.Session.new/2` together
+match a condition they both write once per fact, not once each. The exception is a guard
+that calls an **unqualified** function. Two modules can import a different `ok?/1` and
+both write `when ok?(amt)`, and the name alone does not say which one is meant, so the
+compiler keeps those apart. Qualify the call — `Checks.ok?(amt)` — to share it.
+
 Two kinds of element are deliberately deferred to the end:
 
 * **collections.** One placed too early would propagate `[]` before the conditions that
