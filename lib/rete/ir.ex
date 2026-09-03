@@ -21,7 +21,7 @@ defmodule Rete.IR do
 
   A condition's `:type` is the *declared* fact type. It is never a runtime check baked
   into the alpha expression — the alpha matches a fact of any type, on purpose. The alpha
-  index applies the taxonomy instead. See `docs/design/ir.md` §2.
+  index applies the taxonomy instead. See `docs/design/ir.md` §4.
   """
 
   defmodule Expr do

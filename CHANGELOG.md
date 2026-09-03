@@ -58,7 +58,18 @@ them in one module costs.
   `docs/design/engine.md` §12 for it. No scenario has been superlinear since 0.3.0, whose
   own entry records that all seventeen were linear, and §12 lists design gaps rather than a
   measurement. The README also listed "many rules over one fact type" as unmeasured, which
-  a 0.3.0 scenario already covers. Neither is a behaviour change.
+  a 0.3.0 scenario already covers.
+* `mix.exs` grouped the docs under `Rete.Memory.Bucket`, which does not exist. The module
+  is `Rete.Bucket`, and it was the one module rendering with no group on hexdocs.
+* The README omitted `Rete.Inspect.query_plan/3` from both its public API table and its
+  list of what `Rete.Inspect` offers.
+* Two section cross-references pointed at the wrong section: `Rete.IR` cited `ir.md` §2 for
+  the "alpha matches any type" rule, which is §4, and `engine.md` cited `network.md` §3 for
+  the no-DNF claim, which is §5.
+* `ir.md` §8 still described the pre-0.4.0 rule, that every code two modules contributed
+  was qualified.
+
+None of these is a behaviour change.
 
 ## 0.3.0
 

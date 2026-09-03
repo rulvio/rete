@@ -742,12 +742,20 @@ cannot read a variable that only some branches bind.
   analysis of the conjunct being hoisted.
 * **An unqualified local or imported call in a guard still hashes the same across
   modules.** `valid?(amt)` is byte-identical in two modules that define `valid?/1`
-  differently. So both produce one code, and `Rete.get_expr_data/1` keeps only one of the
-  two functions. The compiler resolves aliases and `__MODULE__`, but not bare local calls.
-  Building a network stays safe: `Rete.Compiler` qualifies any code more than one module
-  contributed as `<code>@<module>`, before building anything from it. So the collision
-  costs sharing, not correctness. But `Rete.get_expr_data/1` itself still reports only one
-  function.
+  differently, so both produce one code. The parser resolves aliases and `__MODULE__`, but
+  not bare local calls.
+
+  Building a network stays safe. `Codegen` clears `Expr.share` for an expression holding
+  such a call, and `Rete.Compiler.disambiguate_codes/1` gives each contributing module its
+  own code. So the collision costs sharing for that one expression, not correctness. Since
+  0.4.0 it costs nothing else: every other cross-module code is shared.
+
+  The check is on the *call*, not on what it resolves to, so two modules importing the
+  **same** `valid?/1` are also kept apart. Resolving unqualified calls to their source at
+  hash time — `Macro.Env.lookup_import/2` already answers this — would close both halves.
+
+  `Rete.get_expr_data/1` is unchanged and still deduplicates by code alone, so it reports
+  only one of the two functions.
 * **Per-group firing is hard to reach.** A collection variable participates only when
   another condition's *pattern* matches on it, and `Rete.Compiler.Sort` defers
   collections. So a plain condition that matches the variable sorts before the collection,

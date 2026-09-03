@@ -687,7 +687,7 @@ asymptotically worse for a session that does retract.
 
 ### Compile time
 
-Disjunctions hold to the claim `network.md` §3 makes. A rule with d disjunctions of three
+Disjunctions hold to the claim `network.md` §5 makes. A rule with d disjunctions of three
 branches compiles to `3d + 1` beta nodes. That is linear in d, where flattening the left
 hand side to disjunctive normal form would give `3^d` paths — 25 nodes at d = 8, against
 6,561. `Rete.DisjunctionTest` pins the node count rather than the wall clock, since the

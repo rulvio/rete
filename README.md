@@ -292,6 +292,7 @@ before the fact itself goes.
 
 * `fired/2` — what has concluded something
 * `why_not/2` — how far a rule got, condition by condition
+* `query_plan/3` — which index a filter would use, or `:scan`
 * `collection/3`
 
 For history instead of a snapshot, attach `Rete.Listener.Collect` or `Rete.Listener.Trace`.
@@ -321,7 +322,7 @@ Seven modules are public. They are the ones the examples above use:
 | `Rete` | aggregating rule, expression and taxonomy data across ruleset modules |
 | `Rete.Ruleset` | `defrule`, `defquery`, `derive`, `underive` |
 | `Rete.Session` | building a session, inserting, retracting, firing, querying |
-| `Rete.Inspect` | `explain/2`, `fired/2`, `why_not/2`, `collection/3` |
+| `Rete.Inspect` | `explain/2`, `fired/2`, `why_not/2`, `query_plan/3`, `collection/3` |
 | `Rete.Listener` (+ `.Collect`, `.Trace`) | watching what a session does |
 
 **Everything else is internal**: the DSL front end, the IR, the compiler, the network, the

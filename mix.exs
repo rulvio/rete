@@ -114,7 +114,7 @@ defmodule Rete.MixProject do
           Rete.Element,
           Rete.Activation,
           Rete.Memory,
-          Rete.Memory.Bucket,
+          Rete.Bucket,
           Rete.Agenda,
           Rete.Taxonomy
         ],
