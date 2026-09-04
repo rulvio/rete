@@ -673,12 +673,13 @@ defmodule Rete.PropertyTest do
     {session, multiset} =
       Enum.reduce(ops, {fresh(), []}, fn
         {:insert, f}, {session, multiset} ->
-          {session |> Session.insert(f) |> maybe_fire(when_to_fire), [f | multiset]}
+          {session |> Session.insert(f) |> maybe_fire(when_to_fire) |> settled!(), [f | multiset]}
 
         {:retract, f}, {session, multiset} ->
           # Retracting a fact the session does not hold is a no-op, so the
           # reference multiset has to model that too.
-          {session |> Session.retract(f) |> maybe_fire(when_to_fire), List.delete(multiset, f)}
+          {session |> Session.retract(f) |> maybe_fire(when_to_fire) |> settled!(),
+           List.delete(multiset, f)}
       end)
 
     {Session.fire_rules(session), multiset}
@@ -686,6 +687,51 @@ defmodule Rete.PropertyTest do
 
   defp maybe_fire(session, :fire_each), do: Session.fire_rules(session)
   defp maybe_fire(session, :fire_last), do: session
+
+  # --- settled? answers for the agenda as well as the queue ----------------------------------
+
+  # `Rete.Session.settled?/1` reads the queue alone. Its docstring says why that answers
+  # for the agenda too: `fire_loop/4` returns only when the agenda is empty, and every
+  # other way out of a fire raises, which throws the state away. So a session a caller can
+  # hold never has an empty queue and a waiting activation.
+  #
+  # Nothing in the engine enforces that. This does. If it ever stops holding, `settled?/1`
+  # reports `true` about a session with a rule still to fire, `Rete.Inspect.why_not/2`
+  # answers from that session rather than refusing, and a caller who checked before
+  # querying is told the session is ready when it is not.
+  #
+  # Called on every intermediate session the properties below build, settled or not, so it
+  # costs no generation of its own.
+  defp settled!(%Session{} = session) do
+    if Session.settled?(session) do
+      assert 0 == Rete.Agenda.size(session.state.agenda),
+             "settled?/1 answered true with an activation still on the agenda"
+    end
+
+    session
+  end
+
+  describe "settled? and the agenda" do
+    property "a settled session has an empty agenda, at every point of a mixed sequence" do
+      check all(ops <- list_of(op(), max_length: 30), max_runs: 40) do
+        # Both policies, because `:fire_last` leaves the session unsettled between calls
+        # and `:fire_each` settles it. The invariant is one-directional either way: an
+        # unsettled session may hold anything.
+        apply_ops(ops, :fire_each)
+        apply_ops(ops, :fire_last)
+      end
+    end
+
+    test "a fresh session is unsettled, and firing it settles both" do
+      fresh = Session.new([Everything])
+
+      refute Session.settled?(fresh)
+
+      settled = settled!(Session.fire_rules(fresh))
+      assert Session.settled?(settled)
+      assert 0 == Rete.Agenda.size(settled.state.agenda)
+    end
+  end
 
   # --- the fuzz ------------------------------------------------------------------------------------
 
@@ -730,15 +776,15 @@ defmodule Rete.PropertyTest do
           case op do
             :insert ->
               f = Enum.random(@universe)
-              {Session.insert(session, f), [f | multiset]}
+              {session |> Session.insert(f) |> settled!(), [f | multiset]}
 
             :retract ->
               f = Enum.random(multiset)
-              {Session.retract(session, f), List.delete(multiset, f)}
+              {session |> Session.retract(f) |> settled!(), List.delete(multiset, f)}
           end
 
         if rem(step, fire_every) == 0 do
-          session = Session.fire_rules(session)
+          session = session |> Session.fire_rules() |> settled!()
           context = "seed #{seed}, step #{step}, holding #{inspect(Enum.sort(multiset))}"
 
           assert expected(multiset) == counts(session), context

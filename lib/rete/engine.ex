@@ -160,11 +160,9 @@ defmodule Rete.Engine do
   # Nothing is lost where it matters. One `insert/3` or `retract/3` call queues one
   # direction, so no window closes and a batch of any size still merges to one op.
   #
-  # The guard is what makes that safe over a whole queue. `{:retract_facts, node, facts}`
-  # is also a 3-tuple, so without it that op would merge as though `:retract_facts` were a
-  # direction, silently and in a changed order. `{:event, ...}` is a 2-tuple and would
-  # already crash. Both mean the queue held drain-time work, which is a bug in the caller,
-  # so failing here is the point. See `Rete.Engine.State.op/0`.
+  # Only a direction merges. `{:retract_facts, node, facts}` is a 3-tuple too, so without
+  # the check it would merge as though `:retract_facts` were a direction, silently and in a
+  # changed order. `merge_op/2` refuses it, and says so. See `Rete.Engine.State.op/0`.
   @mergeable [:left, :left_retract, :right, :right_retract]
 
   defp coalesce([]), do: []
@@ -174,25 +172,43 @@ defmodule Rete.Engine do
   # so its size is a generation number, and a closed window cannot be reopened into the batch
   # it named. `keys` keeps the order the batches were opened in.
   defp coalesce(ops) do
-    {merged, keys, _open} =
-      Enum.reduce(ops, {%{}, [], %{}}, fn {direction, child, items}, {merged, keys, open}
-                                          when direction in @mergeable ->
-        target = {direction, child}
-        open = Map.delete(open, {opposite(direction), child})
-
-        case open do
-          %{^target => key} ->
-            {Map.update!(merged, key, &[items | &1]), keys, open}
-
-          _ ->
-            key = {target, map_size(merged)}
-            {Map.put(merged, key, [items]), [key | keys], Map.put(open, target, key)}
-        end
-      end)
+    {merged, keys, _open} = Enum.reduce(ops, {%{}, [], %{}}, &merge_op/2)
 
     for {{direction, child}, _generation} = key <- Enum.reverse(keys) do
       {direction, child, merged |> Map.fetch!(key) |> Enum.reverse() |> Enum.concat()}
     end
+  end
+
+  defp merge_op({direction, child, items}, {merged, keys, open})
+       when direction in @mergeable do
+    target = {direction, child}
+    open = Map.delete(open, {opposite(direction), child})
+
+    case open do
+      %{^target => key} ->
+        {Map.update!(merged, key, &[items | &1]), keys, open}
+
+      _ ->
+        key = {target, map_size(merged)}
+        {Map.put(merged, key, [items]), [key | keys], Map.put(open, target, key)}
+    end
+  end
+
+  # Reaching this is a bug in the engine, not in a ruleset. Say which op, and say what the
+  # two ways to get here are, because the caller cannot see the queue from where it stands.
+  defp merge_op(op, _acc) do
+    raise RuntimeError, """
+    #{inspect(op)} cannot be merged. Only #{inspect(@mergeable)} ops can.
+
+    `{:retract_facts, node, facts}` and `{:event, event}` are work a node makes while a \
+    drain runs. A drain ends with an empty queue. So neither can be in the queue at the \
+    point `coalesce_queue/1` merges it, which is before a fire drains anything.
+
+    One of two things is wrong. Something queued drain-time work outside a drain. Or \
+    `Rete.Engine.State.op/0` has a new kind of op, and this function was not told about it.
+
+    Merging it as a direction would reorder it, and report nothing.\
+    """
   end
 
   defp opposite(:left), do: :left_retract

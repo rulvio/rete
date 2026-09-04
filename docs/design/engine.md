@@ -306,20 +306,27 @@ the property suite confirms it. What arrival order does decide is the order
 
 ### What arrival order does not promise
 
-**Order within one parent, not across parents.** `Rete.Engine.coalesce/1` merges the ops of
-one insert or retract call that go the same way to the same node, so a node is handed a
-whole batch at once instead of one element per call. Ops keep the position of the first
-fact that produced one for a given child, so a rule's own matches still arrive in fact
-order — which is the guarantee above, and the one rules rest on.
+**Order within one parent, not across parents.** `Rete.Engine.coalesce/1` merges the ops
+that go the same way to the same node, so a node is handed a whole batch at once instead of
+one element per call. Ops keep the position of the first fact that produced one for a given
+child, so a rule's own matches still arrive in fact order — which is the guarantee above,
+and the one rules rest on.
 
-What changed with it: a rule reachable by **two different routes** within a single call now
-sees all of one route's matches before any of the other's, where it used to see them
-interleaved fact by fact. Inserting `{:n, 5}` and `{:n, 6}` into a rule whose two
-disjunction branches both match them fires `5, 6, 5, 6` and used to fire `5, 5, 6, 6`. Both
-are arrival orders. Only the first is stable when one fact type feeds several conditions,
-and the settled facts are identical either way.
+What changed with it: a rule reachable by **two different routes** now sees all of one
+route's matches before any of the other's, where it used to see them interleaved fact by
+fact. Inserting `{:n, 5}` and `{:n, 6}` into a rule whose two disjunction branches both
+match them fires `5, 6, 5, 6` and used to fire `5, 5, 6, 6`. Both are arrival orders. Only
+the first is stable when one fact type feeds several conditions, and the settled facts are
+identical either way.
 
-That is pinned by a test rather than left to the suite, because the suite stayed green
+**The call boundary does not decide it, from 0.5.0.** The merge used to run over one insert
+or retract call, because each call drained. A fire now coalesces the whole queue, so those
+two facts fire `5, 6, 5, 6` whether they arrive in one call or in two. Before 0.5.0 the
+two-call feed fired `5, 5, 6, 6`. A retraction between them is the one thing that brings
+the old sequence back: it closes the node's merge window, so the inserts on either side
+stay separate batches. See §2.
+
+That is pinned by tests rather than left to the suite, because the suite stayed green
 through the change: nothing else reads the sequence, only what the session settles to.
 
 Batching is not a micro-optimization. A node's per-call work is not all per item — it

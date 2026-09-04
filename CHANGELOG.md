@@ -36,6 +36,12 @@ All notable changes to `rete` are recorded here. The format follows
   `:activation_added` went to nobody, and a listener later saw `:activation_fired` for a
   rule it never saw added.
 
+  **A listener attached to a fresh session now misses nothing.** `insert/2` and `retract/2`
+  emit `:fact_inserted`, `:fact_retracted` and `:fact_duplicated`, because they update
+  working memory at once. Every other event happens inside `fire_rules/2`: all of
+  `:propagated`, and all of `:activation_added`, `:activation_removed` and
+  `:activation_fired`. See `docs/design/observability.md` §1.
+
   Batching is the other gain. Any number of inserts and retractions now cost one settle. A
   fire coalesces the queue before it drains. So facts fed one call at a time reach a node as
   one batch. Feeding 1,000 orders one call at a time now costs what one call carrying all
@@ -46,6 +52,29 @@ All notable changes to `rete` are recorded here. The format follows
   a retraction would drop it. So a run of inserts merges, a run of retractions merges, and a
   caller that alternates the two on one node gets one batch per run. Where you put your call
   boundaries never changes where the session lands.
+
+* **One ordering moved, and it was documented as unspecified.** A rule reachable by two
+  routes — two disjunction branches over one fact type, say — used to fire fact by fact
+  when its facts arrived in separate calls, and route by route when they arrived in one.
+  It is now route by route either way.
+
+  ```elixir
+  # a rule whose two branches both match every {:n, _}
+  session |> Session.insert({:n, 5}) |> Session.insert({:n, 6}) |> Session.fire_rules()
+  # 0.4.0 fires 5, 5, 6, 6.  0.5.0 fires 5, 6, 5, 6, which is what one
+  # insert call carrying both facts already fired in 0.4.0.
+  ```
+
+  The cause is the coalescing above: the merge used to run over one call, because each call
+  drained, and it now runs over the whole queue. So the call boundary stops deciding the
+  sequence. A retraction between the two inserts brings the old order back, because it
+  closes that node's merge window.
+
+  Both are arrival orders, and both settle to the same facts. What this changes is the
+  order of `:activation_fired` events, which is what a trace reads.
+  `docs/design/engine.md` §5 states what arrival order does and does not promise. A rule's
+  own matches still arrive in fact order, which is the part rules rest on, and it did not
+  move.
 
 * **`Rete.Inspect.why_not/2` and `collection/3` now raise on a session with propagation
   queued.** Both read what propagation built. On a session that never fired that is zero of
@@ -66,6 +95,16 @@ All notable changes to `rete` are recorded here. The format follows
   and matching before a fire is the work this release moved into the fire. `pending/1` also
   had no counterpart in clara-rules, so no ported ruleset depended on the contract. See
   `docs/design/engine.md` §12.
+
+* **A production with no conditions is documented.** `defrule startup do ... end` is legal,
+  and always was. No code changed for it. Its timing moved with everything else here: it is
+  true of the empty session, so it fires once, on the first `fire_rules/2`, with nothing
+  inserted.
+
+  Its support is the root token rather than a fact, so it is the one conclusion `retract/2`
+  cannot reach. A query written the same way answers one row in every fired session, and
+  binds nothing, so any filter raises. `docs/dsl.md` states this for rule authors,
+  `docs/design/engine.md` §6 gives the reason, and `Rete.EngineTest` pins both.
 
 * **One deliberate divergence from Clara.** Clara's
   `test_negation/test-simple-negation` queries a session that nobody inserted into and

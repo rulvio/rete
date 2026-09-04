@@ -185,32 +185,58 @@ defmodule Rete.EngineTest do
       # Both branches match every `{:n, _}` here, and they are different alpha
       # expressions, so one fact produces two elements that re-converge on one
       # terminal. This is the only shape where a rule's matches reach the agenda
-      # by more than one route within a single insert call.
+      # by more than one route.
       defrule hit({:or, [{:n, x} when x > 0, {:n, x} when x < 100]}) do
         {:hit, x}
       end
     end
 
-    # `Rete.Engine.coalesce/1` merges the ops of one call that go the same way to
-    # the same node, so a node sees a batch rather than one element per call.
-    # That fixes the order here: all of one branch, then all of the other. Before
-    # it was fact-major — both branches of the first fact, then both of the
-    # second — which is just as defensible, and is the order this used to have.
+    # `Rete.Engine.coalesce/1` merges the ops that go the same way to the same node,
+    # so a node sees a batch rather than one element per call. That fixes the order
+    # here: all of one branch, then all of the other. Before it was fact-major —
+    # both branches of the first fact, then both of the second — which is just as
+    # defensible, and is the order this used to have.
     #
     # This is pinned rather than left to the suite because the suite stayed green
     # through the change: nothing else looks at the sequence, only at what the
     # session settles to, and both orders settle to the same facts.
-    test "one fact reaching a rule twice fires branch by branch, not fact by fact" do
-      fired =
-        [TwoParents]
-        |> Session.new()
-        |> Session.with_listener(Collect, [])
-        |> Session.insert([{:n, 5}, {:n, 6}])
-        |> Session.fire_rules()
-        |> Collect.by_tag(:activation_fired)
-        |> Enum.map(fn {:activation_fired, _source, token, _facts} -> token.bindings.x end)
+    defp branch_order(feed) do
+      [TwoParents]
+      |> Session.new()
+      |> Session.with_listener(Collect, [])
+      |> then(feed)
+      |> Session.fire_rules()
+      |> Collect.by_tag(:activation_fired)
+      |> Enum.map(fn {:activation_fired, _source, token, _facts} -> token.bindings.x end)
+    end
 
-      assert [5, 6, 5, 6] == fired
+    test "one fact reaching a rule twice fires branch by branch, not fact by fact" do
+      assert [5, 6, 5, 6] == branch_order(&Session.insert(&1, [{:n, 5}, {:n, 6}]))
+    end
+
+    # And the call boundary does not decide it. A fire coalesces the whole queue, so
+    # two facts fed one call each reach the node as the same batch a single call
+    # builds. Before 0.5.0 each call drained on its own, and this fired `5, 5, 6, 6`
+    # while the test above fired `5, 6, 5, 6`. One feed, one order, now.
+    test "the same two facts fed one call at a time fire in the same order" do
+      assert [5, 6, 5, 6] ==
+               branch_order(fn session ->
+                 session |> Session.insert({:n, 5}) |> Session.insert({:n, 6})
+               end)
+    end
+
+    # A retraction between them closes the node's merge window, so the inserts on
+    # either side are separate batches and the order goes back to fact-major across
+    # them. Stated here because it is the one thing that reopens the old sequence.
+    test "a retraction between two inserts separates their batches" do
+      assert [5, 5, 6, 6] ==
+               branch_order(fn session ->
+                 session
+                 |> Session.insert({:n, 5})
+                 |> Session.insert({:n, 7})
+                 |> Session.retract({:n, 7})
+                 |> Session.insert({:n, 6})
+               end)
     end
 
     # The promise that did not change, and the one rules actually rest on.
@@ -982,6 +1008,27 @@ defmodule Rete.EngineTest do
                )
 
       assert [{1, 200}, {1, 300}, {1, 400}] == churned |> QueryOnly.orders() |> Enum.sort()
+    end
+
+    # Nothing a caller can write reaches this. `{:event, ...}` and `{:retract_facts, ...}`
+    # are made during a drain, and a drain ends with an empty queue, so the merge never
+    # meets one. The queue is put in that state by hand here, because the message is the
+    # whole point of the clause: an op that merged as though its first element were a
+    # direction would be reordered and reported nowhere.
+    test "coalescing refuses drain-time work, and names it" do
+      session = Session.new([Deferred]) |> Session.insert({:cust, 1})
+
+      # Two ops, because one op is returned as it stands and never reaches the merge.
+      queue =
+        :queue.from_list([{:event, {:fire_started, []}} | :queue.to_list(session.state.queue)])
+
+      error =
+        assert_raise RuntimeError, fn ->
+          Rete.Engine.fire_rules(%{session.state | queue: queue})
+        end
+
+      assert error.message =~ "{:event, {:fire_started, []}} cannot be merged"
+      assert error.message =~ "Rete.Engine.State.op/0"
     end
   end
 
