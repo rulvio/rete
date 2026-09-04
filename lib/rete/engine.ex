@@ -123,6 +123,28 @@ defmodule Rete.Engine do
   # **This decides an order.** A rule's own matches still arrive in fact order. A rule
   # reached by two routes now sees all of one route's matches before the other's. See
   # `docs/design/engine.md` §5.
+  # Merges across calls, once, before a fire drains anything. `insert/3` coalesces the ops
+  # of its own call, and nothing used to span calls because each call drained. Now they
+  # queue, so a caller that inserts one fact at a time hands a node one item per call
+  # instead of one batch. This puts those back together.
+  #
+  # Safe to run over the whole queue only here. `new/1`, `insert/3` and `retract/3` enqueue
+  # nothing but `{direction, node, items}`, and a fire drains to empty, so the queue holds
+  # no `{:event, ...}` or `{:retract_facts, ...}` at this point. Both are produced by nodes
+  # during the drain, and neither has the shape `coalesce/1` merges.
+  defp coalesce_queue(%State{queue: queue} = state) do
+    case :queue.to_list(queue) do
+      [] ->
+        state
+
+      [_only] ->
+        state
+
+      ops ->
+        %State{state | queue: ops |> coalesce() |> Enum.reduce(:queue.new(), &:queue.in/2)}
+    end
+  end
+
   defp coalesce([]), do: []
   defp coalesce([_only] = ops), do: ops
 
@@ -172,6 +194,7 @@ defmodule Rete.Engine do
 
     state
     |> emit(fn -> {:fire_started, opts} end)
+    |> coalesce_queue()
     |> drain()
     |> fire_loop(cfg, 0, %{})
   end

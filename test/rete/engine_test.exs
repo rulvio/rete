@@ -706,6 +706,72 @@ defmodule Rete.EngineTest do
     end
   end
 
+  # --- deferred propagation ----------------------------------------------------------------
+
+  describe "insert and retract queue work rather than doing it" do
+    defmodule Deferred do
+      use Rete.Ruleset
+
+      defrule flag({:cust, id}, {:order, id, amt} when amt > 10), do: {:flagged, id, amt}
+      defquery flagged({:flagged, id, amt}), do: {id, amt}
+    end
+
+    test "an unfired session holds facts and no matches" do
+      session = Session.new([Deferred]) |> Session.insert([{:cust, 1}, {:order, 1, 250}])
+
+      assert [{:cust, 1}, {:order, 1, 250}] == session |> Session.facts() |> Enum.sort()
+      assert %{} == session.state.memory.tokens
+      assert %{} == session.state.memory.elements
+      assert 0 == Rete.Agenda.size(session.state.agenda)
+      assert [] == Deferred.flagged(session)
+
+      assert [{1, 250}] == session |> Session.fire_rules() |> Deferred.flagged()
+    end
+
+    # `docs/design/engine.md` §2 claims this. A node reads what its memory reports after
+    # the update rather than the order the work arrived in, so the queued insert and the
+    # queued retract cancel when they drain. Compared on the memory struct, not on facts:
+    # a leftover element or token would not show up in `facts/1`.
+    test "an insert and a retract queued together drain to a net no-op" do
+      cancelled =
+        Session.new([Deferred])
+        |> Session.insert([{:cust, 1}, {:order, 1, 250}])
+        |> Session.retract({:order, 1, 250})
+        |> Session.fire_rules()
+
+      never = Session.new([Deferred]) |> Session.insert({:cust, 1}) |> Session.fire_rules()
+
+      assert never.state.memory == cancelled.state.memory
+      assert [] == Deferred.flagged(cancelled)
+    end
+
+    # A fire coalesces the queue before it drains, so facts fed one call at a time reach a
+    # node as one batch, exactly as if they had arrived in a single call. Asserted on the
+    # memory rather than the clock: the point is that the two are the same work, and a
+    # timing assertion would be flaky.
+    test "many insert calls settle to the same session as one batched call" do
+      # Every amount is over the rule's threshold of 10, so all 25 match.
+      orders = for i <- 1..25, do: {:order, 1, 100 + i}
+
+      batched =
+        Session.new([Deferred])
+        |> Session.insert([{:cust, 1} | orders])
+        |> Session.fire_rules()
+
+      one_at_a_time =
+        orders
+        |> Enum.reduce(
+          Session.insert(Session.new([Deferred]), {:cust, 1}),
+          &Session.insert(&2, &1)
+        )
+        |> Session.fire_rules()
+
+      assert batched.state.memory == one_at_a_time.state.memory
+      assert Deferred.flagged(batched) == Deferred.flagged(one_at_a_time)
+      assert 25 == length(Deferred.flagged(batched))
+    end
+  end
+
   # --- the beta root -----------------------------------------------------------------------
 
   # Nothing binds before the first condition, so a rule that opens with a

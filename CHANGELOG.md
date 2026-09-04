@@ -26,7 +26,16 @@ All notable changes to `rete` are recorded here. The format follows
   `:activation_added` went to nobody, and a listener later saw `:activation_fired` for a
   rule it never saw added.
 
-  Batching is the other gain. Any number of inserts and retractions now cost one settle.
+  Batching is the other gain. Any number of inserts and retractions now cost one settle. A
+  fire coalesces the queue before it drains, so facts fed one call at a time reach a node as
+  one batch. Feeding 1,000 orders one call at a time now costs what one call carrying all
+  1,000 costs, measured at 0.79 ms against 0.69 ms before the merge was added.
+
+* **`Rete.Inspect.why_not/2` and `collection/3` now raise on a session with propagation
+  queued.** Both read what propagation built, and on an unfired session that is zero of
+  everything — which reads as "nothing matched" when the truth is "nothing has been matched
+  yet". The error names the pending count and says to call `fire_rules/2`. `explain/2` and
+  `fired/2` read memories that `insert/2` updates at once, so they are unchanged.
 
 * **`Rete.Session.pending/1` is removed.** `fire_rules/2` returns at quiescence and nothing
   propagates before it, so the function had no state left in which it could answer anything

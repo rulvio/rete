@@ -9,10 +9,15 @@ defmodule Rete.Inspect do
       Rete.Inspect.fired(session)
       Rete.Inspect.why_not(session, {MyRuleset, :some_rule})
 
-  Everything here works on **any** session, with no listener and no setup, because it
-  reads working memory instead of a history. A listener adds what memory cannot know:
-  what happened, in what order, including activations that fired and were later
-  retracted. See `Rete.Listener`.
+  Everything here works with no listener and no setup, because it reads working memory
+  instead of a history. A listener adds what memory cannot know: what happened, in what
+  order, including activations that fired and were later retracted. See `Rete.Listener`.
+
+  **Fire before you inspect.** `why_not/2` and `collection/3` read what propagation built,
+  and `Rete.Session.insert/2` only queues propagation. On a session with work still queued
+  they would report zero of everything, which reads as "nothing matched" when the truth is
+  "nothing has been matched yet". Both raise instead. `explain/2` and `fired/2` read
+  memories that `insert/2` updates at once, so they answer correctly at any point.
 
   A rule is named by `{module, name}`, the identity `Rete.Session.query/3` also uses.
 
@@ -202,6 +207,8 @@ defmodule Rete.Inspect do
   @spec why_not(Session.t(), {module(), atom()}) :: [map()]
   def why_not(%Session{state: state}, {module, name} = ref)
       when is_atom(module) and is_atom(name) do
+    settled!(state, "why_not/2")
+
     case terminal(state, ref) do
       nil ->
         raise ArgumentError,
@@ -231,10 +238,33 @@ defmodule Rete.Inspect do
   """
   @spec collection(Session.t(), term(), map()) :: [term()]
   def collection(%Session{state: state}, node_id, join_key) do
+    settled!(state, "collection/3")
+
     state.memory
     |> Memory.groups(node_id, join_key)
     |> Enum.flat_map(fn {_group, elements} -> Enum.map(elements, & &1.fact) end)
   end
+
+  # Refuses to answer from a session with propagation still queued. Both callers read what
+  # propagation built, and on an unfired session that is zero of everything — which reads
+  # as "nothing matched" rather than "nothing has been matched yet". A wrong answer from
+  # the tool you reach for to explain a wrong answer is worse than no answer.
+  defp settled!(%State{queue: queue}, called) do
+    pending = :queue.len(queue)
+
+    if pending > 0 do
+      raise ArgumentError,
+            "#{called} needs a session that has been fired. This one has #{pending} " <>
+              "propagation #{plural(pending, "operation")} still queued, so every node " <>
+              "would report zero and the answer would describe the network before your " <>
+              "facts reached it. Call `Rete.Session.fire_rules/2` first."
+    end
+
+    :ok
+  end
+
+  defp plural(1, word), do: word
+  defp plural(_n, word), do: word <> "s"
 
   @doc """
   Which index a query would use for a set of filters, or `:scan`.

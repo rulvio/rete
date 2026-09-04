@@ -59,6 +59,14 @@ nobody has fired holds facts, and no matches, tokens or activations.
 Two things follow. A caller may batch any number of inserts and retractions for the cost of
 one settle. And a query reads propagated state, so it answers nothing until a fire.
 
+A fire **coalesces the queue before it drains it**, so work that spans several calls reaches
+a node as one batch. `insert/3` already merged the ops of its own call, and nothing used to
+span calls because each call drained. Now they queue, so a caller feeding one fact at a time
+would otherwise hand a node one item per call. With the merge, 1,000 single-fact calls cost
+what one call carrying 1,000 facts costs. This is safe to run over the whole queue only at
+that point: the queue then holds nothing but `{direction, node, items}`, because
+`{:event, ...}` and `{:retract_facts, ...}` are produced by nodes during the drain.
+
 Queuing an insert and then a retract of the same fact drains to a net no-op. A node reads
 what its memory reports after the update, not the order the work arrived in. That is the
 retraction rule in §5.

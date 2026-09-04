@@ -328,6 +328,90 @@ defmodule Rete.ObservabilityTest do
     end
   end
 
+  # --- a listener attached at construction misses nothing -----------------------------------
+
+  describe "a listener sees activations for rules true of the empty session" do
+    defmodule RootSeeded do
+      use Rete.Ruleset
+
+      # Both are true of the empty session, so both are activated by the root token
+      # rather than by anything a caller inserts.
+      defrule startup, do: {:started, :once}
+      defrule quiet({:not, [{:noise, _}]}), do: {:silence, :ok}
+    end
+
+    # This is the defect that motivated deferring propagation. When `Session.new/1`
+    # propagated, these activations were created before any listener could exist —
+    # `Rete.Engine.State` starts with none, and `with_listener/3` only attaches
+    # afterward. A listener then saw `:activation_fired` for a rule it never saw added.
+    test "an activation from the root token is announced to a listener" do
+      added =
+        [RootSeeded]
+        |> Session.new()
+        |> Session.with_listener(Listener.Collect, [])
+        |> Session.fire_rules()
+        |> Listener.Collect.by_tag(:activation_added)
+        |> Enum.map(fn {_tag, source, _token} -> elem(source.rule, 1) end)
+        |> Enum.sort()
+
+      assert [:quiet, :startup] == added
+    end
+
+    test "every fired rule was announced as added first" do
+      events =
+        [RootSeeded]
+        |> Session.new()
+        |> Session.with_listener(Listener.Collect, [])
+        |> Session.fire_rules()
+        |> Listener.Collect.events()
+
+      added = for {:activation_added, s, _} <- events, do: elem(s.rule, 1)
+      fired = for {:activation_fired, s, _, _} <- events, do: elem(s.rule, 1)
+
+      assert fired != []
+      assert Enum.all?(fired, &(&1 in added)), "fired without a matching :activation_added"
+    end
+  end
+
+  # --- inspecting a session that has not been fired ----------------------------------------
+
+  describe "the tools that need a settled session" do
+    defp unfired, do: [Rules] |> Session.new() |> Session.insert(@facts)
+
+    # These two read what propagation built. On a session with work still queued that is
+    # zero of everything, which reads as "nothing matched" when the truth is "nothing has
+    # been matched yet". A diagnostic that lies is worse than one that refuses.
+    test "why_not/2 refuses a session with propagation queued" do
+      error = assert_raise ArgumentError, fn -> Inspect.why_not(unfired(), {Rules, :flag}) end
+
+      assert error.message =~ "why_not/2 needs a session that has been fired"
+      assert error.message =~ "propagation operations still queued"
+      assert error.message =~ "fire_rules/2"
+    end
+
+    test "collection/3 refuses a session with propagation queued" do
+      error = assert_raise ArgumentError, fn -> Inspect.collection(unfired(), 1, %{}) end
+
+      assert error.message =~ "collection/3 needs a session that has been fired"
+    end
+
+    # The control, and the reason the split is deliberate rather than blanket. Both of
+    # these read memories that `insert/2` updates at once, so they are already correct.
+    test "explain/2 and fired/2 answer on an unfired session" do
+      session = unfired()
+
+      assert [%{origin: :asserted}] = Inspect.explain(session, {:order, 1, 250})
+      assert [] == Inspect.fired(session)
+    end
+
+    test "both answer once the session is fired" do
+      session = Session.fire_rules(unfired())
+
+      assert [_ | _] = Inspect.why_not(session, {Rules, :flag})
+      assert [] == Inspect.collection(session, 1, %{})
+    end
+  end
+
   # --- ordering guarantees ------------------------------------------------------------------
 
   describe "query row order" do
