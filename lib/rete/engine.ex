@@ -141,7 +141,7 @@ defmodule Rete.Engine do
   #
   # **This decides an order.** A rule's own matches still arrive in fact order. A rule
   # reached by two routes now sees all of one route's matches before the other's. See
-  # `docs/design/engine.md` §5.
+  # `docs/design/engine.md` §7, "what arrival order does not promise".
   #
   # **A node's merge window closes when the opposite direction reaches that node.** Merging
   # moves an op back to where its target first appeared, and an op must never move back past

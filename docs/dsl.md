@@ -362,23 +362,32 @@ Gathering is cheap. A member is prepended, so a change costs the engine one cons
 the list the body receives is the one the engine already holds. Reducing that list to a
 number in the right hand side, as above, is the shape the engine is built for.
 
-What the rest costs depends on **how members arrive**, not on how many there are. Everything
-inserted in one call is one change, so the rule fires once per call rather than once per
-member. Over 4,000 members:
+What the rest costs depends on **how members arrive**, not on how many there are. A
+collection re-emits its group once per change, and every member that arrives before one
+`fire_rules/2` is one change. So the rule fires once per fire, not once per member. Over
+4,000 members:
 
-| members per `insert` call | body reduces the list | body concludes the list |
+| members per fire | body reduces the list | body concludes the list |
 |---|---|---|
 | 1 | 27 ms | 408 ms |
 | 10 | 4.6 ms | 43 ms |
 | 100 | 3.0 ms | 6.8 ms |
 | all 4,000 | 3.4 ms | 3.3 ms |
 
-So **insert in batches** where the caller can. Both columns fall with the batch, and by 100 a
-member at a time neither costs anything worth naming.
+So **fire once per batch**, and let the members arrive however they arrive. Both columns
+fall with the batch, and by 100 a member at a time neither costs anything worth naming.
 
-Where you cannot batch — one event per call — **conclude what you computed, not what you
-gathered.** `{:spend, name, orders}` concludes a fact that grows with the group, and the
-engine hashes that whole fact on every change. That is the 408 ms against 27 ms above.
+The batch is a batch of *inserts between fires*, not a batch inside one `insert/2` call.
+Feeding 4,000 members one call at a time and firing once reaches the last row, the same as
+one call carrying all 4,000. Only a `fire_rules/2` between them puts you back on the first.
+So a caller that genuinely gets one event per call has nothing to restructure: collect the
+events, fire when you want an answer. Before 0.5.0 each call propagated on its own, and the
+first row was the only thing that shape could reach. `mix bench` contrasts the three under
+"1,000 collection members, one per call, fired every call and fired once".
+
+Where you cannot defer the fire, **conclude what you computed, not what you gathered.**
+`{:spend, name, orders}` concludes a fact that grows with the group, and the engine hashes
+that whole fact on every change. That is the 408 ms against 27 ms above.
 
 ### The empty-collection rule
 

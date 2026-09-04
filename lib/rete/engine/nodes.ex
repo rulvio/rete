@@ -14,7 +14,7 @@ defmodule Rete.Engine.Nodes do
 
   Two kinds of work are returned as ops, instead of done here.
   `{:retract_facts, node_id, facts}` has to re-enter the alpha network.
-  `{:event, event}` is not a node's business either. See `docs/design/engine.md` §5.
+  `{:event, event}` is not a node's business either. See `docs/design/engine.md` §2, "ops".
   """
 
   alias Rete.Activation

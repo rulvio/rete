@@ -72,7 +72,7 @@ All notable changes to `rete` are recorded here. The format follows
 
   Both are arrival orders, and both settle to the same facts. What this changes is the
   order of `:activation_fired` events, which is what a trace reads.
-  `docs/design/engine.md` §5 states what arrival order does and does not promise. A rule's
+  `docs/design/engine.md` §7 states what arrival order does and does not promise. A rule's
   own matches still arrive in fact order, which is the part rules rest on, and it did not
   move.
 

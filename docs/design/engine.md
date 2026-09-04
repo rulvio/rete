@@ -660,7 +660,9 @@ Each has a **control** beside it in the suite, because an exponent alone does no
 half of a scenario is slow. Two rules concluding the same fact used to run 37× the
 *disjoint* conclusion of the same two rules, and now runs level with it. The unkeyed
 negation runs against the keyed one. The collection runs at both batch shapes and at one
-member per call.
+member per call. A fourth collection scenario separates the call from the fire, because
+0.5.0 made those two different things: it runs 1,000 members one per call, firing every
+call and firing once, against one call carrying all of them.
 
 The three collection rows are one fix, and the only one that changed what the engine
 guarantees. See `network.md` §3.
@@ -689,10 +691,13 @@ activation cancelled. Each run walks the whole list, so the body traverses about
 — 8M at n = 4,000, which is the 16.9 ms above at roughly 2 ns a cell.
 
 **That count is a function of how members arrive, not of how many there are.** Alpha batching
-(§7) folds every member arriving in one `insert` call into one group change, so the rule fires
-once per call. The same 4,000 members, and the concluding-a-list shape below alongside:
+(§7) folds every member that reaches the node in one drain into one group change, so the rule
+fires once per **fire**, not once per `insert` call. A fire coalesces the whole queue, so
+4,000 members fed one call at a time and fired once cost what one call carrying 4,000 costs.
+Before 0.5.0 each call drained on its own, and a call was a change. The same 4,000 members,
+and the concluding-a-list shape below alongside:
 
-| members per call | firings | reads it | ignores it | the body's share | concludes the list |
+| members per fire | firings | reads it | ignores it | the body's share | concludes the list |
 |---|---|---|---|---|---|
 | 1 | 4,001 | 27.1 ms | 10.0 ms | 17.1 ms | 408 ms |
 | 10 | 401 | 4.6 ms | 3.3 ms | 1.3 ms | 43 ms |
