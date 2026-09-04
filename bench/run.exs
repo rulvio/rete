@@ -598,6 +598,35 @@ Bench.compare(
   note: "64 activations of a body that sleeps 5 ms — the case :concurrency exists for"
 )
 
+# An A/B rather than a shape, for the same reason as the one above: batching does not
+# change how insert scales, only how many times a node pays its per-call cost.
+#
+# This is where the 0.5.0 changelog sends a reader who wants the number. What matters is
+# the relation, not the milliseconds: a fire coalesces the queue before it drains, so 1,000
+# single-fact calls hand a node the same one batch that a single call carrying 1,000 facts
+# does. The two rows sit on top of each other, and which one wins by a few percent is the
+# machine talking. If the drip row grows to a multiple of the other, `coalesce_queue/1` has
+# stopped running and every node is back to one dispatch per call. `Rete.EngineTest` pins
+# the same property exactly, off the `:propagated` events. See `docs/design/engine.md` §2.
+Bench.compare(
+  "1,000 facts, in one insert call and in 1,000",
+  [{"one call", :batched}, {"1,000 calls", :drip}],
+  fn kind ->
+    orders = for i <- 1..1_000, do: {:order, i, i}
+    customers = for i <- 1..1_000, do: {:cust, i}
+    session = many_keys |> Bench.session() |> Rete.Session.insert(customers)
+
+    fed =
+      case kind do
+        :batched -> Rete.Session.insert(session, orders)
+        :drip -> Enum.reduce(orders, session, &Rete.Session.insert(&2, &1))
+      end
+
+    Rete.Session.fire_rules(fed)
+  end,
+  note: "the queue is coalesced before it drains, so both must cost one settle"
+)
+
 IO.puts("")
 
 # Scoped, and last. These need a loaded session per size alive at once, and a live heap

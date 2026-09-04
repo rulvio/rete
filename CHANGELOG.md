@@ -8,6 +8,13 @@ All notable changes to `rete` are recorded here. The format follows
 
 `fire_rules/2` is now the only call that propagates. **This release has breaking changes.**
 
+### Added
+
+* **`Rete.Session.settled?/1`** reports whether a session has work waiting for
+  `fire_rules/2`. A query cannot raise on an unfired session, because `[]` is a true answer
+  about one. So this is the way to tell "no match" apart from "not matched yet". A session
+  fresh from `new/1` is not settled, because `new/1` queues the root token.
+
 ### Changed
 
 * **`insert/2` and `retract/2` no longer propagate.** They record the fact and queue the
@@ -15,11 +22,11 @@ All notable changes to `rete` are recorded here. The format follows
   match, and returns at quiescence.
 
   A session you have not fired holds facts and nothing else. `Rete.Session.facts/1` still
-  answers, because working memory is updated at once. Nothing else does: no rule is
-  activated, and **a query answers nothing until you fire**.
+  answers, because `insert/2` updates working memory at once. Nothing else does: the engine
+  activates no rule, and **a query answers nothing until you fire**.
 
-  Two problems drove this. Building a session queued activations before the caller had done
-  anything, so `pending/1` was non-empty on a session nobody had touched.
+  Two problems drove this. Building a session queued activations before the caller did
+  anything, so `pending/1` was non-empty on a session nobody touched.
 
   A listener could never observe those activations either. `Rete.Engine.State` starts with
   no listeners, and `Rete.Session.with_listener/3` can only attach afterward. So
@@ -27,26 +34,27 @@ All notable changes to `rete` are recorded here. The format follows
   rule it never saw added.
 
   Batching is the other gain. Any number of inserts and retractions now cost one settle. A
-  fire coalesces the queue before it drains, so facts fed one call at a time reach a node as
+  fire coalesces the queue before it drains. So facts fed one call at a time reach a node as
   one batch. Feeding 1,000 orders one call at a time now costs what one call carrying all
-  1,000 costs, measured at 0.79 ms against 0.69 ms before the merge was added.
+  1,000 costs. `mix bench` measures the two side by side, under "1,000 facts, in one insert
+  call and in 1,000".
 
 * **`Rete.Inspect.why_not/2` and `collection/3` now raise on a session with propagation
-  queued.** Both read what propagation built, and on an unfired session that is zero of
-  everything — which reads as "nothing matched" when the truth is "nothing has been matched
+  queued.** Both read what propagation built. On an unfired session that is zero of
+  everything. It reads as "nothing matched", but the truth is "nothing has been matched
   yet". The error names the pending count and says to call `fire_rules/2`. `explain/2` and
   `fired/2` read memories that `insert/2` updates at once, so they are unchanged.
 
-* **`Rete.Session.pending/1` is removed.** `fire_rules/2` returns at quiescence and nothing
-  propagates before it, so the function had no state left in which it could answer anything
-  but `[]`. `Rete.Activation` no longer reaches the public API. Use `Rete.Listener` to
-  observe activations.
+* **`Rete.Session.pending/1` is gone.** `fire_rules/2` returns at quiescence, and nothing
+  propagates before it. So the function can only ever answer `[]`. `Rete.Activation` no
+  longer reaches the public API. Use `Rete.Listener` to observe activations, and
+  `settled?/1` to ask whether a session has work waiting.
 
 * **One deliberate divergence from Clara.** Clara's
-  `test_negation/test-simple-negation` queries a session that was never inserted into and
-  never fired, and expects one row. Clara plants the root token when the session is built.
-  This engine answers `[]` there. Every other session in that test is fired before it is
-  queried, and those cases agree exactly. See `docs/design/engine.md` §12.
+  `test_negation/test-simple-negation` queries a session that nobody inserted into and
+  nobody fired. It expects one row. Clara plants the root token when it builds the session.
+  This engine answers `[]` there. That test fires every other session before it queries it,
+  and those cases agree exactly. See `docs/design/engine.md` §12.
 
 ### Migration
 
@@ -67,6 +75,16 @@ session
 |> Session.with_listener(Rete.Listener.Collect, [])
 |> Session.fire_rules()
 |> Rete.Listener.Collect.by_tag(:activation_fired)
+```
+
+Where `pending/1` only answered "is there work waiting", use `settled?/1`:
+
+```elixir
+# before
+if Session.pending(session) != [], do: Session.fire_rules(session), else: session
+
+# after
+if Session.settled?(session), do: session, else: Session.fire_rules(session)
 ```
 
 ## 0.4.0

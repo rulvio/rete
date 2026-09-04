@@ -58,8 +58,8 @@ the world it cares about. The engine finds every combination of facts with that 
 combination is one *match*. One match fires the rule once.
 
 **Nothing happens until you say so.** `insert/2` and `retract/2` record facts and queue the
-work. `fire_rules/2` is the only call that matches anything: it propagates everything
-waiting, runs the rules that match, and returns once the session has settled.
+work. `fire_rules/2` is the only call that matches anything. It propagates everything
+waiting, runs the rules that match, and returns once the session settles.
 
 This lets you reason about a batch of facts together. Otherwise each fact would trigger a
 cascade of its own.
@@ -141,8 +141,9 @@ Retail.large_orders(session)
 #=> [] — nothing has matched yet
 ```
 
-The session holds the facts and nothing else. No matching has happened, so no rule has been
-activated and no query can answer. `insert/2` records what you told it and queues the work.
+The session holds the facts and nothing else. No matching has happened, so the engine has
+activated no rule and no query can answer. `insert/2` records what you told it and queues
+the work.
 
 `salience` is firing priority. A rule declared `defrule urgent(%{salience: 10}, ...)` fires
 before one at the default value of `0`. Every activation at one salience level fires before

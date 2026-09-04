@@ -135,17 +135,17 @@ end
 ```
 
 Such a rule is true of the empty session. It fires on the first `fire_rules/2`, with
-nothing inserted, and it never fires again however much you insert afterward.
+nothing inserted. It never fires again, however much you insert afterward.
 
 Its conclusion rests on the root token instead of on a fact. So retracting everything you
 inserted leaves the conclusion in place. This is the one conclusion
 `Rete.Session.retract/2` cannot reach. `Rete.Inspect.explain/2` reports it as `:derived`
 with no supports.
 
-Salience applies as usual, so a rule with no conditions can run before the rest of the
-ruleset and seed a fact the other rules match on.
+Salience applies as usual. So a rule with no conditions can run before the rest of the
+ruleset, and seed a fact the other rules match on.
 
-A query with no conditions answers exactly one row, computed by its body:
+A query with no conditions answers exactly one row, which its body computes:
 
 ```elixir
 defquery constant(), do: :constant
@@ -154,9 +154,9 @@ MyRuleset.constant(Rete.Session.new([MyRuleset]))   #=> []
 MyRuleset.constant(session)                         #=> [:constant]
 ```
 
-Fire first, like any other query. After that the row never varies, because the root token
-is the whole match and no fact can add to it or take from it. The query binds nothing, so
-any filter raises an error. Read it as a `SELECT` with no `FROM`.
+Fire first, like any other query. After that the row never varies. The root token is the
+whole match, and no fact can add to it or take from it. The query binds nothing, so any
+filter raises an error. Read it as a `SELECT` with no `FROM`.
 
 ## Bindings and joins
 
@@ -841,13 +841,15 @@ MyRuleset.orders(session)    #=> [] — nothing has matched yet
 
 `insert/2` and `retract/2` record facts and queue the work. **`fire_rules/2` is the only
 call that matches anything.** It propagates everything waiting, runs the rules that match,
-and returns once the session has settled.
+and returns once the session settles.
 
-So a session you have not fired holds facts and nothing else. No rule has been activated,
-and a query answers nothing. This is what lets you reason about a batch of facts together,
-instead of each fact setting off a cascade of its own.
+So a session you have not fired holds facts and nothing else. The engine has activated no
+rule, and a query answers nothing. This is what lets you reason about a batch of facts
+together, instead of each fact starting a cascade of its own.
 
-Fire before you query.
+Fire before you query. A query cannot raise here, because `[]` is a true answer about a
+session where nothing has propagated. `Rete.Session.settled?/1` reports whether a session
+has work waiting, for code that did not do the insert itself.
 
 ### Reading a collection-local variable outside its collection
 

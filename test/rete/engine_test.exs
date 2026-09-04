@@ -117,9 +117,9 @@ defmodule Rete.EngineTest do
       end
     end
 
-    # Read off the firing order rather than the agenda. Nothing propagates until
-    # `fire_rules/2`, so there is no pre-fire agenda to inspect, and what salience
-    # promises is an order of firing anyway.
+    # Read the firing order rather than the agenda. Nothing propagates until
+    # `fire_rules/2`, so there is no pre-fire agenda to inspect. Salience promises
+    # an order of firing anyway.
     test "higher salience fires first" do
       order =
         [Salience]
@@ -724,14 +724,44 @@ defmodule Rete.EngineTest do
       assert %{} == session.state.memory.elements
       assert 0 == Rete.Agenda.size(session.state.agenda)
       assert [] == Deferred.flagged(session)
+      refute Session.settled?(session)
 
       assert [{1, 250}] == session |> Session.fire_rules() |> Deferred.flagged()
     end
 
+    # The check a caller makes for itself, now that `pending/1` is gone. A query cannot
+    # raise on an unfired session, because `[]` is a true answer about one. So this is
+    # the only way to tell "no match" apart from "not matched yet".
+    test "settled?/1 separates an unfired session from a settled one" do
+      # Unsettled before any insert: `new/1` queues the root token for the first fire.
+      fresh = Session.new([Deferred])
+      refute Session.settled?(fresh)
+      assert Session.settled?(Session.fire_rules(fresh))
+
+      queued = Session.insert(fresh, {:cust, 1})
+      refute Session.settled?(queued)
+      assert Session.settled?(Session.fire_rules(queued))
+
+      # A retraction queues work of its own, so firing once is not enough forever.
+      retracted = queued |> Session.fire_rules() |> Session.retract({:cust, 1})
+      refute Session.settled?(retracted)
+      assert Session.settled?(Session.fire_rules(retracted))
+    end
+
+    # A duplicate bumps a count and queues nothing, so it cannot unsettle a session that
+    # was already settled. The `:fact_duplicated` event says the same thing to a listener.
+    test "settled?/1 stays true when an insert queues nothing" do
+      settled =
+        Session.new([Deferred]) |> Session.insert({:cust, 1}) |> Session.fire_rules()
+
+      assert Session.settled?(Session.insert(settled, {:cust, 1}))
+      refute Session.settled?(Session.insert(settled, {:cust, 2}))
+    end
+
     # `docs/design/engine.md` §2 claims this. A node reads what its memory reports after
-    # the update rather than the order the work arrived in, so the queued insert and the
-    # queued retract cancel when they drain. Compared on the memory struct, not on facts:
-    # a leftover element or token would not show up in `facts/1`.
+    # the update, not the order the work arrived in. So the queued insert and the queued
+    # retract cancel when they drain. This compares the memory struct, not the facts: a
+    # leftover element or token would not appear in `facts/1`.
     test "an insert and a retract queued together drain to a net no-op" do
       cancelled =
         Session.new([Deferred])
@@ -745,30 +775,53 @@ defmodule Rete.EngineTest do
       assert [] == Deferred.flagged(cancelled)
     end
 
-    # A fire coalesces the queue before it drains, so facts fed one call at a time reach a
-    # node as one batch, exactly as if they had arrived in a single call. Asserted on the
-    # memory rather than the clock: the point is that the two are the same work, and a
-    # timing assertion would be flaky.
-    test "many insert calls settle to the same session as one batched call" do
+    # Feeds a fresh session, then fires it with a listener attached. Returns the settled
+    # session and the batches each node was handed, which is the only place coalescing is
+    # visible. A timing assertion would say the same thing unreliably.
+    defp fed(feed) do
+      session =
+        [Deferred] |> Session.new() |> then(feed) |> Session.with_listener(Collect, [])
+
+      settled = Session.fire_rules(session)
+
+      batches =
+        for {:propagated, op, node, count} <- Collect.by_tag(settled, :propagated),
+            do: {op, node, count}
+
+      {settled, batches}
+    end
+
+    # A fire coalesces the queue before it drains. So facts fed one call at a time reach
+    # a node as one batch, exactly as if they arrived in a single call.
+    #
+    # The memory assertion alone does not test coalescing. Both feeds settle to the same
+    # memory whether or not the queue is merged, because a node reads what its memory
+    # reports rather than the order the work arrived in — that is the test above, and it
+    # stays green with `coalesce_queue/1` deleted. What coalescing changes is how many
+    # times a node is called. Only the `:propagated` events show it: 25 calls of one
+    # element each, instead of one call of 25.
+    test "many insert calls settle and propagate the same as one batched call" do
       # Every amount is over the rule's threshold of 10, so all 25 match.
       orders = for i <- 1..25, do: {:order, 1, 100 + i}
 
-      batched =
-        Session.new([Deferred])
-        |> Session.insert([{:cust, 1} | orders])
-        |> Session.fire_rules()
+      {batched, batched_ops} = fed(&Session.insert(&1, [{:cust, 1} | orders]))
 
-      one_at_a_time =
-        orders
-        |> Enum.reduce(
-          Session.insert(Session.new([Deferred]), {:cust, 1}),
-          &Session.insert(&2, &1)
-        )
-        |> Session.fire_rules()
+      {one_at_a_time, drip_ops} =
+        fed(fn session ->
+          Enum.reduce(orders, Session.insert(session, {:cust, 1}), &Session.insert(&2, &1))
+        end)
 
       assert batched.state.memory == one_at_a_time.state.memory
       assert Deferred.flagged(batched) == Deferred.flagged(one_at_a_time)
       assert 25 == length(Deferred.flagged(batched))
+
+      assert batched_ops == drip_ops
+
+      # The same claim stated on its own, so a failure names the property rather than a
+      # difference between two lists: the orders enter the alpha network as one call of
+      # 25, not 25 calls of one. Most of the other events are the 25 conclusions, which
+      # the fire loop propagates one activation at a time whichever way the facts arrived.
+      assert 1 == Enum.count(drip_ops, &match?({:right, _node, 25}, &1))
     end
   end
 
@@ -921,16 +974,16 @@ defmodule Rete.EngineTest do
       # memory a settled empty session holds". That also pins how many root tokens
       # there are, which a "they are all empty tokens" check cannot see.
       #
-      # Fired, not fresh: the root token is queued at creation and planted by the
-      # first fire, so an unfired session has no tokens to compare against.
+      # Fired, not fresh: `new/1` queues the root token, and the first fire plants
+      # it. So an unfired session has no tokens to compare against.
       settled = [LeadNeg] |> Session.new() |> Session.fire_rules()
       assert settled.state.memory == memory
     end
 
     # A production with no conditions at all is the degenerate case of everything
     # above. Its terminal hangs straight off the beta root, so the seeded token is
-    # its whole match. That gives it exactly one activation, planted at session
-    # creation and supported by nothing a user can retract.
+    # its whole match. That gives it exactly one activation, on the first fire, and
+    # nothing a user can retract supports it.
     defmodule NoLhs do
       use Rete.Ruleset
 
@@ -951,9 +1004,9 @@ defmodule Rete.EngineTest do
       end
     end
 
-    # The root token is queued at session creation and propagated by the first fire.
-    # So a session nobody has fired holds no facts and no activations, and the rule
-    # still fires without anything being inserted.
+    # `new/1` queues the root token, and the first fire propagates it. So a session
+    # nobody has fired holds no facts and no activations. The rule still fires when
+    # nobody inserts anything.
     test "a rule with no conditions queues nothing until the first fire" do
       fresh = Session.new([NoLhs])
 

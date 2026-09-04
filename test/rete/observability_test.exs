@@ -334,14 +334,14 @@ defmodule Rete.ObservabilityTest do
     defmodule RootSeeded do
       use Rete.Ruleset
 
-      # Both are true of the empty session, so both are activated by the root token
-      # rather than by anything a caller inserts.
+      # Both are true of the empty session, so the root token activates both. Nothing
+      # a caller inserts does.
       defrule startup, do: {:started, :once}
       defrule quiet({:not, [{:noise, _}]}), do: {:silence, :ok}
     end
 
     # This is the defect that motivated deferring propagation. When `Session.new/1`
-    # propagated, these activations were created before any listener could exist —
+    # propagated, it created these activations before any listener could exist.
     # `Rete.Engine.State` starts with none, and `with_listener/3` only attaches
     # afterward. A listener then saw `:activation_fired` for a rule it never saw added.
     test "an activation from the root token is announced to a listener" do
@@ -379,12 +379,12 @@ defmodule Rete.ObservabilityTest do
     defp unfired, do: [Rules] |> Session.new() |> Session.insert(@facts)
 
     # These two read what propagation built. On a session with work still queued that is
-    # zero of everything, which reads as "nothing matched" when the truth is "nothing has
-    # been matched yet". A diagnostic that lies is worse than one that refuses.
+    # zero of everything. It reads as "nothing matched" when the truth is "nothing has been
+    # matched yet". A diagnostic that lies is worse than one that refuses.
     test "why_not/2 refuses a session with propagation queued" do
       error = assert_raise ArgumentError, fn -> Inspect.why_not(unfired(), {Rules, :flag}) end
 
-      assert error.message =~ "why_not/2 needs a session that has been fired"
+      assert error.message =~ "why_not/2 needs a session that you fired"
       assert error.message =~ "propagation operations still queued"
       assert error.message =~ "fire_rules/2"
     end
@@ -392,7 +392,7 @@ defmodule Rete.ObservabilityTest do
     test "collection/3 refuses a session with propagation queued" do
       error = assert_raise ArgumentError, fn -> Inspect.collection(unfired(), 1, %{}) end
 
-      assert error.message =~ "collection/3 needs a session that has been fired"
+      assert error.message =~ "collection/3 needs a session that you fired"
     end
 
     # The control, and the reason the split is deliberate rather than blanket. Both of

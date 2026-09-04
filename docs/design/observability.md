@@ -53,7 +53,7 @@ value: no processes, no ETS, no side channel.
 | `{:fire_finished, fired}` | the agenda is empty |
 | `{:fact_inserted, fact, origin}` | a fact enters working memory |
 | `{:fact_retracted, fact, origin}` | a fact leaves it |
-| `{:fact_duplicated, fact}` | an equal fact was present, so nothing was queued |
+| `{:fact_duplicated, fact}` | an equal fact was present, so nothing entered the queue |
 | `{:propagated, op, node_id, count}` | a node consumed `count` items |
 | `{:activation_added, source, token}` | a production's LHS became satisfied |
 | `{:activation_removed, source, token}` | a pending activation was cancelled |
@@ -65,8 +65,8 @@ memory at once. Everything else happens inside `fire_rules/2`, which is the only
 propagates. That covers every `:propagated` event and every `:activation_*` one. See
 `engine.md` §2.
 
-That is what makes a listener able to see a whole settle. Attach it to a fresh session, and
-no matching has happened yet, so nothing is missed.
+That is what lets a listener see a whole settle. Attach it to a fresh session. No matching
+has happened yet, so the listener misses nothing.
 
 `source` is `%{node: node_id, rule: {module, name}}`. A listener gets an event and its own
 state, and it cannot reach the network. So a bare node id would be an integer with no way

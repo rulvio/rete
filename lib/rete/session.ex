@@ -151,6 +151,26 @@ defmodule Rete.Session do
   def fire_rules(session, opts \\ []), do: update(session, &Engine.fire_rules(&1, opts))
 
   @doc """
+  Whether the session has no work waiting for `fire_rules/2`.
+
+  `false` means `insert/2` or `retract/2` recorded a fact that no rule has seen yet. A
+  query on such a session answers as though the fact never arrived, so this is the check
+  to make when you did not write the `insert/2` yourself.
+
+  A session fresh from `new/1` is **not** settled. `new/1` queues the root token, which
+  the first fire plants. So a rule with no conditions has not fired yet either.
+
+      iex> alias Rete.Session
+      iex> queued = Session.new([Rete.Doc.Orders]) |> Session.insert({:customer, 1})
+      iex> Session.settled?(queued)
+      false
+      iex> Session.settled?(Session.fire_rules(queued))
+      true
+  """
+  @spec settled?(t()) :: boolean()
+  def settled?(%__MODULE__{state: state}), do: Engine.settled?(state)
+
+  @doc """
   Runs a query by `{module, name}`: one result per match, computed by its body.
 
   **Usually you would not write this.** `defquery flagged_for(...)` defines
@@ -165,6 +185,12 @@ defmodule Rete.Session do
   may name any variable the left hand side binds, as a keyword list or a map. There is no
   separate parameter declaration. Naming something the query does not bind raises an
   error, instead of answering `[]`.
+
+  A query on a session with work still queued answers `[]`. It does not raise. A query
+  reads propagated state, and nothing has propagated. `Rete.Inspect.why_not/2` raises in
+  the same position, because a diagnostic that reports "nothing matched" is misleading
+  when the truth is "nothing has been matched yet". An empty result set is not. Call
+  `settled?/1` to tell the two cases apart.
 
   Row order is **unspecified**. Rows come back in the order the facts arrived, so the same
   facts fed in a different order answer in a different order. Sort the result yourself if

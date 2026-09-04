@@ -15,9 +15,10 @@ defmodule Rete.Inspect do
 
   **Fire before you inspect.** `why_not/2` and `collection/3` read what propagation built,
   and `Rete.Session.insert/2` only queues propagation. On a session with work still queued
-  they would report zero of everything, which reads as "nothing matched" when the truth is
+  they would report zero of everything. That reads as "nothing matched", but the truth is
   "nothing has been matched yet". Both raise instead. `explain/2` and `fired/2` read
   memories that `insert/2` updates at once, so they answer correctly at any point.
+  `Rete.Session.settled?/1` reports whether a session needs a fire.
 
   A rule is named by `{module, name}`, the identity `Rete.Session.query/3` also uses.
 
@@ -246,25 +247,29 @@ defmodule Rete.Inspect do
   end
 
   # Refuses to answer from a session with propagation still queued. Both callers read what
-  # propagation built, and on an unfired session that is zero of everything — which reads
-  # as "nothing matched" rather than "nothing has been matched yet". A wrong answer from
-  # the tool you reach for to explain a wrong answer is worse than no answer.
-  defp settled!(%State{queue: queue}, called) do
-    pending = :queue.len(queue)
+  # propagation built, and on an unfired session that is zero of everything. It reads as
+  # "nothing matched" rather than "nothing has been matched yet". A wrong answer from the
+  # tool that explains wrong answers is worse than no answer.
+  #
+  # `Rete.Session.query/3` is deliberately not guarded this way. The difference is what the
+  # caller asked. A query asks what matched, and `[]` is a true answer about a session where
+  # nothing has propagated. These two ask *why* nothing matched, and there the same zero is
+  # a false answer to the question. So the guard belongs here and not there.
+  # `Rete.Session.settled?/1` is the check a caller makes for itself.
+  defp settled!(%State{} = state, called) do
+    if Engine.settled?(state) do
+      :ok
+    else
+      pending = Engine.pending_ops(state)
+      operations = if pending == 1, do: "operation", else: "operations"
 
-    if pending > 0 do
       raise ArgumentError,
-            "#{called} needs a session that has been fired. This one has #{pending} " <>
-              "propagation #{plural(pending, "operation")} still queued, so every node " <>
-              "would report zero and the answer would describe the network before your " <>
-              "facts reached it. Call `Rete.Session.fire_rules/2` first."
+            "#{called} needs a session that you fired. This one has #{pending} " <>
+              "propagation #{operations} still queued. Every node would report zero, and " <>
+              "the answer would describe the network before your facts reached it. Call " <>
+              "`Rete.Session.fire_rules/2` first."
     end
-
-    :ok
   end
-
-  defp plural(1, word), do: word
-  defp plural(_n, word), do: word <> "s"
 
   @doc """
   Which index a query would use for a set of filters, or `:scan`.

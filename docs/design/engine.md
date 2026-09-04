@@ -59,13 +59,18 @@ nobody has fired holds facts, and no matches, tokens or activations.
 Two things follow. A caller may batch any number of inserts and retractions for the cost of
 one settle. And a query reads propagated state, so it answers nothing until a fire.
 
+`Rete.Session.settled?/1` reports an empty queue. A query does not raise on a full one,
+because `[]` is a true answer about a session where nothing has propagated.
+`Rete.Inspect.why_not/2` and `collection/3` do raise, because they answer *why* nothing
+matched, and there the same zero is false. See §12.
+
 A fire **coalesces the queue before it drains it**, so work that spans several calls reaches
 a node as one batch. `insert/3` already merged the ops of its own call, and nothing used to
 span calls because each call drained. Now they queue, so a caller feeding one fact at a time
 would otherwise hand a node one item per call. With the merge, 1,000 single-fact calls cost
 what one call carrying 1,000 facts costs. This is safe to run over the whole queue only at
-that point: the queue then holds nothing but `{direction, node, items}`, because
-`{:event, ...}` and `{:retract_facts, ...}` are produced by nodes during the drain.
+that point. The queue then holds nothing but `{direction, node, items}`. Nodes produce
+`{:event, ...}` and `{:retract_facts, ...}` during the drain.
 
 Queuing an insert and then a retract of the same fact drains to a net no-op. A node reads
 what its memory reports after the update, not the order the work arrived in. That is the
@@ -220,8 +225,8 @@ matches. An `Accumulate` there has to emit its collection to someone too.
 Classic Rete answers this with a single empty token, seeded at the root, and this engine
 does the same. `new/1` **queues** that token, and the first `fire_rules/2` plants it. A rule
 whose whole left hand side is an absence, or an empty collection, is true of the empty
-session, and it must be able to fire before anything is inserted — which it can, because
-firing drains the queued seed before it fires anything.
+session. It must be able to fire before you insert anything. It can, because firing drains
+the queued seed before it fires anything.
 
 `Rete.Memory.root_seeded?` makes seeding idempotent. A second root token would give every
 such rule a second support, and no retraction would ever clear it.
@@ -236,12 +241,12 @@ exactly one activation, on the first fire.
 
 Its conclusion rests on the root token, which no retraction reaches. So it is the one
 conclusion that survives retracting every fact the user asserted. That does not break the
-guarantee in §8, because the conclusion is still well founded — the root token is its
-support, and that support never goes.
+guarantee in §8. The conclusion is still well founded: the root token is its support, and
+that support never goes.
 
 A query written the same way holds that one token and answers one row, in every session
-that has been fired. `docs/dsl.md` states both for rule authors, and `Rete.EngineTest` pins
-them under "the root token".
+after a fire. `docs/dsl.md` states both for rule authors, and `Rete.EngineTest` pins them
+under "the root token".
 
 ## 7. Firing
 
@@ -564,20 +569,20 @@ the rule instead.
   spins until something interrupts it. `observability.md` §3 carries the numbers for
   choosing a cap where that matters.
 * **An unfired session answers no query. This diverges from Clara.** Clara's
-  `test_negation/test-simple-negation` queries `empty-session` — never inserted into, never
-  fired — and expects one row. Clara plants the root token when the session is built. This
-  engine answers `[]` there.
+  `test_negation/test-simple-negation` queries `empty-session`. Nobody inserted into it,
+  and nobody fired it. The test expects one row. Clara plants the root token when it builds
+  the session. This engine answers `[]` there.
 
-  The two agree everywhere else in that test. All eleven of its sessions that receive an
-  insert are fired before they are queried, so deferring insert and retract costs nothing
-  against Clara. Only the untouched session differs.
+  The two agree everywhere else in that test. Eleven of its sessions receive an insert, and
+  the test fires all eleven before it queries them. So deferring insert and retract costs
+  nothing against Clara. Only the untouched session differs.
 
-  The trade was made knowingly. Propagating at construction meant a caller saw queued
-  activations on a session they had not touched. It also meant a listener could never
+  The trade is deliberate. Propagating at construction meant a caller saw queued
+  activations on a session they never touched. It also meant a listener could never
   observe the matching `:activation_added`. `Rete.Engine.State` starts with no listeners,
   and `Rete.Session.with_listener/3` can only attach afterward. One entry point that
   propagates is worth more than agreeing with Clara on the empty case. `Rete.BehaviorTest`
-  records the divergence where the Clara case is pinned.
+  records the divergence where it pins the Clara case.
 * **No partial firing.** `fire_rules/2` runs to quiescence in the calling process. There
   is no fire-one-activation option, no async variant, and no way to interrupt a settling
   pass other than the cycle cap.
