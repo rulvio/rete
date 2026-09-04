@@ -23,7 +23,10 @@ All notable changes to `rete` are recorded here. The format follows
 
   A session you have not fired holds facts and nothing else. `Rete.Session.facts/1` still
   answers, because `insert/2` updates working memory at once. Nothing else does: the engine
-  activates no rule, and **a query answers nothing until you fire**.
+  activates no rule, and **a query answers as of the most recent fire**. On a session you
+  never fired that is `[]`. On one you fired and then inserted into, it is the answer from
+  before that insert. Watch for the second case in review: a stale result looks right, and
+  an empty one at least looks wrong.
 
   Two problems drove this. Building a session queued activations before the caller did
   anything, so `pending/1` was non-empty on a session nobody touched.
@@ -40,15 +43,24 @@ All notable changes to `rete` are recorded here. The format follows
   call and in 1,000".
 
 * **`Rete.Inspect.why_not/2` and `collection/3` now raise on a session with propagation
-  queued.** Both read what propagation built. On an unfired session that is zero of
+  queued.** Both read what propagation built. On a session that never fired that is zero of
   everything. It reads as "nothing matched", but the truth is "nothing has been matched
-  yet". The error names the pending count and says to call `fire_rules/2`. `explain/2` and
-  `fired/2` read memories that `insert/2` updates at once, so they are unchanged.
+  yet". The error names the pending count and says to call `fire_rules/2`.
+
+  `explain/2` and `fired/2` are unchanged. They read memories that `insert/2` and
+  `retract/2` update at once, so both answer at any point — about the session as it stands,
+  not as it will stand. A queued retract shows a conclusion whose support already left,
+  reported as `origin: :unknown`. Fire first for a settled provenance graph.
 
 * **`Rete.Session.pending/1` is gone.** `fire_rules/2` returns at quiescence, and nothing
   propagates before it. So the function can only ever answer `[]`. `Rete.Activation` no
   longer reaches the public API. Use `Rete.Listener` to observe activations, and
   `settled?/1` to ask whether a session has work waiting.
+
+  Nothing replaces it, and nothing will. Reporting what *would* activate means matching,
+  and matching before a fire is the work this release moved into the fire. `pending/1` also
+  had no counterpart in clara-rules, so no ported ruleset depended on the contract. See
+  `docs/design/engine.md` §12.
 
 * **One deliberate divergence from Clara.** Clara's
   `test_negation/test-simple-negation` queries a session that nobody inserted into and
@@ -67,6 +79,23 @@ session |> Session.insert(facts) |> MyRules.some_query()
 # after
 session |> Session.insert(facts) |> Session.fire_rules() |> MyRules.some_query()
 ```
+
+Grep for the same shape on a session that fired earlier. It is the case to look hardest
+for, because the query returns real rows and none of them account for the new facts:
+
+```elixir
+settled = session |> Session.insert(first_batch) |> Session.fire_rules()
+
+# before: the insert propagated, so this saw both batches
+settled |> Session.insert(second_batch) |> MyRules.some_query()
+# after: this answers as of the fire above, and second_batch is not in it
+
+# fix
+settled |> Session.insert(second_batch) |> Session.fire_rules() |> MyRules.some_query()
+```
+
+`Session.settled?/1` is the assertion to reach for where a function receives a session it
+did not build.
 
 Replace `Session.pending/1` with a listener:
 

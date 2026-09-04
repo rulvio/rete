@@ -834,7 +834,9 @@ escape the negation. If you want the amount, write a match instead of a negation
 ### Expecting anything to happen before `fire_rules/2`
 
 ```elixir
-session = Rete.Session.insert(session, {:order, 1, 250})
+session =
+  [MyRuleset] |> Rete.Session.new() |> Rete.Session.insert({:order, 1, 250})
+
 Rete.Session.facts(session)  #=> just the order; no conclusions
 MyRuleset.orders(session)    #=> [] — nothing has matched yet
 ```
@@ -847,9 +849,23 @@ So a session you have not fired holds facts and nothing else. The engine has act
 rule, and a query answers nothing. This is what lets you reason about a batch of facts
 together, instead of each fact starting a cascade of its own.
 
-Fire before you query. A query cannot raise here, because `[]` is a true answer about a
-session where nothing has propagated. `Rete.Session.settled?/1` reports whether a session
-has work waiting, for code that did not do the insert itself.
+The sharper case is the second insert, because the answer is stale rather than empty:
+
+```elixir
+settled = Rete.Session.fire_rules(session)
+MyRuleset.orders(settled)      #=> [250]
+
+queued = Rete.Session.insert(settled, {:order, 2, 900})
+MyRuleset.orders(queued)       #=> [250] — the answer from before the insert
+Rete.Session.settled?(queued)  #=> false
+
+MyRuleset.orders(Rete.Session.fire_rules(queued))  #=> [250, 900]
+```
+
+**A query answers as of the most recent fire.** Fire before you query. A query cannot
+raise here, because the last settled answer is a true answer about some state of the
+session. `Rete.Session.settled?/1` reports whether a session has work waiting, for code
+that did not do the insert itself.
 
 ### Reading a collection-local variable outside its collection
 

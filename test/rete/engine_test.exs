@@ -775,6 +775,48 @@ defmodule Rete.EngineTest do
       assert [] == Deferred.flagged(cancelled)
     end
 
+    # The test above does not exercise the merge. An insert and a retract carry different
+    # directions, so `coalesce/1` never puts them in one op, and the order it decides
+    # cannot show. Insert, retract, insert of the *same* fact is the case that does:
+    # `right[f], right_retract[f], right[f]` merges to `right[f, f], right_retract[f]`, so
+    # a node sees two inserts and one retract rather than an alternation.
+    #
+    # It settles the same either way, because a node reads what its memory reports after
+    # the update. This pins that, since `coalesce/1` warns that it decides an order and
+    # nothing else holds it to this one.
+    #
+    # **Memory-struct equality is deliberately not asserted here.** Merging leaves one
+    # extra tombstone in the element bucket inside the settle, bounded by compaction and
+    # invisible through the public API. The branch's other invariant tests use that
+    # equality as a leak canary, and this is the one case where it is sensitive to where
+    # the caller put its call boundaries rather than to what the session holds.
+    test "insert, retract and insert of one fact across calls settles as one insert does" do
+      churned =
+        Session.new([Deferred])
+        |> Session.insert({:cust, 1})
+        |> Session.insert({:order, 1, 250})
+        |> Session.retract({:order, 1, 250})
+        |> Session.insert({:order, 1, 250})
+        |> Session.fire_rules()
+
+      straight =
+        Session.new([Deferred])
+        |> Session.insert([{:cust, 1}, {:order, 1, 250}])
+        |> Session.fire_rules()
+
+      assert Enum.sort(Session.facts(straight)) == Enum.sort(Session.facts(churned))
+      assert [{1, 250}] == Deferred.flagged(churned)
+
+      # And the fact really is held once, not twice: one retraction empties it.
+      emptied =
+        churned |> Session.retract([{:cust, 1}, {:order, 1, 250}]) |> Session.fire_rules()
+
+      assert [] == Session.facts(emptied)
+
+      assert ([Deferred] |> Session.new() |> Session.fire_rules()).state.memory ==
+               emptied.state.memory
+    end
+
     # Feeds a fresh session, then fires it with a listener attached. Returns the settled
     # session and the batches each node was handed, which is the only place coalescing is
     # visible. A timing assertion would say the same thing unreliably.

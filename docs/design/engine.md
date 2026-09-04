@@ -57,12 +57,16 @@ record the fact and queue the work. `new/1` queues the root token the same way. 
 nobody has fired holds facts, and no matches, tokens or activations.
 
 Two things follow. A caller may batch any number of inserts and retractions for the cost of
-one settle. And a query reads propagated state, so it answers nothing until a fire.
+one settle. And a query reads propagated state, so it answers **as of the most recent
+fire**. On a session that never fired that is `[]`. On one that fired and then received an
+insert, it is the previous answer, which is stale rather than empty. The stale case is the
+one that catches people out, because an empty result at least looks wrong.
 
 `Rete.Session.settled?/1` reports an empty queue. A query does not raise on a full one,
-because `[]` is a true answer about a session where nothing has propagated.
-`Rete.Inspect.why_not/2` and `collection/3` do raise, because they answer *why* nothing
-matched, and there the same zero is false. See §12.
+because the last settled answer is a true answer about some state of the session.
+`Rete.Inspect.why_not/2` and `collection/3` do raise, because they answer *why* a rule did
+not match, and an answer about the wrong state of the session is false to that question.
+See §12.
 
 A fire **coalesces the queue before it drains it**, so work that spans several calls reaches
 a node as one batch. `insert/3` already merged the ops of its own call, and nothing used to
@@ -586,6 +590,18 @@ the rule instead.
 * **No partial firing.** `fire_rules/2` runs to quiescence in the calling process. There
   is no fire-one-activation option, no async variant, and no way to interrupt a settling
   pass other than the cycle cap.
+* **Nothing reports what *would* activate before it activates.** Working out which rules a
+  queued fact satisfies means matching it, and matching before a fire is exactly the work
+  this design moved into the fire. A function that answered it would do that work twice, or
+  do it early and throw it away when the caller inserted one more fact.
+
+  So the engine reports two things instead, and neither costs anything.
+  `Rete.Session.settled?/1` says that work is waiting, and not what it is.
+  `Rete.Listener` reports each activation as it is added and as it fires, which is the same
+  information at the moment it stops being a guess. `Rete.Inspect.why_not/2` answers the
+  question after the fact, on a settled session.
+
+  `Rete.Session.pending/1` was the function that tried the other way, and 0.5.0 removed it.
 * **No checkpoint or migration API, but a session is trivially serializable.** A session
   holds no PID, ETS table, or other process-local handle. It is plain data, plus function
   references into the ruleset and listener modules that built it. Because of this,

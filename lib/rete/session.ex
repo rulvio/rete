@@ -186,11 +186,12 @@ defmodule Rete.Session do
   separate parameter declaration. Naming something the query does not bind raises an
   error, instead of answering `[]`.
 
-  A query on a session with work still queued answers `[]`. It does not raise. A query
-  reads propagated state, and nothing has propagated. `Rete.Inspect.why_not/2` raises in
-  the same position, because a diagnostic that reports "nothing matched" is misleading
-  when the truth is "nothing has been matched yet". An empty result set is not. Call
-  `settled?/1` to tell the two cases apart.
+  **A query answers as of the most recent fire.** On a session you never fired that is
+  `[]`. On one you fired and then inserted into, it is the answer from before that insert,
+  which is stale rather than empty. A query reads propagated state either way, and it does
+  not raise. `Rete.Inspect.why_not/2` raises in the same position, because a diagnostic
+  that reports "nothing matched" is misleading when the truth is "nothing has been matched
+  yet". A result set is not. Call `settled?/1` to tell the two cases apart.
 
   Row order is **unspecified**. Rows come back in the order the facts arrived, so the same
   facts fed in a different order answer in a different order. Sort the result yourself if
@@ -209,6 +210,23 @@ defmodule Rete.Session do
       ...>   |> Session.fire_rules()
       iex> Session.query(session, {Rete.Doc.Orders, :flagged_for}, cid: 1)
       [{1, 250}]
+
+  A second order, queued and not yet fired. The answer is the one from before it, not
+  `[]`:
+
+      iex> alias Rete.Session
+      iex> stale =
+      ...>   Session.new([Rete.Doc.Orders])
+      ...>   |> Session.insert([{:customer, 1}, {:order, 1, 250}])
+      ...>   |> Session.fire_rules()
+      ...>   |> Session.insert({:order, 1, 900})
+      iex> Session.settled?(stale)
+      false
+      iex> Session.query(stale, {Rete.Doc.Orders, :flagged_for}, cid: 1)
+      [{1, 250}]
+      iex> fired = Session.fire_rules(stale)
+      iex> fired |> Session.query({Rete.Doc.Orders, :flagged_for}, cid: 1) |> Enum.sort()
+      [{1, 250}, {1, 900}]
   """
   @spec query(t(), {module(), atom()}, keyword() | %{atom() => term()}) :: [term()]
   def query(%__MODULE__{state: state}, ref, filters \\ []),

@@ -123,7 +123,9 @@ defmodule Rete.Engine do
   # Safe to run over the whole queue only here. `new/1`, `insert/3` and `retract/3` enqueue
   # nothing but `{direction, node, items}`, and a fire drains to empty, so the queue holds
   # no `{:event, ...}` or `{:retract_facts, ...}` at this point. Nodes produce both during
-  # the drain. `coalesce/1` rejects both rather than trusting this argument.
+  # the drain. `coalesce/1` rejects both rather than trusting this argument, whenever the
+  # queue holds more than one op. A lone op is returned as it stands, and one op cannot be
+  # merged with anything, so nothing can go wrong there either.
   defp coalesce_queue(%State{queue: queue} = state) do
     %State{state | queue: queue |> :queue.to_list() |> coalesce() |> :queue.from_list()}
   end
@@ -397,17 +399,24 @@ defmodule Rete.Engine do
   `false` means a fact reached working memory and no node has seen it yet. A state fresh
   from `new/1` is unsettled, because the root token is queued too. See
   `docs/design/engine.md` §2.
+
+  This reads the queue alone, and that is enough. On every state a caller can hold, the
+  agenda is empty whenever the queue is: `fire_loop/4` returns only on `:empty`, and every
+  other way out of a fire raises, which discards the state. So there is no state with work
+  queued nowhere and an activation still waiting. Keep it that way, or this answers `true`
+  about a state that has yet to fire something.
   """
   @spec settled?(State.t()) :: boolean()
   def settled?(%State{queue: queue}), do: :queue.is_empty(queue)
 
-  @doc """
-  How many propagation operations wait for the next `fire_rules/2`.
-
-  This counts operations, not facts. One insert of many facts queues one operation per
-  node the facts reach. Use `settled?/1` to ask whether there is any. This exists for an
-  error message that reports the size of what the caller forgot to fire.
-  """
+  @doc false
+  # How many propagation operations wait for the next `fire_rules/2`. Counts operations,
+  # not facts: one insert of many facts queues one operation per node the facts reach.
+  #
+  # This exists for the error message in `Rete.Inspect`, which reports the size of what the
+  # caller forgot to fire. It is not a private function only because that caller is in
+  # another module. Ask `settled?/1` whether there is any work. Nothing else needs the
+  # count.
   @spec pending_ops(State.t()) :: non_neg_integer()
   def pending_ops(%State{queue: queue}), do: :queue.len(queue)
 

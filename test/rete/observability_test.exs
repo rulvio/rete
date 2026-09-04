@@ -395,13 +395,61 @@ defmodule Rete.ObservabilityTest do
       assert error.message =~ "collection/3 needs a session that you fired"
     end
 
-    # The control, and the reason the split is deliberate rather than blanket. Both of
-    # these read memories that `insert/2` updates at once, so they are already correct.
+    # A session that fired and was then inserted into is refused too. Its counts are real,
+    # and they describe a network the newest facts have not reached, which is the same
+    # failure wearing plausible numbers.
+    test "why_not/2 refuses a session that fired and was then inserted into" do
+      stale = unfired() |> Session.fire_rules() |> Session.insert({:order, 9, 400})
+
+      refute Session.settled?(stale)
+
+      assert_raise ArgumentError, ~r/needs a session that you fired/, fn ->
+        Inspect.why_not(stale, {Rules, :flag})
+      end
+    end
+
+    # The name is checked before the fire is. Whether a rule exists does not depend on
+    # whether anything propagated, and a typo is the more actionable of the two errors.
+    # Reporting "you did not fire" here would send the caller to fix the wrong thing.
+    test "why_not/2 reports an unknown rule before it reports an unfired session" do
+      error = assert_raise ArgumentError, fn -> Inspect.why_not(unfired(), {Rules, :typoo}) end
+
+      assert error.message =~ "no rule or query"
+      refute error.message =~ "needs a session that you fired"
+    end
+
+    # The control, and the reason the split is deliberate rather than blanket. Both read
+    # memories that `insert/2` updates at once, so both are already correct here.
     test "explain/2 and fired/2 answer on an unfired session" do
       session = unfired()
 
       assert [%{origin: :asserted}] = Inspect.explain(session, {:order, 1, 250})
       assert [] == Inspect.fired(session)
+    end
+
+    # What "answer at any point" does and does not promise. A queued retract takes the
+    # fact out of working memory and leaves the conclusion resting on it, so `explain/2`
+    # names a support the session no longer holds. `origin: :unknown` is the documented
+    # word for exactly that, so the answer is true of the session as it stands. It stops
+    # being true on the next fire, which is why the moduledoc says to fire first for a
+    # settled provenance graph.
+    test "explain/2 reports a support that a queued retract already removed" do
+      queued =
+        [Rules]
+        |> Session.new()
+        |> Session.insert(@facts)
+        |> Session.fire_rules()
+        |> Session.retract({:order, 1, 250})
+
+      assert {:flagged, 1} in Session.facts(queued)
+      refute {:order, 1, 250} in Session.facts(queued)
+
+      assert [%{origin: :derived, supports: [%{fact: {:order, 1, 250}, origin: :unknown}]}] =
+               Inspect.explain(queued, {:flagged, 1})
+
+      # And the next fire settles it: the conclusion goes with its support.
+      settled = Session.fire_rules(queued)
+      refute {:flagged, 1} in Session.facts(settled)
     end
 
     test "both answer once the session is fired" do
