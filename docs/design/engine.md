@@ -383,22 +383,35 @@ propagated, the duplicate fact just collapses into a count bump in the multiset.
 `Rete.Session.facts/1` still looks perfect. The corruption surfaces much later, as a fact
 that survives a retraction that should have removed it.
 
-The test suite therefore asserts on `session.state.memory` instead. These four invariants
+The test suite therefore asserts on `session.state.memory` instead. These five invariants
 are the ones that actually catch engine bugs:
 
-* **full drain.** Retract everything. Every memory then equals a **fresh session's**
-  (`Rete.Session.new([Mod]).state.memory`). This pins both "drained" and "exactly one root
-  token" — an emptiness check alone cannot see either one.
+* **full drain.** Retract everything. Every memory then equals that of an **empty session
+  that has fired** (`[Mod] |> Rete.Session.new() |> Rete.Session.fire_rules()`). This pins
+  both "drained" and "exactly one root token" — an emptiness check alone cannot see either
+  one. The baseline has to be fired, from 0.5.0: `new/1` queues the root token rather than
+  planting it, so an unfired session has no token to compare against. See §2.
 * **support counting.** A fact concluded by exactly one match is held exactly once. Two
   supports need two retractions, and the first retraction leaves the fact standing.
 * **round trip.** Insert X, fire, retract X, fire, and compare against the state before.
 * **order independence.** The same facts, in any order and any batching, give the same
   derived state. Any sequence of inserts and retracts leaves a session equal to one
   rebuilt from the surviving facts.
+* **fire boundaries do not count.** Any sequence of inserts and retractions batched before
+  one `fire_rules/2` settles where firing after every call settles. Where the caller put its
+  calls is not part of what a session means.
 
-One more invariant needs a direct test against the memory, since no end-to-end property
-reaches it: **a memory reports the occurrences it actually held, not the ones it was asked
-to remove**.
+  This is the invariant that catches a bad merge in `coalesce/1`, and it needs saying
+  separately from the one above, which held throughout 0.4.0. A queue carrying both
+  directions for one node is only ever built by a caller that batches *across* calls, so no
+  property that fires every call can reach it. See §2.
+
+Two more invariants need a direct test, since no end-to-end property over the facts reaches
+either. **A memory reports the occurrences it actually held, not the ones it was asked to
+remove.** And **`settled?/1` answers for the agenda as well as the queue**: it reads the
+queue alone, so every session a caller can hold must have an empty agenda whenever its queue
+is empty. Nothing in the engine enforces the second. The property suite asserts it at every
+intermediate session it builds, fired or not.
 
 ---
 

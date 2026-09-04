@@ -93,22 +93,31 @@ event, with propagation events behind `verbose: true`.
 
 ## 2. Inspection
 
-`Rete.Inspect` works on **any** session, with no listener attached, because truth
-maintenance already records what it needs. `memory.insertions` is `node_id => token =>
-[[facts]]`: "this match at this production inserted these facts". Read backwards, this is
-exactly a provenance edge. A token's `:matches` is the ordered list of facts behind it.
-`explain/2` just walks these two structures.
+`Rete.Inspect` needs **no listener and no setup**, because truth maintenance already
+records what it needs. `memory.insertions` is `node_id => token => [[facts]]`: "this match
+at this production inserted these facts". Read backwards, this is exactly a provenance
+edge. A token's `:matches` is the ordered list of facts behind it. `explain/2` just walks
+these two structures.
 
 Prefer the memory-derived answer wherever one exists. It needs no setup, and it cannot
 drift from reality. Listeners add only what memory cannot know: history, ordering, and
 activations that fired and were later retracted.
 
-| function | question |
-|---|---|
-| `explain/2` | why does this fact exist? |
-| `fired/2` | which rules have concluded something? |
-| `why_not/2` | how far did this rule get? |
-| `collection/3` | what did this collection gather? |
+| function | question | needs a settled session |
+|---|---|---|
+| `explain/2` | why does this fact exist? | no |
+| `fired/2` | which rules have concluded something? | no |
+| `why_not/2` | how far did this rule get? | **yes** |
+| `collection/3` | what did this collection gather? | **yes** |
+
+The last column follows from §1's split, not from a preference. `explain/2` and `fired/2`
+read memories that `insert/2` and `retract/2` update at once, so they answer about the
+session as it stands at any point. The other two read what propagation built, and
+propagation waits for `fire_rules/2`. On a session with work queued they would report zero
+of everything, which reads as "nothing matched" when the truth is "nothing has been matched
+yet". They raise instead, and name the pending count. A diagnostic that lies is worse than
+one that refuses. `Rete.Session.query/3` is deliberately not guarded this way: it is asked
+what matched, and `[]` is a true answer. See `engine.md` §2.
 
 ### `explain/2` returns a list
 
