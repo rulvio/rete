@@ -340,28 +340,37 @@ defmodule Rete.BehaviorTest do
       end
     end
 
-    # clara test_negation/test-simple-negation queries a session that was never
-    # fired and expects an answer. Propagation happens on insert. Only the right
-    # hand sides wait for `fire_rules/2`. So a query is a window onto the
-    # network's current state, not onto the last settled one.
-    test "a query answers before any rule has fired" do
-      session = [QueryRules] |> Session.new()
-      assert [:none] == QueryRules.no_cold(session)
+    # clara test_negation/test-simple-negation. Every session in it that receives
+    # an insert is fired before it is queried, and those cases agree here exactly.
+    #
+    # **One deliberate divergence.** Clara also queries `empty-session` — never
+    # inserted into, never fired — and expects one row, because Clara propagates
+    # the root token when the session is built. This engine answers `[]` there.
+    # Nothing propagates until `fire_rules/2`, the root token included. See
+    # `docs/design/engine.md` §12.
+    test "a query answers only once the session has fired" do
+      fresh = Session.new([QueryRules])
+      assert [] == QueryRules.no_cold(fresh)
 
-      session = Session.insert(session, {:cold, 1})
-      assert [] == QueryRules.no_cold(session)
+      fired = Session.fire_rules(fresh)
+      assert [:none] == QueryRules.no_cold(fired)
 
-      session = Session.retract(session, {:cold, 1})
-      assert [:none] == QueryRules.no_cold(session)
+      blocked = fired |> Session.insert({:cold, 1}) |> Session.fire_rules()
+      assert [] == QueryRules.no_cold(blocked)
+
+      released = blocked |> Session.retract({:cold, 1}) |> Session.fire_rules()
+      assert [:none] == QueryRules.no_cold(released)
     end
 
-    # The corollary: a query run before firing does *not* see what the pending
-    # activations would conclude. This is the documented "what was true before
-    # they fired" reading, and it is what makes batching facts meaningful.
-    test "a query before firing does not see conclusions still on the agenda" do
+    # A query before firing sees nothing at all, not even the facts just inserted.
+    # `insert/2` records the fact and queues the work, and matching is what
+    # `fire_rules/2` does. `Session.facts/1` is the call that sees an insert the
+    # network has not been told about yet.
+    test "a query sees nothing until the session is fired" do
       session = [QueryRules] |> Session.new() |> Session.insert([{:temp, 1}, {:seed, 9}])
 
-      assert [1] == QueryRules.temps(session)
+      assert [] == QueryRules.temps(session)
+      assert [{:seed, 9}, {:temp, 1}] == session |> Session.facts() |> Enum.sort()
 
       assert [1, 9] ==
                session |> Session.fire_rules() |> QueryRules.temps() |> Enum.sort()
@@ -1233,7 +1242,7 @@ defmodule Rete.BehaviorTest do
       session = run(Deep, [{:n, 0}])
 
       assert 201 == length(Session.facts(session))
-      assert [] == Session.pending(session)
+      assert 0 == Rete.Agenda.size(session.state.agenda)
 
       session = session |> Session.retract({:n, 0}) |> Session.fire_rules()
       assert Session.new([Deep]).state.memory == session.state.memory
@@ -1317,7 +1326,12 @@ defmodule Rete.BehaviorTest do
 
       for mod <- @orders do
         emptied = mod |> run(facts) |> drain(facts)
-        assert Session.new([mod]).state.memory == emptied.state.memory, inspect(mod)
+
+        # The baseline is a fresh session that has been *fired*. Nothing propagates
+        # until it is, so an unfired session has not yet planted the root token, and
+        # comparing against one would not pin "exactly one root token".
+        settled = [mod] |> Session.new() |> Session.fire_rules()
+        assert settled.state.memory == emptied.state.memory, inspect(mod)
       end
     end
 
@@ -1817,7 +1831,7 @@ defmodule Rete.BehaviorTest do
       emptied = everything() |> drain(@facts)
 
       assert [] == Session.facts(emptied)
-      assert [] == Session.pending(emptied)
+      assert 0 == Rete.Agenda.size(emptied.state.agenda)
       assert Session.new([Everything]).state.memory == emptied.state.memory
     end
 

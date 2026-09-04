@@ -34,22 +34,27 @@ defmodule Rete.Engine do
   @doc """
   A state over a network, with nothing inserted.
 
-  Plants the root token now rather than on the first propagation. A rule whose whole left
-  hand side is an absence or an empty collection is true of the empty session, and must
-  be able to fire before a fact arrives. See `docs/design/engine.md` §6.
+  Queues the root token rather than propagating it. A rule whose whole left hand side is an
+  absence or an empty collection is true of the empty session, so the token must exist
+  before a fact arrives. `fire_rules/2` is what propagates it, so a state nobody has fired
+  holds no matches and no activations. See `docs/design/engine.md` §6.
   """
   @spec new(Network.t()) :: State.t()
   def new(%Network{} = network) do
     {state, ops} = network |> State.new() |> Nodes.seed_root()
 
-    state |> State.enqueue(ops) |> drain()
+    State.enqueue(state, ops)
   end
 
   @doc """
-  Inserts facts and propagates them.
+  Records facts and queues their propagation.
 
-  A fact equal to one already present bumps its count and propagates nothing. The matches
-  it would make already exist.
+  A fact equal to one already present bumps its count and queues nothing. The matches it
+  would make already exist.
+
+  This does **not** propagate. `Rete.Memory` holds the fact at once, so `facts/1` sees it,
+  and the alpha work waits in the queue until `fire_rules/2` drains it. See
+  `docs/design/engine.md` §2.
   """
   @spec insert(State.t(), [term()], Rete.Listener.origin()) :: State.t()
   def insert(state, facts, origin \\ :asserted)
@@ -67,14 +72,18 @@ defmodule Rete.Engine do
         end
       end)
 
-    state |> State.enqueue(ordered_ops(batches)) |> drain()
+    State.enqueue(state, ordered_ops(batches))
   end
 
   @doc """
-  Retracts facts and propagates the retraction.
+  Removes facts and queues the retraction.
 
-  Only the last occurrence of a fact propagates. Anything concluded from it is retracted
-  in turn, until the network settles.
+  Only the last occurrence of a fact queues anything. Anything concluded from it is
+  retracted in turn, once `fire_rules/2` drains the queue and the network settles.
+
+  This does **not** propagate, for the reason `insert/3` gives. Queuing an insert and then
+  a retract of the same fact drains to a net no-op, because a node reads what its memory
+  reports after the update rather than the order the work arrived in.
   """
   @spec retract(State.t(), [term()], Rete.Listener.origin()) :: State.t()
   def retract(state, facts, origin \\ :asserted)
@@ -94,7 +103,7 @@ defmodule Rete.Engine do
         end
       end)
 
-    state |> State.enqueue(ordered_ops(batches)) |> drain()
+    State.enqueue(state, ordered_ops(batches))
   end
 
   # Batches are collected newest first. Appending per fact would be quadratic in the size

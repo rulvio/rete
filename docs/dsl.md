@@ -73,7 +73,7 @@ does not apply. Pass `:fact_type_fn` to `Rete.Session.new/2` if your facts use s
 typing scheme.
 
 Facts form a **multiset**. Inserting the same fact twice needs two retractions to remove
-it. The second insert propagates nothing, because the matches it would make already exist.
+it. The second insert queues nothing, because the matches it would make already exist.
 
 ## Left hand side elements
 
@@ -92,6 +92,7 @@ it. The second insert propagates nothing, because the matches it would make alre
 | `{:not, [{:order, cid}]}` | a gate — `:and`, `:or`, `:not`, `:nand`, `:nor`, `:xor`, `:xnor` |
 | `%{salience: 100}` **first** | the options map, not a condition |
 | `) when <guard> do` | a rule-level guard over every binding |
+| no conditions at all | fires once, on the first `fire_rules/2` — see below |
 
 A worked example using most of them:
 
@@ -121,6 +122,41 @@ becomes plain `amt`, which is already how this DSL spells a join.
 
 Variables named `_` or `_amt` are discarded, in any position, the same as anywhere else in
 Elixir. They do not bind. A guard cannot read one.
+
+### A production with no conditions
+
+A rule may declare no conditions at all. Write `defrule startup()`, or omit the
+parentheses.
+
+```elixir
+defrule startup do
+  {:started, :once}
+end
+```
+
+Such a rule is true of the empty session. It fires on the first `fire_rules/2`, with
+nothing inserted, and it never fires again however much you insert afterward.
+
+Its conclusion rests on the root token instead of on a fact. So retracting everything you
+inserted leaves the conclusion in place. This is the one conclusion
+`Rete.Session.retract/2` cannot reach. `Rete.Inspect.explain/2` reports it as `:derived`
+with no supports.
+
+Salience applies as usual, so a rule with no conditions can run before the rest of the
+ruleset and seed a fact the other rules match on.
+
+A query with no conditions answers exactly one row, computed by its body:
+
+```elixir
+defquery constant(), do: :constant
+
+MyRuleset.constant(Rete.Session.new([MyRuleset]))   #=> []
+MyRuleset.constant(session)                         #=> [:constant]
+```
+
+Fire first, like any other query. After that the row never varies, because the root token
+is the whole match and no fact can add to it or take from it. The query binds nothing, so
+any filter raises an error. Read it as a `SELECT` with no `FROM`.
 
 ## Bindings and joins
 
@@ -653,7 +689,8 @@ Two consequences surprise people:
 * **a conclusion cannot hold itself up.** If a rule's match already rests on the fact it
   concludes, that fact does not get a second support. So retracting what you inserted
   really does empty the session. `symmetric({:edge, a, b}) -> {:edge, b, a}` does not
-  leave two immortal facts behind.
+  leave two immortal facts behind. A rule with **no conditions** is the one exception: its
+  support is the root token rather than a fact, so its conclusion stays.
 * **a rule that concludes something its own left hand side matches on will loop.**
   `fire_rules/2` runs to quiescence, and it does not cap activations unless you ask it to.
   Pass `:max_cycles` for a cap — it defaults to `:infinity`. Give it an integer, and it
@@ -794,19 +831,23 @@ There is no matching fact, so there is nothing to bind `amt` to. The negation *r
 `cid`, to scope itself to this customer. `amt` is existentially quantified, so it does not
 escape the negation. If you want the amount, write a match instead of a negation.
 
-### Expecting a rule to fire before `fire_rules/2`
+### Expecting anything to happen before `fire_rules/2`
 
 ```elixir
 session = Rete.Session.insert(session, {:order, 1, 250})
 Rete.Session.facts(session)  #=> just the order; no conclusions
+MyRuleset.orders(session)    #=> [] — nothing has matched yet
 ```
 
-Inserting propagates matches and queues activations. Nothing runs until `fire_rules/2`.
-This is what lets you reason about a batch of facts together. `Rete.Session.pending/1`
-shows what is waiting.
+`insert/2` and `retract/2` record facts and queue the work. **`fire_rules/2` is the only
+call that matches anything.** It propagates everything waiting, runs the rules that match,
+and returns once the session has settled.
 
-The same applies to querying. A query answered before firing tells you what was true
-before firing.
+So a session you have not fired holds facts and nothing else. No rule has been activated,
+and a query answers nothing. This is what lets you reason about a batch of facts together,
+instead of each fact setting off a cascade of its own.
+
+Fire before you query.
 
 ### Reading a collection-local variable outside its collection
 

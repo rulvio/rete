@@ -28,7 +28,7 @@ becomes dormant again. You do no bookkeeping yourself.
 ```elixir
 def deps do
   [
-    {:rete, "~> 0.4.0"}
+    {:rete, "~> 0.5.0"}
   ]
 end
 ```
@@ -57,8 +57,9 @@ A `cond` clause must name the order it checks things in. A rule instead states t
 the world it cares about. The engine finds every combination of facts with that shape. One
 combination is one *match*. One match fires the rule once.
 
-**Nothing runs until you say so.** `insert/2` propagates facts through the network and
-queues the matches it finds. `fire_rules/2` runs the queued matches.
+**Nothing happens until you say so.** `insert/2` and `retract/2` record facts and queue the
+work. `fire_rules/2` is the only call that matches anything: it propagates everything
+waiting, runs the rules that match, and returns once the session has settled.
 
 This lets you reason about a batch of facts together. Otherwise each fact would trigger a
 cascade of its own.
@@ -136,25 +137,12 @@ session =
 Rete.Session.facts(session)
 #=> the six facts above, and nothing else
 
-length(Rete.Session.pending(session))
-#=> 3
+Retail.large_orders(session)
+#=> [] — nothing has matched yet
 ```
 
-Nothing has been concluded, because nothing has fired. What *has* happened is the matching.
-Three activations are queued: `large_order` for Ada's 250, and `spend` for each customer.
-Each activation carries the bindings it matched:
-
-```elixir
-%Rete.Activation{
-  node_id: 3,
-  token: %Rete.Token{
-    matches: [{{:threshold, 100}, 1}, {{:order, 1, 250}, 2}],
-    bindings: %{limit: 100, cid: 1, amt: 250}
-  },
-  salience: 0,
-  ...
-}
-```
+The session holds the facts and nothing else. No matching has happened, so no rule has been
+activated and no query can answer. `insert/2` records what you told it and queues the work.
 
 `salience` is firing priority. A rule declared `defrule urgent(%{salience: 10}, ...)` fires
 before one at the default value of `0`. Every activation at one salience level fires before
@@ -333,11 +321,10 @@ reach in. `docs/design/` carries the reasoning behind it. Semantic versioning do
 cover this internal part. It may change in a patch release. The generated docs group it
 under `Internals:` headings for this reason.
 
-Two internal structs do reach you through the public API. `Rete.Session.pending/1` returns
-`Rete.Activation` structs. Every listener event carries a `Rete.Token`.
+One internal struct does reach you through the public API. Every listener event carries a
+`Rete.Token`.
 
-**Read their fields freely. Do not depend on their functions.** Expect the field sets to
-change.
+**Read its fields freely. Do not depend on its functions.** Expect the field set to change.
 
 ## Limitations
 

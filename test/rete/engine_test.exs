@@ -117,11 +117,20 @@ defmodule Rete.EngineTest do
       end
     end
 
+    # Read off the firing order rather than the agenda. Nothing propagates until
+    # `fire_rules/2`, so there is no pre-fire agenda to inspect, and what salience
+    # promises is an order of firing anyway.
     test "higher salience fires first" do
-      session = Session.new([Salience]) |> Session.insert({:go, 1})
+      order =
+        [Salience]
+        |> Session.new()
+        |> Session.with_listener(Collect, [])
+        |> Session.insert({:go, 1})
+        |> Session.fire_rules()
+        |> Collect.by_tag(:activation_fired)
+        |> Enum.map(fn {:activation_fired, source, _token, _facts} -> elem(source.rule, 1) end)
 
-      order = session |> Session.pending() |> Enum.map(& &1.salience)
-      assert [100, 50, 1] == order
+      assert [:high, :mid, :low] == order
     end
   end
 
@@ -843,9 +852,104 @@ defmodule Rete.EngineTest do
       assert %{} == memory.insertions, "truth maintenance records left behind"
 
       # The root token is the one thing that stays, so "drained" is exactly "the
-      # memory a session starts with". That also pins how many root tokens there
-      # are, which a "they are all empty tokens" check cannot see.
-      assert Session.new([LeadNeg]).state.memory == memory
+      # memory a settled empty session holds". That also pins how many root tokens
+      # there are, which a "they are all empty tokens" check cannot see.
+      #
+      # Fired, not fresh: the root token is queued at creation and planted by the
+      # first fire, so an unfired session has no tokens to compare against.
+      settled = [LeadNeg] |> Session.new() |> Session.fire_rules()
+      assert settled.state.memory == memory
+    end
+
+    # A production with no conditions at all is the degenerate case of everything
+    # above. Its terminal hangs straight off the beta root, so the seeded token is
+    # its whole match. That gives it exactly one activation, planted at session
+    # creation and supported by nothing a user can retract.
+    defmodule NoLhs do
+      use Rete.Ruleset
+
+      defrule startup do
+        {:started, :once}
+      end
+
+      defrule salient(%{salience: 100}) do
+        {:phase, :init}
+      end
+
+      defrule downstream({:phase, :init}) do
+        {:phase, :ready}
+      end
+
+      defquery constant do
+        :constant
+      end
+    end
+
+    # The root token is queued at session creation and propagated by the first fire.
+    # So a session nobody has fired holds no facts and no activations, and the rule
+    # still fires without anything being inserted.
+    test "a rule with no conditions queues nothing until the first fire" do
+      fresh = Session.new([NoLhs])
+
+      assert [] == Session.facts(fresh)
+      assert 0 == Rete.Agenda.size(fresh.state.agenda)
+
+      assert [{:started, :once}] == fresh |> Session.fire_rules() |> derived(:started)
+    end
+
+    test "a rule with no conditions fires exactly once, whatever is inserted" do
+      session = run([NoLhs], [{:order, 1}, {:order, 2}, {:order, 3}])
+
+      assert [{:started, :once}] == derived(session, :started)
+
+      assert 1 ==
+               session
+               |> Rete.Inspect.fired()
+               |> Enum.count(&(&1.rule == :startup))
+    end
+
+    # Its support is the root token, which no retraction reaches. So the one thing
+    # that empties every other conclusion leaves this one standing.
+    test "a conclusion with no conditions survives retracting every fact" do
+      session = run([NoLhs], [{:order, 1}])
+
+      emptied = session |> Session.retract({:order, 1}) |> Session.fire_rules()
+
+      assert [{:started, :once}] == derived(emptied, :started)
+
+      assert [%{origin: :derived, bindings: %{}, supports: []}] =
+               Rete.Inspect.explain(emptied, {:started, :once})
+    end
+
+    test "a rule with no conditions honors salience and feeds rules below it" do
+      session = [NoLhs] |> Session.new() |> Session.fire_rules()
+
+      assert [{:phase, :init}, {:phase, :ready}] == derived(session, :phase)
+    end
+
+    # A query reads propagated state, so it answers nothing until the first fire.
+    # After that the root token is its whole match, and no fact can add to or take
+    # from that.
+    test "a query with no conditions answers one row in every fired session" do
+      assert [] == NoLhs.constant(Session.new([NoLhs]))
+
+      assert [:constant] == [NoLhs] |> Session.new() |> Session.fire_rules() |> NoLhs.constant()
+
+      loaded = run([NoLhs], [{:order, 1}, {:order, 2}])
+      assert [:constant] == NoLhs.constant(loaded)
+
+      emptied = loaded |> Session.retract([{:order, 1}, {:order, 2}]) |> Session.fire_rules()
+      assert [:constant] == NoLhs.constant(emptied)
+    end
+
+    test "a query with no conditions binds nothing, so any filter is rejected" do
+      session = [NoLhs] |> Session.new() |> Session.fire_rules()
+
+      assert [:constant] == NoLhs.constant(session, [])
+
+      assert_raise ArgumentError, ~r/binds \[\], and was given \[:id\]/, fn ->
+        NoLhs.constant(session, id: 1)
+      end
     end
   end
 
@@ -1321,7 +1425,7 @@ defmodule Rete.EngineTest do
     end
 
     test "the agenda is empty once rules have fired" do
-      assert [] == [Everything] |> run(@facts) |> Session.pending()
+      assert 0 == [Everything] |> run(@facts) |> then(&Rete.Agenda.size(&1.state.agenda))
     end
   end
 
@@ -1725,7 +1829,7 @@ defmodule Rete.EngineTest do
         |> Session.fire_rules(max_cycles: 2)
 
       assert [{:done}, {:finished}, {:go}] == session |> Session.facts() |> Enum.sort()
-      assert [] == Session.pending(session)
+      assert 0 == Rete.Agenda.size(session.state.agenda)
     end
 
     test "a single activation fires under a cap of one" do

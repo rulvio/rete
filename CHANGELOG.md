@@ -4,6 +4,61 @@ All notable changes to `rete` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.5.0
+
+`fire_rules/2` is now the only call that propagates. **This release has breaking changes.**
+
+### Changed
+
+* **`insert/2` and `retract/2` no longer propagate.** They record the fact and queue the
+  work. `fire_rules/2` drains that queue, matches everything waiting, runs the rules that
+  match, and returns at quiescence.
+
+  A session you have not fired holds facts and nothing else. `Rete.Session.facts/1` still
+  answers, because working memory is updated at once. Nothing else does: no rule is
+  activated, and **a query answers nothing until you fire**.
+
+  Two problems drove this. Building a session queued activations before the caller had done
+  anything, so `pending/1` was non-empty on a session nobody had touched. And a listener
+  could never observe those activations — `Rete.Engine.State` starts with no listeners, and
+  `Rete.Session.with_listener/3` can only attach afterward, so `:activation_added` was
+  emitted to nobody and a listener later saw `:activation_fired` for a rule it never saw
+  added.
+
+  Batching is the other gain. Any number of inserts and retractions now cost one settle.
+
+* **`Rete.Session.pending/1` is removed.** `fire_rules/2` returns at quiescence and nothing
+  propagates before it, so the function had no state left in which it could answer anything
+  but `[]`. `Rete.Activation` no longer reaches the public API. Use `Rete.Listener` to
+  observe activations.
+
+* **One deliberate divergence from Clara.** Clara's
+  `test_negation/test-simple-negation` queries a session that was never inserted into and
+  never fired, and expects one row, because Clara plants the root token when the session is
+  built. This engine answers `[]` there. Every other session in that test is fired before it
+  is queried, and those cases agree exactly. See `docs/design/engine.md` §12.
+
+### Migration
+
+Add a `fire_rules/2` before any query that ran against an unfired session:
+
+```elixir
+# before
+session |> Session.insert(facts) |> MyRules.some_query()
+
+# after
+session |> Session.insert(facts) |> Session.fire_rules() |> MyRules.some_query()
+```
+
+Replace `Session.pending/1` with a listener:
+
+```elixir
+session
+|> Session.with_listener(Rete.Listener.Collect, [])
+|> Session.fire_rules()
+|> Rete.Listener.Collect.by_tag(:activation_fired)
+```
+
 ## 0.4.0
 
 Node sharing now reaches across module boundaries. Composing rulesets costs what writing

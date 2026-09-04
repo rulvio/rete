@@ -47,10 +47,21 @@ Four consequences follow, and all of them are load-bearing:
 ## 2. Two nested loops
 
 ```
-insert / retract  ->  enqueue alpha ops  ->  drain
+insert / retract  ->  update memory, enqueue alpha ops. Nothing else.
 fire_rules        ->  drain, then: pop the most salient activation, run it,
                       insert what it returned, drain, repeat until the agenda is empty
 ```
+
+**`fire_rules/2` is the only entry point that propagates.** `insert/3` and `retract/3`
+record the fact and queue the work. `new/1` queues the root token the same way. So a state
+nobody has fired holds facts, and no matches, tokens or activations.
+
+Two things follow. A caller may batch any number of inserts and retractions for the cost of
+one settle. And a query reads propagated state, so it answers nothing until a fire.
+
+Queuing an insert and then a retract of the same fact drains to a net no-op. A node reads
+what its memory reports after the update, not the order the work arrived in — the
+retraction rule in §5.
 
 **Propagation drains to completion before the next activation fires.** A rule must see a
 settled network, or it could act on a half-built match.
@@ -199,14 +210,30 @@ need one. But a `Negation` hanging off the beta root has to pass *something* whi
 matches. An `Accumulate` there has to emit its collection to someone too.
 
 Classic Rete answers this with a single empty token, seeded at the root, and this engine
-does the same. It plants that token at **state creation**, not on the first fact. A rule
+does the same. `new/1` **queues** that token, and the first `fire_rules/2` plants it. A rule
 whose whole left hand side is an absence, or an empty collection, is true of the empty
-session, and it must be able to fire before anything is inserted.
+session, and it must be able to fire before anything is inserted — which it can, because
+firing drains the queued seed before it fires anything.
 
 `Rete.Memory.root_seeded?` makes seeding idempotent. A second root token would give every
 such rule a second support, and no retraction would ever clear it.
 
 It is machinery, not a match. `Rete.Inspect` never presents it as a fact.
+
+### A production with no conditions
+
+A production that declares nothing is the degenerate case of all of this. Its terminal
+hangs straight off the beta root, so the seeded token is its whole match. It therefore gets
+exactly one activation, on the first fire.
+
+Its conclusion rests on the root token, which no retraction reaches. So it is the one
+conclusion that survives retracting every fact the user asserted. That does not break the
+guarantee in §8, because the conclusion is still well founded — the root token is its
+support, and that support never goes.
+
+A query written the same way holds that one token and answers one row, in every session
+that has been fired. `docs/dsl.md` states both for rule authors, and `Rete.EngineTest` pins
+them under "the root token".
 
 ## 7. Firing
 
@@ -528,6 +555,21 @@ the rule instead.
   returns an answer that is wrong, not just late. The cost: an oscillating ruleset now
   spins until something interrupts it. `observability.md` §3 carries the numbers for
   choosing a cap where that matters.
+* **An unfired session answers no query. This diverges from Clara.** Clara's
+  `test_negation/test-simple-negation` queries `empty-session` — never inserted into, never
+  fired — and expects one row, because Clara plants the root token when the session is
+  built. This engine answers `[]` there.
+
+  The two agree everywhere else in that test. All eleven of its sessions that receive an
+  insert are fired before they are queried, so deferring insert and retract costs nothing
+  against Clara. Only the untouched session differs.
+
+  The trade was made knowingly. Propagating at construction meant a caller saw queued
+  activations on a session they had not touched, and a listener could never observe the
+  matching `:activation_added` — `Rete.Engine.State` starts with no listeners, and
+  `Rete.Session.with_listener/3` can only attach afterward. One entry point that propagates
+  is worth more than agreeing with Clara on the empty case. `Rete.BehaviorTest` records the
+  divergence where the Clara case is pinned.
 * **No partial firing.** `fire_rules/2` runs to quiescence in the calling process. There
   is no fire-one-activation option, no async variant, and no way to interrupt a settling
   pass other than the cycle cap.

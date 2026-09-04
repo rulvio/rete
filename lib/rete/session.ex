@@ -76,6 +76,9 @@ defmodule Rete.Session do
   Facts are a multiset. Inserting a fact equal to one already present bumps its count
   instead of duplicating its matches, so retracting one occurrence leaves the other.
 
+  Inserting does not match anything. It records the fact and queues the work.
+  `fire_rules/2` is what matches, and until you call it no rule has seen the fact.
+
       iex> alias Rete.Session
       iex> session = Session.new([Rete.Doc.Orders]) |> Session.insert({:customer, 1})
       iex> Session.facts(session)
@@ -90,12 +93,16 @@ defmodule Rete.Session do
   Anything concluded from them is retracted too, transitively. Retracting a fact that is
   not present does nothing.
 
+  Like `insert/2`, this queues the work rather than doing it. The fact leaves at once, and
+  the conclusions that rested on it leave when `fire_rules/2` drains the queue.
+
       iex> alias Rete.Session
       iex> session =
       ...>   Session.new([Rete.Doc.Orders])
       ...>   |> Session.insert([{:customer, 1}, {:order, 1, 250}])
       ...>   |> Session.fire_rules()
       ...>   |> Session.retract({:customer, 1})
+      ...>   |> Session.fire_rules()
       iex> Session.facts(session)
       [{:order, 1, 250}]
   """
@@ -124,16 +131,18 @@ defmodule Rete.Session do
     * `:timeout` — milliseconds one body may take, or `:infinity`, the default. Applies
       only when `:concurrency` is above `1`.
 
-  Inserting queues activations. Firing runs them and leaves the agenda empty.
+  **This is the only call that propagates.** `insert/2` and `retract/2` queue work. Firing
+  drains that queue, matches everything waiting, runs the rules that match, and returns at
+  quiescence. So a session you have not fired holds facts but no matches.
 
       iex> alias Rete.Session
       iex> queued =
       ...>   Session.new([Rete.Doc.Orders])
       ...>   |> Session.insert([{:customer, 1}, {:order, 1, 250}])
-      iex> length(Session.pending(queued))
-      1
-      iex> Session.pending(Session.fire_rules(queued))
+      iex> Rete.Doc.Orders.flagged_for(queued)
       []
+      iex> Rete.Doc.Orders.flagged_for(Session.fire_rules(queued))
+      [{1, 250}]
   """
   @spec fire_rules(t(), keyword()) :: t()
   def fire_rules(session, opts \\ []), do: update(session, &Engine.fire_rules(&1, opts))
@@ -183,14 +192,6 @@ defmodule Rete.Session do
   """
   @spec facts(t()) :: [term()]
   def facts(%__MODULE__{state: state}), do: Engine.facts(state)
-
-  @doc """
-  The activations waiting to fire, most salient first.
-
-  Empty after `fire_rules/2` unless a rule inserted something during it.
-  """
-  @spec pending(t()) :: [Rete.Activation.t()]
-  def pending(%__MODULE__{state: state}), do: Rete.Agenda.to_list(state.agenda)
 
   @doc """
   Attaches a listener, returning a new session.
