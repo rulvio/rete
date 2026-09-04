@@ -59,10 +59,11 @@ value: no processes, no ETS, no side channel.
 | `{:activation_removed, source, token}` | a pending activation was cancelled |
 | `{:activation_fired, source, token, facts}` | a rule ran |
 
-Only two of these reach a listener outside a fire. `insert/2` and `retract/2` emit
+Only three of these reach a listener outside a fire. `insert/2` and `retract/2` emit
 `:fact_inserted`, `:fact_retracted` and `:fact_duplicated`, because they update working
-memory at once. Everything else — every `:propagated`, every `:activation_*` — happens
-inside `fire_rules/2`, which is the only call that propagates. See `engine.md` §2.
+memory at once. Everything else happens inside `fire_rules/2`, which is the only call that
+propagates. That covers every `:propagated` event and every `:activation_*` one. See
+`engine.md` §2.
 
 That is what makes a listener able to see a whole settle. Attach it to a fresh session, and
 no matching has happened yet, so nothing is missed.

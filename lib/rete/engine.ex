@@ -9,6 +9,9 @@ defmodule Rete.Engine do
   inserts what it returned. Propagation drains to completion **before** the next
   activation fires, so a rule always sees a settled network.
 
+  `fire_rules/2` is the only entry point that drains. `new/1`, `insert/3` and `retract/3`
+  queue work and return.
+
   `fire_rules/2` returns at quiescence. Every rule whose left hand side holds has fired,
   and nothing whose support has gone is still asserting anything.
 
@@ -35,8 +38,8 @@ defmodule Rete.Engine do
   A state over a network, with nothing inserted.
 
   Queues the root token rather than propagating it. A rule whose whole left hand side is an
-  absence or an empty collection is true of the empty session, so the token must exist
-  before a fact arrives. `fire_rules/2` is what propagates it, so a state nobody has fired
+  absence or an empty collection is true of the empty session. So the token must exist
+  before a fact arrives. `fire_rules/2` is what propagates it. A state nobody has fired
   holds no matches and no activations. See `docs/design/engine.md` §6.
   """
   @spec new(Network.t()) :: State.t()

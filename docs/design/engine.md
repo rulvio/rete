@@ -60,7 +60,7 @@ Two things follow. A caller may batch any number of inserts and retractions for 
 one settle. And a query reads propagated state, so it answers nothing until a fire.
 
 Queuing an insert and then a retract of the same fact drains to a net no-op. A node reads
-what its memory reports after the update, not the order the work arrived in — the
+what its memory reports after the update, not the order the work arrived in. That is the
 retraction rule in §5.
 
 **Propagation drains to completion before the next activation fires.** A rule must see a
@@ -557,19 +557,19 @@ the rule instead.
   choosing a cap where that matters.
 * **An unfired session answers no query. This diverges from Clara.** Clara's
   `test_negation/test-simple-negation` queries `empty-session` — never inserted into, never
-  fired — and expects one row, because Clara plants the root token when the session is
-  built. This engine answers `[]` there.
+  fired — and expects one row. Clara plants the root token when the session is built. This
+  engine answers `[]` there.
 
   The two agree everywhere else in that test. All eleven of its sessions that receive an
   insert are fired before they are queried, so deferring insert and retract costs nothing
   against Clara. Only the untouched session differs.
 
   The trade was made knowingly. Propagating at construction meant a caller saw queued
-  activations on a session they had not touched, and a listener could never observe the
-  matching `:activation_added` — `Rete.Engine.State` starts with no listeners, and
-  `Rete.Session.with_listener/3` can only attach afterward. One entry point that propagates
-  is worth more than agreeing with Clara on the empty case. `Rete.BehaviorTest` records the
-  divergence where the Clara case is pinned.
+  activations on a session they had not touched. It also meant a listener could never
+  observe the matching `:activation_added`. `Rete.Engine.State` starts with no listeners,
+  and `Rete.Session.with_listener/3` can only attach afterward. One entry point that
+  propagates is worth more than agreeing with Clara on the empty case. `Rete.BehaviorTest`
+  records the divergence where the Clara case is pinned.
 * **No partial firing.** `fire_rules/2` runs to quiescence in the calling process. There
   is no fire-one-activation option, no async variant, and no way to interrupt a settling
   pass other than the cycle cap.

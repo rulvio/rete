@@ -19,11 +19,12 @@ All notable changes to `rete` are recorded here. The format follows
   activated, and **a query answers nothing until you fire**.
 
   Two problems drove this. Building a session queued activations before the caller had done
-  anything, so `pending/1` was non-empty on a session nobody had touched. And a listener
-  could never observe those activations — `Rete.Engine.State` starts with no listeners, and
-  `Rete.Session.with_listener/3` can only attach afterward, so `:activation_added` was
-  emitted to nobody and a listener later saw `:activation_fired` for a rule it never saw
-  added.
+  anything, so `pending/1` was non-empty on a session nobody had touched.
+
+  A listener could never observe those activations either. `Rete.Engine.State` starts with
+  no listeners, and `Rete.Session.with_listener/3` can only attach afterward. So
+  `:activation_added` went to nobody, and a listener later saw `:activation_fired` for a
+  rule it never saw added.
 
   Batching is the other gain. Any number of inserts and retractions now cost one settle.
 
@@ -34,9 +35,9 @@ All notable changes to `rete` are recorded here. The format follows
 
 * **One deliberate divergence from Clara.** Clara's
   `test_negation/test-simple-negation` queries a session that was never inserted into and
-  never fired, and expects one row, because Clara plants the root token when the session is
-  built. This engine answers `[]` there. Every other session in that test is fired before it
-  is queried, and those cases agree exactly. See `docs/design/engine.md` §12.
+  never fired, and expects one row. Clara plants the root token when the session is built.
+  This engine answers `[]` there. Every other session in that test is fired before it is
+  queried, and those cases agree exactly. See `docs/design/engine.md` §12.
 
 ### Migration
 

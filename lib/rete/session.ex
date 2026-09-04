@@ -9,7 +9,10 @@ defmodule Rete.Session do
   Facts you insert stay until you retract them. Facts a *rule* concludes are logical: the
   engine holds them only while the match behind them holds. That is why a rule's right
   hand side only inserts. It is also why retracting a fact removes anything concluded from
-  it too, transitively. Nothing fires until `fire_rules/2`.
+  it too, transitively.
+
+  `fire_rules/2` is the only call that matches anything. `insert/2` and `retract/2` record
+  facts and queue the work. So a session you have not fired holds facts, and no matches.
 
   The examples here run against this ruleset:
 
