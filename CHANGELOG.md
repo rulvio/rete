@@ -42,6 +42,11 @@ All notable changes to `rete` are recorded here. The format follows
   1,000 costs. `mix bench` measures the two side by side, under "1,000 facts, in one insert
   call and in 1,000".
 
+  A node's batch closes when the opposite direction reaches that node, because merging past
+  a retraction would drop it. So a run of inserts merges, a run of retractions merges, and a
+  caller that alternates the two on one node gets one batch per run. Where you put your call
+  boundaries never changes where the session lands.
+
 * **`Rete.Inspect.why_not/2` and `collection/3` now raise on a session with propagation
   queued.** Both read what propagation built. On a session that never fired that is zero of
   everything. It reads as "nothing matched", but the truth is "nothing has been matched

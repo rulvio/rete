@@ -76,9 +76,21 @@ what one call carrying 1,000 facts costs. This is safe to run over the whole que
 that point. The queue then holds nothing but `{direction, node, items}`. Nodes produce
 `{:event, ...}` and `{:retract_facts, ...}` during the drain.
 
-Queuing an insert and then a retract of the same fact drains to a net no-op. A node reads
-what its memory reports after the update, not the order the work arrived in. That is the
-retraction rule in §5.
+**A node's merge window closes when the opposite direction reaches that node.** Merging
+moves an op back to where its target first appeared, and the two directions do not commute.
+`Rete.Memory.remove_elements/4` removes only the occurrences it holds and drops the rest,
+which is the retraction rule in §5. So an op moved back past its own inverse can lose a
+retraction: the fact leaves working memory, the element stays in the node, and no later fire
+reaches it, because the queue is empty and `settled?/1` answers `true`. The window rule
+refuses that move, and asks nothing of how the queue was built. One `insert/3` or
+`retract/3` call queues one direction, so a batch of any size still merges to one op. Only a
+caller that alternates the two directions on one node across calls gets more than one, and
+it gets one per run.
+
+Where the caller put its call boundaries is therefore not part of what a session means. Any
+sequence of inserts and retractions batched before one fire settles where firing after every
+call settles. Queuing an insert and then a retract of the same fact drains to a net no-op.
+`Rete.PropertyTest` pins the general statement over random sequences.
 
 **Propagation drains to completion before the next activation fires.** A rule must see a
 settled network, or it could act on a half-built match.

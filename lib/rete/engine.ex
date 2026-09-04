@@ -85,8 +85,8 @@ defmodule Rete.Engine do
   concluded from it in turn, once `fire_rules/2` drains the queue and the network settles.
 
   This does **not** propagate, for the reason `insert/3` gives. Queuing an insert and then
-  a retract of the same fact drains to a net no-op. A node reads what its memory reports
-  after the update, not the order the work arrived in.
+  a retract of the same fact drains to a net no-op. The queued work for one node keeps the
+  order it arrived in, whatever a caller put between the two calls.
   """
   @spec retract(State.t(), [term()], Rete.Listener.origin()) :: State.t()
   def retract(state, facts, origin \\ :asserted)
@@ -126,18 +126,39 @@ defmodule Rete.Engine do
   # the drain. `coalesce/1` rejects both rather than trusting this argument, whenever the
   # queue holds more than one op. A lone op is returned as it stands, and one op cannot be
   # merged with anything, so nothing can go wrong there either.
+  #
+  # That is the argument about op **shape**. The argument about **direction** is the merge
+  # window in `coalesce/1`, and this is the call that needs it. A queue built by one call
+  # carries one direction. A queue built by several carries both, for the same node.
   defp coalesce_queue(%State{queue: queue} = state) do
     %State{state | queue: queue |> :queue.to_list() |> coalesce() |> :queue.from_list()}
   end
 
-  # Merges the ops of one call that go the same way to the same node, so a node is handed a
-  # batch instead of one element per call. A node's per-call work is not all per item. It
-  # dispatches, groups by join key, and at a negation or a collection reads back what it
-  # already holds. Paying that once per fact is what made an unkeyed negation quadratic.
+  # Merges ops that go the same way to the same node, so a node is handed a batch instead of
+  # one element per call. A node's per-call work is not all per item. It dispatches, groups
+  # by join key, and at a negation or a collection reads back what it already holds. Paying
+  # that once per fact is what made an unkeyed negation quadratic.
   #
   # **This decides an order.** A rule's own matches still arrive in fact order. A rule
   # reached by two routes now sees all of one route's matches before the other's. See
   # `docs/design/engine.md` §5.
+  #
+  # **A node's merge window closes when the opposite direction reaches that node.** Merging
+  # moves an op back to where its target first appeared, and an op must never move back past
+  # its own inverse. The two directions do not commute: `Rete.Memory.remove_elements/4`
+  # removes only what it holds, and drops the rest, while `add_elements/4` keeps a duplicate.
+  # So `right[f], right_retract[f], right[f]` merged into `right[f, f], right_retract[f]`
+  # still settles right, and `right_retract[f], right[f], right_retract[f]` merged the same
+  # way loses the second retraction and strands the element for good. See §5, "the retraction
+  # rule". The window rule refuses both, and asks nothing of how the queue was built.
+  #
+  # A rule that only moves inserts back, and never retractions, would keep the first of those
+  # merges. It was rejected. Whether it is sound depends on what the rest of the engine can
+  # put in the queue, and this function cannot see that. The window rule is safe to read on
+  # its own.
+  #
+  # Nothing is lost where it matters. One `insert/3` or `retract/3` call queues one
+  # direction, so no window closes and a batch of any size still merges to one op.
   #
   # The guard is what makes that safe over a whole queue. `{:retract_facts, node, facts}`
   # is also a 3-tuple, so without it that op would merge as though `:retract_facts` were a
@@ -149,22 +170,35 @@ defmodule Rete.Engine do
   defp coalesce([]), do: []
   defp coalesce([_only] = ops), do: ops
 
+  # `open` holds the key of the batch each target may still merge into. `merged` only grows,
+  # so its size is a generation number, and a closed window cannot be reopened into the batch
+  # it named. `keys` keeps the order the batches were opened in.
   defp coalesce(ops) do
-    {merged, targets} =
-      Enum.reduce(ops, {%{}, []}, fn {direction, child, items}, {merged, targets}
-                                     when direction in @mergeable ->
+    {merged, keys, _open} =
+      Enum.reduce(ops, {%{}, [], %{}}, fn {direction, child, items}, {merged, keys, open}
+                                          when direction in @mergeable ->
         target = {direction, child}
+        open = Map.delete(open, {opposite(direction), child})
 
-        case merged do
-          %{^target => batches} -> {%{merged | target => [items | batches]}, targets}
-          _ -> {Map.put(merged, target, [items]), [target | targets]}
+        case open do
+          %{^target => key} ->
+            {Map.update!(merged, key, &[items | &1]), keys, open}
+
+          _ ->
+            key = {target, map_size(merged)}
+            {Map.put(merged, key, [items]), [key | keys], Map.put(open, target, key)}
         end
       end)
 
-    for {direction, child} = target <- Enum.reverse(targets) do
-      {direction, child, merged |> Map.fetch!(target) |> Enum.reverse() |> Enum.concat()}
+    for {{direction, child}, _generation} = key <- Enum.reverse(keys) do
+      {direction, child, merged |> Map.fetch!(key) |> Enum.reverse() |> Enum.concat()}
     end
   end
+
+  defp opposite(:left), do: :left_retract
+  defp opposite(:left_retract), do: :left
+  defp opposite(:right), do: :right_retract
+  defp opposite(:right_retract), do: :right
 
   @doc """
   Fires until the agenda is empty.

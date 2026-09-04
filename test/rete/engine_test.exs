@@ -758,10 +758,9 @@ defmodule Rete.EngineTest do
       refute Session.settled?(Session.insert(settled, {:cust, 2}))
     end
 
-    # `docs/design/engine.md` §2 claims this. A node reads what its memory reports after
-    # the update, not the order the work arrived in. So the queued insert and the queued
-    # retract cancel when they drain. This compares the memory struct, not the facts: a
-    # leftover element or token would not appear in `facts/1`.
+    # `docs/design/engine.md` §2 claims this. The queued insert and the queued retract keep
+    # the order they arrived in, so they cancel when they drain. This compares the memory
+    # struct, not the facts: a leftover element or token would not appear in `facts/1`.
     test "an insert and a retract queued together drain to a net no-op" do
       cancelled =
         Session.new([Deferred])
@@ -775,21 +774,14 @@ defmodule Rete.EngineTest do
       assert [] == Deferred.flagged(cancelled)
     end
 
-    # The test above does not exercise the merge. An insert and a retract carry different
-    # directions, so `coalesce/1` never puts them in one op, and the order it decides
-    # cannot show. Insert, retract, insert of the *same* fact is the case that does:
-    # `right[f], right_retract[f], right[f]` merges to `right[f, f], right_retract[f]`, so
-    # a node sees two inserts and one retract rather than an alternation.
+    # The test above does not exercise the merge window. It queues one op of each
+    # direction, and a window only matters where a direction repeats around the other one.
+    # These three tests do that, in the two arrangements and in the shape a caller writes.
     #
-    # It settles the same either way, because a node reads what its memory reports after
-    # the update. This pins that, since `coalesce/1` warns that it decides an order and
-    # nothing else holds it to this one.
-    #
-    # **Memory-struct equality is deliberately not asserted here.** Merging leaves one
-    # extra tombstone in the element bucket inside the settle, bounded by compaction and
-    # invisible through the public API. The branch's other invariant tests use that
-    # equality as a leak canary, and this is the one case where it is sensitive to where
-    # the caller put its call boundaries rather than to what the session holds.
+    # Each compares against the same calls with a fire after every one of them. That is the
+    # reference: batching call boundaries must not change where the session lands. The
+    # memory struct is the lens, because a stranded element or a phantom conclusion is
+    # exactly the failure that `facts/1` alone can miss.
     test "insert, retract and insert of one fact across calls settles as one insert does" do
       churned =
         Session.new([Deferred])
@@ -804,7 +796,7 @@ defmodule Rete.EngineTest do
         |> Session.insert([{:cust, 1}, {:order, 1, 250}])
         |> Session.fire_rules()
 
-      assert Enum.sort(Session.facts(straight)) == Enum.sort(Session.facts(churned))
+      assert straight.state.memory == churned.state.memory
       assert [{1, 250}] == Deferred.flagged(churned)
 
       # And the fact really is held once, not twice: one retraction empties it.
@@ -815,6 +807,89 @@ defmodule Rete.EngineTest do
 
       assert ([Deferred] |> Session.new() |> Session.fire_rules()).state.memory ==
                emptied.state.memory
+    end
+
+    # The mirror of the test above, and the arrangement that a merge over the whole queue
+    # gets wrong. `right_retract[f], right[f], right_retract[f]` merged on direction alone
+    # becomes `right_retract[f, f], right[f]`. The node then holds one element and removes
+    # one, because `Rete.Memory.remove_elements/4` drops a retraction of what it does not
+    # hold — and the insert that follows puts the element back for good. The fact is gone
+    # from working memory, the element is not, and no later fire reaches it, because the
+    # queue is empty and `settled?/1` answers `true`.
+    #
+    # The merge window is what stops it: a node's batch closes as soon as the opposite
+    # direction reaches that node.
+    test "retract, insert and retract of one fact across calls empties the session" do
+      settled =
+        Session.new([Deferred])
+        |> Session.insert([{:cust, 1}, {:order, 1, 250}])
+        |> Session.fire_rules()
+
+      batched =
+        settled
+        |> Session.retract({:order, 1, 250})
+        |> Session.insert({:order, 1, 250})
+        |> Session.retract({:order, 1, 250})
+        |> Session.fire_rules()
+
+      stepwise =
+        settled
+        |> Session.retract({:order, 1, 250})
+        |> Session.fire_rules()
+        |> Session.insert({:order, 1, 250})
+        |> Session.fire_rules()
+        |> Session.retract({:order, 1, 250})
+        |> Session.fire_rules()
+
+      assert [{:cust, 1}] == Session.facts(batched)
+      assert [] == Deferred.flagged(batched)
+      assert stepwise.state.memory == batched.state.memory
+
+      # Down to the element the join holds, which is where the stranding would show.
+      assert ([Deferred]
+              |> Session.new()
+              |> Session.insert({:cust, 1})
+              |> Session.fire_rules()).state.memory ==
+               batched.state.memory
+    end
+
+    # The realistic shape: a value that changes twice, written as retract-then-insert, all
+    # batched before one fire. Two of those in a row put a repeated direction on each side
+    # of the other one, so this is the arrangement above wearing ordinary clothes.
+    #
+    # `{:flagged, 1, 200}` is what a bad merge leaves behind. Its supporting order is not in
+    # working memory, and nothing ever takes it back.
+    test "a batched update loop concludes only from the value the session ends on" do
+      base = Session.new([Deferred]) |> Session.insert({:cust, 1}) |> Session.fire_rules()
+
+      update = fn session ->
+        session
+        |> Session.retract({:order, 1, 100})
+        |> Session.insert({:order, 1, 200})
+        |> Session.retract({:order, 1, 200})
+        |> Session.insert({:order, 1, 300})
+      end
+
+      first = base |> Session.insert({:order, 1, 100}) |> Session.fire_rules()
+
+      batched = first |> update.() |> Session.fire_rules()
+
+      stepwise =
+        first
+        |> Session.retract({:order, 1, 100})
+        |> Session.fire_rules()
+        |> Session.insert({:order, 1, 200})
+        |> Session.fire_rules()
+        |> Session.retract({:order, 1, 200})
+        |> Session.fire_rules()
+        |> Session.insert({:order, 1, 300})
+        |> Session.fire_rules()
+
+      assert [{:cust, 1}, {:flagged, 1, 300}, {:order, 1, 300}] ==
+               batched |> Session.facts() |> Enum.sort()
+
+      assert [{1, 300}] == Deferred.flagged(batched)
+      assert stepwise.state.memory == batched.state.memory
     end
 
     # Feeds a fresh session, then fires it with a listener attached. Returns the settled
@@ -836,12 +911,10 @@ defmodule Rete.EngineTest do
     # A fire coalesces the queue before it drains. So facts fed one call at a time reach
     # a node as one batch, exactly as if they arrived in a single call.
     #
-    # The memory assertion alone does not test coalescing. Both feeds settle to the same
-    # memory whether or not the queue is merged, because a node reads what its memory
-    # reports rather than the order the work arrived in — that is the test above, and it
-    # stays green with `coalesce_queue/1` deleted. What coalescing changes is how many
-    # times a node is called. Only the `:propagated` events show it: 25 calls of one
-    # element each, instead of one call of 25.
+    # The memory assertion alone does not test coalescing. These are 25 inserts of one
+    # direction, so merging them changes how many calls a node gets and nothing else — the
+    # feed settles the same with `coalesce_queue/1` deleted. Only the `:propagated` events
+    # show the difference: 25 calls of one element each, instead of one call of 25.
     test "many insert calls settle and propagate the same as one batched call" do
       # Every amount is over the rule's threshold of 10, so all 25 match.
       orders = for i <- 1..25, do: {:order, 1, 100 + i}
@@ -864,6 +937,51 @@ defmodule Rete.EngineTest do
       # 25, not 25 calls of one. Most of the other events are the 25 conclusions, which
       # the fire loop propagates one activation at a time whichever way the facts arrived.
       assert 1 == Enum.count(drip_ops, &match?({:right, _node, 25}, &1))
+    end
+
+    # A query and no rule, so a fire propagates the churn and nothing else. Every
+    # `:propagated` event below is therefore one of these calls, with no conclusions in
+    # between to read past.
+    defmodule QueryOnly do
+      use Rete.Ruleset
+
+      defquery orders({:order, id, amt}), do: {id, amt}
+    end
+
+    # The merge window, stated where it is the only thing visible. A retraction splits the
+    # inserts around it into two batches, and the inserts on each side still merge. Every
+    # arrangement here settles the same, so the events are the only evidence that the
+    # window exists at all.
+    #
+    # Read the counts: `2, 1, 2` is the window holding. `4, 1` is a merge on direction
+    # alone, which puts every insert before the retraction whatever the caller wrote.
+    test "a retraction splits the inserts around it, and each side still merges" do
+      churned =
+        [QueryOnly]
+        |> Session.new()
+        |> Session.fire_rules()
+        |> Session.insert({:order, 1, 100})
+        |> Session.insert({:order, 1, 200})
+        |> Session.retract({:order, 1, 100})
+        |> Session.insert({:order, 1, 300})
+        |> Session.insert({:order, 1, 400})
+        |> Session.with_listener(Collect, [])
+        |> Session.fire_rules()
+
+      assert [
+               {:right, 2},
+               {:right_retract, 1},
+               {:right, 2},
+               {:left, 2},
+               {:left_retract, 1},
+               {:left, 2}
+             ] ==
+               for(
+                 {:propagated, op, _node, count} <- Collect.by_tag(churned, :propagated),
+                 do: {op, count}
+               )
+
+      assert [{1, 200}, {1, 300}, {1, 400}] == churned |> QueryOnly.orders() |> Enum.sort()
     end
   end
 
