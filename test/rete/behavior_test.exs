@@ -340,28 +340,37 @@ defmodule Rete.BehaviorTest do
       end
     end
 
-    # clara test_negation/test-simple-negation queries a session that was never
-    # fired and expects an answer. Propagation happens on insert. Only the right
-    # hand sides wait for `fire_rules/2`. So a query is a window onto the
-    # network's current state, not onto the last settled one.
-    test "a query answers before any rule has fired" do
-      session = [QueryRules] |> Session.new()
-      assert [:none] == QueryRules.no_cold(session)
+    # clara test_negation/test-simple-negation. That test fires each session that
+    # receives an insert before it queries it. Those cases agree here exactly.
+    #
+    # **One deliberate divergence.** Clara also queries `empty-session`. Nobody
+    # inserted into it, and nobody fired it. Clara expects one row, because Clara
+    # propagates the root token when it builds the session. This engine answers `[]`
+    # there. Nothing propagates until `fire_rules/2`, the root token included. See
+    # `docs/design/engine.md` §12.
+    test "a query answers only once the session has fired" do
+      fresh = Session.new([QueryRules])
+      assert [] == QueryRules.no_cold(fresh)
 
-      session = Session.insert(session, {:cold, 1})
-      assert [] == QueryRules.no_cold(session)
+      fired = Session.fire_rules(fresh)
+      assert [:none] == QueryRules.no_cold(fired)
 
-      session = Session.retract(session, {:cold, 1})
-      assert [:none] == QueryRules.no_cold(session)
+      blocked = fired |> Session.insert({:cold, 1}) |> Session.fire_rules()
+      assert [] == QueryRules.no_cold(blocked)
+
+      released = blocked |> Session.retract({:cold, 1}) |> Session.fire_rules()
+      assert [:none] == QueryRules.no_cold(released)
     end
 
-    # The corollary: a query run before firing does *not* see what the pending
-    # activations would conclude. This is the documented "what was true before
-    # they fired" reading, and it is what makes batching facts meaningful.
-    test "a query before firing does not see conclusions still on the agenda" do
+    # A query before firing sees nothing at all, not even the facts just inserted.
+    # `insert/2` records the fact and queues the work, and matching is what
+    # `fire_rules/2` does. `Session.facts/1` is the call that sees an insert the
+    # network has not seen yet.
+    test "a query sees nothing until the session is fired" do
       session = [QueryRules] |> Session.new() |> Session.insert([{:temp, 1}, {:seed, 9}])
 
-      assert [1] == QueryRules.temps(session)
+      assert [] == QueryRules.temps(session)
+      assert [{:seed, 9}, {:temp, 1}] == session |> Session.facts() |> Enum.sort()
 
       assert [1, 9] ==
                session |> Session.fire_rules() |> QueryRules.temps() |> Enum.sort()
@@ -1233,7 +1242,7 @@ defmodule Rete.BehaviorTest do
       session = run(Deep, [{:n, 0}])
 
       assert 201 == length(Session.facts(session))
-      assert [] == Session.pending(session)
+      assert 0 == Rete.Agenda.size(session.state.agenda)
 
       session = session |> Session.retract({:n, 0}) |> Session.fire_rules()
       assert Session.new([Deep]).state.memory == session.state.memory
@@ -1317,7 +1326,12 @@ defmodule Rete.BehaviorTest do
 
       for mod <- @orders do
         emptied = mod |> run(facts) |> drain(facts)
-        assert Session.new([mod]).state.memory == emptied.state.memory, inspect(mod)
+
+        # The baseline is a fresh session after a *fire*. Nothing propagates before
+        # a fire, so an unfired session holds no root token. A comparison against
+        # one would not pin "exactly one root token".
+        settled = [mod] |> Session.new() |> Session.fire_rules()
+        assert settled.state.memory == emptied.state.memory, inspect(mod)
       end
     end
 
@@ -1810,21 +1824,29 @@ defmodule Rete.BehaviorTest do
       end
     end
 
-    # The invariant that catches leaks nothing else can see: a drained session
-    # must equal a *fresh* one, which pins both "everything went" and "exactly
-    # one root token".
+    # The invariant that catches leaks nothing else can see: a drained session must equal
+    # a fresh one, down to the map entries `facts/1` cannot show.
+    #
+    # The baseline is fired, matching "the doubly blocked chain drains at every salience
+    # arrangement" above. `Everything` keeps no root token in any node's memory, so a
+    # fresh session and a fired one are identical here today. A rule opening with a
+    # negation would keep one, and an unfired baseline would then be wrong.
     test "retracting everything returns the memory a fresh session starts with" do
       emptied = everything() |> drain(@facts)
 
       assert [] == Session.facts(emptied)
-      assert [] == Session.pending(emptied)
-      assert Session.new([Everything]).state.memory == emptied.state.memory
+      assert 0 == Rete.Agenda.size(emptied.state.agenda)
+      assert settled_baseline() == emptied.state.memory
     end
+
+    # The memory a fired empty session holds, which is what a drained one must return to.
+    defp settled_baseline,
+      do: ([Everything] |> Session.new() |> Session.fire_rules()).state.memory
 
     # Churn, because a leak that costs one map entry per entity is invisible in
     # a single pass and unbounded over a long-lived session.
     test "repeated churn does not grow any memory" do
-      fresh = Session.new([Everything]).state.memory
+      fresh = settled_baseline()
 
       Enum.reduce(1..3, Session.new([Everything]), fn round, session ->
         settled =

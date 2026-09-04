@@ -547,8 +547,50 @@ Bench.scenario(
     end)
   end,
   note:
-    "the same members through n calls instead of one, so nothing can be batched — " <>
-      "this is the shape the scenario above hides"
+    "the same members through n calls, firing after each — the fire per member is what " <>
+      "cannot be batched, not the call per member. The A/B below separates the two"
+)
+
+# An A/B rather than a shape, for the reason the concurrency and drip scenarios give: what
+# matters is the ratio between the rows, not how either scales.
+#
+# This is the scenario `docs/dsl.md` and §13 send a reader to. It separates two things the
+# docs used to treat as one. A collection re-emits its group once per **change**, and a
+# change used to mean a call, because every call drained. From 0.5.0 a fire coalesces the
+# queue, so a change means a fire.
+#
+# So the first row is the expensive shape, and the other two must sit level with each other.
+# The caller who gets one event per call — the case the docs used to call unfixable —
+# reaches the batched cost by deferring the fire, and changes nothing about how the events
+# arrive. If row two drifts toward row one, `coalesce_queue/1` has stopped folding the
+# members and the rule is firing once per call again. `Rete.EngineTest` pins the same
+# property by counting activations rather than by timing them.
+Bench.compare(
+  "1,000 collection members, one per call, fired every call and fired once",
+  [{"fire each call", :fire_each}, {"fire at the end", :fire_last}, {"one call", :batched}],
+  fn kind ->
+    orders = for i <- 1..1_000, do: {:order, 1, i}
+
+    session =
+      collection
+      |> Bench.session()
+      |> Rete.Session.insert({:cust, 1})
+      |> Rete.Session.fire_rules()
+
+    case kind do
+      :fire_each ->
+        Enum.reduce(orders, session, fn o, s ->
+          s |> Rete.Session.insert(o) |> Rete.Session.fire_rules()
+        end)
+
+      :fire_last ->
+        orders |> Enum.reduce(session, &Rete.Session.insert(&2, &1)) |> Rete.Session.fire_rules()
+
+      :batched ->
+        session |> Rete.Session.insert(orders) |> Rete.Session.fire_rules()
+    end
+  end,
+  note: "the group changes once per fire, not once per call — the last two must be level"
 )
 
 # Compiled up front: the scenario times `Rete.Compiler.build/1`, not the macro
@@ -596,6 +638,35 @@ Bench.compare(
     |> Rete.Session.fire_rules(concurrency: concurrency)
   end,
   note: "64 activations of a body that sleeps 5 ms — the case :concurrency exists for"
+)
+
+# An A/B rather than a shape, for the same reason as the one above: batching does not
+# change how insert scales, only how many times a node pays its per-call cost.
+#
+# This is where the 0.5.0 changelog sends a reader who wants the number. What matters is
+# the relation, not the milliseconds: a fire coalesces the queue before it drains, so 1,000
+# single-fact calls hand a node the same one batch that a single call carrying 1,000 facts
+# does. The two rows sit on top of each other, and which one wins by a few percent is the
+# machine talking. If the drip row grows to a multiple of the other, `coalesce_queue/1` has
+# stopped running and every node is back to one dispatch per call. `Rete.EngineTest` pins
+# the same property exactly, off the `:propagated` events. See `docs/design/engine.md` §2.
+Bench.compare(
+  "1,000 facts, in one insert call and in 1,000",
+  [{"one call", :batched}, {"1,000 calls", :drip}],
+  fn kind ->
+    orders = for i <- 1..1_000, do: {:order, i, i}
+    customers = for i <- 1..1_000, do: {:cust, i}
+    session = many_keys |> Bench.session() |> Rete.Session.insert(customers)
+
+    fed =
+      case kind do
+        :batched -> Rete.Session.insert(session, orders)
+        :drip -> Enum.reduce(orders, session, &Rete.Session.insert(&2, &1))
+      end
+
+    Rete.Session.fire_rules(fed)
+  end,
+  note: "the queue is coalesced before it drains, so both must cost one settle"
 )
 
 IO.puts("")

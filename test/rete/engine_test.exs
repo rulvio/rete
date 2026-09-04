@@ -117,11 +117,20 @@ defmodule Rete.EngineTest do
       end
     end
 
+    # Read the firing order rather than the agenda. Nothing propagates until
+    # `fire_rules/2`, so there is no pre-fire agenda to inspect. Salience promises
+    # an order of firing anyway.
     test "higher salience fires first" do
-      session = Session.new([Salience]) |> Session.insert({:go, 1})
+      order =
+        [Salience]
+        |> Session.new()
+        |> Session.with_listener(Collect, [])
+        |> Session.insert({:go, 1})
+        |> Session.fire_rules()
+        |> Collect.by_tag(:activation_fired)
+        |> Enum.map(fn {:activation_fired, source, _token, _facts} -> elem(source.rule, 1) end)
 
-      order = session |> Session.pending() |> Enum.map(& &1.salience)
-      assert [100, 50, 1] == order
+      assert [:high, :mid, :low] == order
     end
   end
 
@@ -176,32 +185,58 @@ defmodule Rete.EngineTest do
       # Both branches match every `{:n, _}` here, and they are different alpha
       # expressions, so one fact produces two elements that re-converge on one
       # terminal. This is the only shape where a rule's matches reach the agenda
-      # by more than one route within a single insert call.
+      # by more than one route.
       defrule hit({:or, [{:n, x} when x > 0, {:n, x} when x < 100]}) do
         {:hit, x}
       end
     end
 
-    # `Rete.Engine.coalesce/1` merges the ops of one call that go the same way to
-    # the same node, so a node sees a batch rather than one element per call.
-    # That fixes the order here: all of one branch, then all of the other. Before
-    # it was fact-major — both branches of the first fact, then both of the
-    # second — which is just as defensible, and is the order this used to have.
+    # `Rete.Engine.coalesce/1` merges the ops that go the same way to the same node,
+    # so a node sees a batch rather than one element per call. That fixes the order
+    # here: all of one branch, then all of the other. Before it was fact-major —
+    # both branches of the first fact, then both of the second — which is just as
+    # defensible, and is the order this used to have.
     #
     # This is pinned rather than left to the suite because the suite stayed green
     # through the change: nothing else looks at the sequence, only at what the
     # session settles to, and both orders settle to the same facts.
-    test "one fact reaching a rule twice fires branch by branch, not fact by fact" do
-      fired =
-        [TwoParents]
-        |> Session.new()
-        |> Session.with_listener(Collect, [])
-        |> Session.insert([{:n, 5}, {:n, 6}])
-        |> Session.fire_rules()
-        |> Collect.by_tag(:activation_fired)
-        |> Enum.map(fn {:activation_fired, _source, token, _facts} -> token.bindings.x end)
+    defp branch_order(feed) do
+      [TwoParents]
+      |> Session.new()
+      |> Session.with_listener(Collect, [])
+      |> then(feed)
+      |> Session.fire_rules()
+      |> Collect.by_tag(:activation_fired)
+      |> Enum.map(fn {:activation_fired, _source, token, _facts} -> token.bindings.x end)
+    end
 
-      assert [5, 6, 5, 6] == fired
+    test "one fact reaching a rule twice fires branch by branch, not fact by fact" do
+      assert [5, 6, 5, 6] == branch_order(&Session.insert(&1, [{:n, 5}, {:n, 6}]))
+    end
+
+    # And the call boundary does not decide it. A fire coalesces the whole queue, so
+    # two facts fed one call each reach the node as the same batch a single call
+    # builds. Before 0.5.0 each call drained on its own, and this fired `5, 5, 6, 6`
+    # while the test above fired `5, 6, 5, 6`. One feed, one order, now.
+    test "the same two facts fed one call at a time fire in the same order" do
+      assert [5, 6, 5, 6] ==
+               branch_order(fn session ->
+                 session |> Session.insert({:n, 5}) |> Session.insert({:n, 6})
+               end)
+    end
+
+    # A retraction between them closes the node's merge window, so the inserts on
+    # either side are separate batches and the order goes back to fact-major across
+    # them. Stated here because it is the one thing that reopens the old sequence.
+    test "a retraction between two inserts separates their batches" do
+      assert [5, 5, 6, 6] ==
+               branch_order(fn session ->
+                 session
+                 |> Session.insert({:n, 5})
+                 |> Session.insert({:n, 7})
+                 |> Session.retract({:n, 7})
+                 |> Session.insert({:n, 6})
+               end)
     end
 
     # The promise that did not change, and the one rules actually rest on.
@@ -697,6 +732,318 @@ defmodule Rete.EngineTest do
     end
   end
 
+  # --- deferred propagation ----------------------------------------------------------------
+
+  describe "insert and retract queue work rather than doing it" do
+    defmodule Deferred do
+      use Rete.Ruleset
+
+      defrule flag({:cust, id}, {:order, id, amt} when amt > 10), do: {:flagged, id, amt}
+      defquery flagged({:flagged, id, amt}), do: {id, amt}
+    end
+
+    test "an unfired session holds facts and no matches" do
+      session = Session.new([Deferred]) |> Session.insert([{:cust, 1}, {:order, 1, 250}])
+
+      assert [{:cust, 1}, {:order, 1, 250}] == session |> Session.facts() |> Enum.sort()
+      assert %{} == session.state.memory.tokens
+      assert %{} == session.state.memory.elements
+      assert 0 == Rete.Agenda.size(session.state.agenda)
+      assert [] == Deferred.flagged(session)
+      refute Session.settled?(session)
+
+      assert [{1, 250}] == session |> Session.fire_rules() |> Deferred.flagged()
+    end
+
+    # The check a caller makes for itself, now that `pending/1` is gone. A query cannot
+    # raise on an unfired session, because `[]` is a true answer about one. So this is
+    # the only way to tell "no match" apart from "not matched yet".
+    test "settled?/1 separates an unfired session from a settled one" do
+      # Unsettled before any insert: `new/1` queues the root token for the first fire.
+      fresh = Session.new([Deferred])
+      refute Session.settled?(fresh)
+      assert Session.settled?(Session.fire_rules(fresh))
+
+      queued = Session.insert(fresh, {:cust, 1})
+      refute Session.settled?(queued)
+      assert Session.settled?(Session.fire_rules(queued))
+
+      # A retraction queues work of its own, so firing once is not enough forever.
+      retracted = queued |> Session.fire_rules() |> Session.retract({:cust, 1})
+      refute Session.settled?(retracted)
+      assert Session.settled?(Session.fire_rules(retracted))
+    end
+
+    # A duplicate bumps a count and queues nothing, so it cannot unsettle a session that
+    # was already settled. The `:fact_duplicated` event says the same thing to a listener.
+    test "settled?/1 stays true when an insert queues nothing" do
+      settled =
+        Session.new([Deferred]) |> Session.insert({:cust, 1}) |> Session.fire_rules()
+
+      assert Session.settled?(Session.insert(settled, {:cust, 1}))
+      refute Session.settled?(Session.insert(settled, {:cust, 2}))
+    end
+
+    # `docs/design/engine.md` §2 claims this. The queued insert and the queued retract keep
+    # the order they arrived in, so they cancel when they drain. This compares the memory,
+    # not the facts: a leftover element or token would not appear in `facts/1`.
+    #
+    # Through `Rete.Test.Canon`, as everywhere in this block that compares two sessions fed
+    # by different call boundaries. Batching decides the order a rule reached by two routes
+    # sees its matches, which §7 states is not a contract, so two such memories are not
+    # `==` even where the engine is right. `Deferred` has one route and would compare
+    # exactly today. Canonicalizing says which differences the claim is about, and keeps a
+    # second condition on this ruleset from failing the test for a documented reason.
+    # Order is all it hides: a stranded element or a support imbalance still shows.
+    #
+    # A comparison against a drained or empty session stays exact. Nothing is left to hold
+    # an order.
+    test "an insert and a retract queued together drain to a net no-op" do
+      cancelled =
+        Session.new([Deferred])
+        |> Session.insert([{:cust, 1}, {:order, 1, 250}])
+        |> Session.retract({:order, 1, 250})
+        |> Session.fire_rules()
+
+      never = Session.new([Deferred]) |> Session.insert({:cust, 1}) |> Session.fire_rules()
+
+      assert Canon.dump(never) == Canon.dump(cancelled)
+      assert [] == Deferred.flagged(cancelled)
+    end
+
+    # The test above does not exercise the merge window. It queues one op of each
+    # direction, and a window only matters where a direction repeats around the other one.
+    # These three tests do that, in the two arrangements and in the shape a caller writes.
+    #
+    # Each compares against the same calls with a fire after every one of them. That is the
+    # reference: batching call boundaries must not change where the session lands. Memory is
+    # the lens, because a stranded element or a phantom conclusion is exactly the failure
+    # that `facts/1` alone can miss.
+    test "insert, retract and insert of one fact across calls settles as one insert does" do
+      churned =
+        Session.new([Deferred])
+        |> Session.insert({:cust, 1})
+        |> Session.insert({:order, 1, 250})
+        |> Session.retract({:order, 1, 250})
+        |> Session.insert({:order, 1, 250})
+        |> Session.fire_rules()
+
+      straight =
+        Session.new([Deferred])
+        |> Session.insert([{:cust, 1}, {:order, 1, 250}])
+        |> Session.fire_rules()
+
+      assert Canon.dump(straight) == Canon.dump(churned)
+      assert [{1, 250}] == Deferred.flagged(churned)
+
+      # And the fact really is held once, not twice: one retraction empties it.
+      emptied =
+        churned |> Session.retract([{:cust, 1}, {:order, 1, 250}]) |> Session.fire_rules()
+
+      assert [] == Session.facts(emptied)
+
+      assert ([Deferred] |> Session.new() |> Session.fire_rules()).state.memory ==
+               emptied.state.memory
+    end
+
+    # The mirror of the test above, and the arrangement that a merge over the whole queue
+    # gets wrong. `right_retract[f], right[f], right_retract[f]` merged on direction alone
+    # becomes `right_retract[f, f], right[f]`. The node then holds one element and removes
+    # one, because `Rete.Memory.remove_elements/4` drops a retraction of what it does not
+    # hold — and the insert that follows puts the element back for good. The fact is gone
+    # from working memory, the element is not, and no later fire reaches it, because the
+    # queue is empty and `settled?/1` answers `true`.
+    #
+    # The merge window is what stops it: a node's batch closes as soon as the opposite
+    # direction reaches that node.
+    test "retract, insert and retract of one fact across calls empties the session" do
+      settled =
+        Session.new([Deferred])
+        |> Session.insert([{:cust, 1}, {:order, 1, 250}])
+        |> Session.fire_rules()
+
+      batched =
+        settled
+        |> Session.retract({:order, 1, 250})
+        |> Session.insert({:order, 1, 250})
+        |> Session.retract({:order, 1, 250})
+        |> Session.fire_rules()
+
+      stepwise =
+        settled
+        |> Session.retract({:order, 1, 250})
+        |> Session.fire_rules()
+        |> Session.insert({:order, 1, 250})
+        |> Session.fire_rules()
+        |> Session.retract({:order, 1, 250})
+        |> Session.fire_rules()
+
+      assert [{:cust, 1}] == Session.facts(batched)
+      assert [] == Deferred.flagged(batched)
+      assert Canon.dump(stepwise) == Canon.dump(batched)
+
+      # Down to the element the join holds, which is where the stranding would show.
+      assert Canon.dump(
+               [Deferred]
+               |> Session.new()
+               |> Session.insert({:cust, 1})
+               |> Session.fire_rules()
+             ) == Canon.dump(batched)
+    end
+
+    # The realistic shape: a value that changes twice, written as retract-then-insert, all
+    # batched before one fire. Two of those in a row put a repeated direction on each side
+    # of the other one, so this is the arrangement above wearing ordinary clothes.
+    #
+    # `{:flagged, 1, 200}` is what a bad merge leaves behind. Its supporting order is not in
+    # working memory, and nothing ever takes it back.
+    test "a batched update loop concludes only from the value the session ends on" do
+      base = Session.new([Deferred]) |> Session.insert({:cust, 1}) |> Session.fire_rules()
+
+      update = fn session ->
+        session
+        |> Session.retract({:order, 1, 100})
+        |> Session.insert({:order, 1, 200})
+        |> Session.retract({:order, 1, 200})
+        |> Session.insert({:order, 1, 300})
+      end
+
+      first = base |> Session.insert({:order, 1, 100}) |> Session.fire_rules()
+
+      batched = first |> update.() |> Session.fire_rules()
+
+      stepwise =
+        first
+        |> Session.retract({:order, 1, 100})
+        |> Session.fire_rules()
+        |> Session.insert({:order, 1, 200})
+        |> Session.fire_rules()
+        |> Session.retract({:order, 1, 200})
+        |> Session.fire_rules()
+        |> Session.insert({:order, 1, 300})
+        |> Session.fire_rules()
+
+      assert [{:cust, 1}, {:flagged, 1, 300}, {:order, 1, 300}] ==
+               batched |> Session.facts() |> Enum.sort()
+
+      assert [{1, 300}] == Deferred.flagged(batched)
+      assert Canon.dump(stepwise) == Canon.dump(batched)
+    end
+
+    # Feeds a fresh session, then fires it with a listener attached. Returns the settled
+    # session and the batches each node was handed, which is the only place coalescing is
+    # visible. A timing assertion would say the same thing unreliably.
+    defp fed(feed) do
+      session =
+        [Deferred] |> Session.new() |> then(feed) |> Session.with_listener(Collect, [])
+
+      settled = Session.fire_rules(session)
+
+      batches =
+        for {:propagated, op, node, count} <- Collect.by_tag(settled, :propagated),
+            do: {op, node, count}
+
+      {settled, batches}
+    end
+
+    # A fire coalesces the queue before it drains. So facts fed one call at a time reach
+    # a node as one batch, exactly as if they arrived in a single call.
+    #
+    # The memory assertion alone does not test coalescing. These are 25 inserts of one
+    # direction, so merging them changes how many calls a node gets and nothing else — the
+    # feed settles the same with `coalesce_queue/1` deleted. Only the `:propagated` events
+    # show the difference: 25 calls of one element each, instead of one call of 25.
+    test "many insert calls settle and propagate the same as one batched call" do
+      # Every amount is over the rule's threshold of 10, so all 25 match.
+      orders = for i <- 1..25, do: {:order, 1, 100 + i}
+
+      {batched, batched_ops} = fed(&Session.insert(&1, [{:cust, 1} | orders]))
+
+      {one_at_a_time, drip_ops} =
+        fed(fn session ->
+          Enum.reduce(orders, Session.insert(session, {:cust, 1}), &Session.insert(&2, &1))
+        end)
+
+      assert Canon.dump(batched) == Canon.dump(one_at_a_time)
+      assert Deferred.flagged(batched) == Deferred.flagged(one_at_a_time)
+      assert 25 == length(Deferred.flagged(batched))
+
+      assert batched_ops == drip_ops
+
+      # The same claim stated on its own, so a failure names the property rather than a
+      # difference between two lists: the orders enter the alpha network as one call of
+      # 25, not 25 calls of one. Most of the other events are the 25 conclusions, which
+      # the fire loop propagates one activation at a time whichever way the facts arrived.
+      assert 1 == Enum.count(drip_ops, &match?({:right, _node, 25}, &1))
+    end
+
+    # A query and no rule, so a fire propagates the churn and nothing else. Every
+    # `:propagated` event below is therefore one of these calls, with no conclusions in
+    # between to read past.
+    defmodule QueryOnly do
+      use Rete.Ruleset
+
+      defquery orders({:order, id, amt}), do: {id, amt}
+    end
+
+    # The merge window, stated where it is the only thing visible. A retraction splits the
+    # inserts around it into two batches, and the inserts on each side still merge. Every
+    # arrangement here settles the same, so the events are the only evidence that the
+    # window exists at all.
+    #
+    # Read the counts: `2, 1, 2` is the window holding. `4, 1` is a merge on direction
+    # alone, which puts every insert before the retraction whatever the caller wrote.
+    test "a retraction splits the inserts around it, and each side still merges" do
+      churned =
+        [QueryOnly]
+        |> Session.new()
+        |> Session.fire_rules()
+        |> Session.insert({:order, 1, 100})
+        |> Session.insert({:order, 1, 200})
+        |> Session.retract({:order, 1, 100})
+        |> Session.insert({:order, 1, 300})
+        |> Session.insert({:order, 1, 400})
+        |> Session.with_listener(Collect, [])
+        |> Session.fire_rules()
+
+      assert [
+               {:right, 2},
+               {:right_retract, 1},
+               {:right, 2},
+               {:left, 2},
+               {:left_retract, 1},
+               {:left, 2}
+             ] ==
+               for(
+                 {:propagated, op, _node, count} <- Collect.by_tag(churned, :propagated),
+                 do: {op, count}
+               )
+
+      assert [{1, 200}, {1, 300}, {1, 400}] == churned |> QueryOnly.orders() |> Enum.sort()
+    end
+
+    # Nothing a caller can write reaches this. `{:event, ...}` and `{:retract_facts, ...}`
+    # are made during a drain, and a drain ends with an empty queue, so the merge never
+    # meets one. The queue is put in that state by hand here, because the message is the
+    # whole point of the clause: an op that merged as though its first element were a
+    # direction would be reordered and reported nowhere.
+    test "coalescing refuses drain-time work, and names it" do
+      session = Session.new([Deferred]) |> Session.insert({:cust, 1})
+
+      # Two ops, because one op is returned as it stands and never reaches the merge.
+      queue =
+        :queue.from_list([{:event, {:fire_started, []}} | :queue.to_list(session.state.queue)])
+
+      error =
+        assert_raise RuntimeError, fn ->
+          Rete.Engine.fire_rules(%{session.state | queue: queue})
+        end
+
+      assert error.message =~ "{:event, {:fire_started, []}} cannot be merged"
+      assert error.message =~ "Rete.Engine.State.op/0"
+    end
+  end
+
   # --- the beta root -----------------------------------------------------------------------
 
   # Nothing binds before the first condition, so a rule that opens with a
@@ -843,9 +1190,104 @@ defmodule Rete.EngineTest do
       assert %{} == memory.insertions, "truth maintenance records left behind"
 
       # The root token is the one thing that stays, so "drained" is exactly "the
-      # memory a session starts with". That also pins how many root tokens there
-      # are, which a "they are all empty tokens" check cannot see.
-      assert Session.new([LeadNeg]).state.memory == memory
+      # memory a settled empty session holds". That also pins how many root tokens
+      # there are, which a "they are all empty tokens" check cannot see.
+      #
+      # Fired, not fresh: `new/1` queues the root token, and the first fire plants
+      # it. So an unfired session has no tokens to compare against.
+      settled = [LeadNeg] |> Session.new() |> Session.fire_rules()
+      assert settled.state.memory == memory
+    end
+
+    # A production with no conditions at all is the degenerate case of everything
+    # above. Its terminal hangs straight off the beta root, so the seeded token is
+    # its whole match. That gives it exactly one activation, on the first fire, and
+    # nothing a user can retract supports it.
+    defmodule NoLhs do
+      use Rete.Ruleset
+
+      defrule startup do
+        {:started, :once}
+      end
+
+      defrule salient(%{salience: 100}) do
+        {:phase, :init}
+      end
+
+      defrule downstream({:phase, :init}) do
+        {:phase, :ready}
+      end
+
+      defquery constant do
+        :constant
+      end
+    end
+
+    # `new/1` queues the root token, and the first fire propagates it. So a session
+    # nobody has fired holds no facts and no activations. The rule still fires when
+    # nobody inserts anything.
+    test "a rule with no conditions queues nothing until the first fire" do
+      fresh = Session.new([NoLhs])
+
+      assert [] == Session.facts(fresh)
+      assert 0 == Rete.Agenda.size(fresh.state.agenda)
+
+      assert [{:started, :once}] == fresh |> Session.fire_rules() |> derived(:started)
+    end
+
+    test "a rule with no conditions fires exactly once, whatever is inserted" do
+      session = run([NoLhs], [{:order, 1}, {:order, 2}, {:order, 3}])
+
+      assert [{:started, :once}] == derived(session, :started)
+
+      assert 1 ==
+               session
+               |> Rete.Inspect.fired()
+               |> Enum.count(&(&1.rule == :startup))
+    end
+
+    # Its support is the root token, which no retraction reaches. So the one thing
+    # that empties every other conclusion leaves this one standing.
+    test "a conclusion with no conditions survives retracting every fact" do
+      session = run([NoLhs], [{:order, 1}])
+
+      emptied = session |> Session.retract({:order, 1}) |> Session.fire_rules()
+
+      assert [{:started, :once}] == derived(emptied, :started)
+
+      assert [%{origin: :derived, bindings: %{}, supports: []}] =
+               Rete.Inspect.explain(emptied, {:started, :once})
+    end
+
+    test "a rule with no conditions honors salience and feeds rules below it" do
+      session = [NoLhs] |> Session.new() |> Session.fire_rules()
+
+      assert [{:phase, :init}, {:phase, :ready}] == derived(session, :phase)
+    end
+
+    # A query reads propagated state, so it answers nothing until the first fire.
+    # After that the root token is its whole match, and no fact can add to or take
+    # from that.
+    test "a query with no conditions answers one row in every fired session" do
+      assert [] == NoLhs.constant(Session.new([NoLhs]))
+
+      assert [:constant] == [NoLhs] |> Session.new() |> Session.fire_rules() |> NoLhs.constant()
+
+      loaded = run([NoLhs], [{:order, 1}, {:order, 2}])
+      assert [:constant] == NoLhs.constant(loaded)
+
+      emptied = loaded |> Session.retract([{:order, 1}, {:order, 2}]) |> Session.fire_rules()
+      assert [:constant] == NoLhs.constant(emptied)
+    end
+
+    test "a query with no conditions binds nothing, so any filter is rejected" do
+      session = [NoLhs] |> Session.new() |> Session.fire_rules()
+
+      assert [:constant] == NoLhs.constant(session, [])
+
+      assert_raise ArgumentError, ~r/binds \[\], and was given \[:id\]/, fn ->
+        NoLhs.constant(session, id: 1)
+      end
     end
   end
 
@@ -1321,7 +1763,7 @@ defmodule Rete.EngineTest do
     end
 
     test "the agenda is empty once rules have fired" do
-      assert [] == [Everything] |> run(@facts) |> Session.pending()
+      assert 0 == [Everything] |> run(@facts) |> then(&Rete.Agenda.size(&1.state.agenda))
     end
   end
 
@@ -1725,7 +2167,7 @@ defmodule Rete.EngineTest do
         |> Session.fire_rules(max_cycles: 2)
 
       assert [{:done}, {:finished}, {:go}] == session |> Session.facts() |> Enum.sort()
-      assert [] == Session.pending(session)
+      assert 0 == Rete.Agenda.size(session.state.agenda)
     end
 
     test "a single activation fires under a cap of one" do

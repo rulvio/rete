@@ -642,22 +642,95 @@ defmodule Rete.PropertyTest do
         assert expected(multiset) == counts(session)
       end
     end
+
+    # Where the caller put its `fire_rules/2` calls is not part of what a session means.
+    # One fire at the end must land where a fire after every call lands.
+    #
+    # This is the only property here that batches a **mixed** sequence. `feed/3` above
+    # batches inserts alone, and the walk below fires every step, so neither reaches the
+    # queue that `fire_rules/2` coalesces holding both directions for one node. That queue
+    # is where merging an op back past its own inverse loses a retraction: the fact leaves
+    # working memory, the element stays in the node, and no later fire reaches it.
+    property "batching a mixed sequence before one fire equals firing after each call" do
+      check all(ops <- list_of(op(), max_length: 30), max_runs: 40) do
+        {each, multiset} = apply_ops(ops, :fire_each)
+        {last, ^multiset} = apply_ops(ops, :fire_last)
+
+        assert expected(multiset) == counts(last)
+        assert canon(each) == canon(last)
+        assert canon(build(Enum.shuffle(multiset))) == canon(last)
+      end
+    end
   end
 
   defp op do
     one_of([tuple({constant(:insert), fact()}), tuple({constant(:retract), fact()})])
   end
 
-  defp apply_ops(ops) do
-    Enum.reduce(ops, {fresh(), []}, fn
-      {:insert, f}, {session, multiset} ->
-        {session |> Session.insert(f) |> Session.fire_rules(), [f | multiset]}
+  # `:fire_each` fires after every call, `:fire_last` only at the end. Either way the
+  # returned session is settled, so the two are comparable.
+  defp apply_ops(ops, when_to_fire \\ :fire_each) do
+    {session, multiset} =
+      Enum.reduce(ops, {fresh(), []}, fn
+        {:insert, f}, {session, multiset} ->
+          {session |> Session.insert(f) |> maybe_fire(when_to_fire) |> settled!(), [f | multiset]}
 
-      {:retract, f}, {session, multiset} ->
-        # Retracting a fact the session does not hold is a no-op, so the
-        # reference multiset has to model that too.
-        {session |> Session.retract(f) |> Session.fire_rules(), List.delete(multiset, f)}
-    end)
+        {:retract, f}, {session, multiset} ->
+          # Retracting a fact the session does not hold is a no-op, so the
+          # reference multiset has to model that too.
+          {session |> Session.retract(f) |> maybe_fire(when_to_fire) |> settled!(),
+           List.delete(multiset, f)}
+      end)
+
+    {Session.fire_rules(session), multiset}
+  end
+
+  defp maybe_fire(session, :fire_each), do: Session.fire_rules(session)
+  defp maybe_fire(session, :fire_last), do: session
+
+  # --- settled? answers for the agenda as well as the queue ----------------------------------
+
+  # `Rete.Session.settled?/1` reads the queue alone. Its docstring says why that answers
+  # for the agenda too: `fire_loop/4` returns only when the agenda is empty, and every
+  # other way out of a fire raises, which throws the state away. So a session a caller can
+  # hold never has an empty queue and a waiting activation.
+  #
+  # Nothing in the engine enforces that. This does. If it ever stops holding, `settled?/1`
+  # reports `true` about a session with a rule still to fire, `Rete.Inspect.why_not/2`
+  # answers from that session rather than refusing, and a caller who checked before
+  # querying is told the session is ready when it is not.
+  #
+  # Called on every intermediate session the properties below build, settled or not, so it
+  # costs no generation of its own.
+  defp settled!(%Session{} = session) do
+    if Session.settled?(session) do
+      assert 0 == Rete.Agenda.size(session.state.agenda),
+             "settled?/1 answered true with an activation still on the agenda"
+    end
+
+    session
+  end
+
+  describe "settled? and the agenda" do
+    property "a settled session has an empty agenda, at every point of a mixed sequence" do
+      check all(ops <- list_of(op(), max_length: 30), max_runs: 40) do
+        # Both policies, because `:fire_last` leaves the session unsettled between calls
+        # and `:fire_each` settles it. The invariant is one-directional either way: an
+        # unsettled session may hold anything.
+        apply_ops(ops, :fire_each)
+        apply_ops(ops, :fire_last)
+      end
+    end
+
+    test "a fresh session is unsettled, and firing it settles both" do
+      fresh = Session.new([Everything])
+
+      refute Session.settled?(fresh)
+
+      settled = settled!(Session.fire_rules(fresh))
+      assert Session.settled?(settled)
+      assert 0 == Rete.Agenda.size(settled.state.agenda)
+    end
   end
 
   # --- the fuzz ------------------------------------------------------------------------------------
@@ -669,12 +742,20 @@ defmodule Rete.PropertyTest do
   describe "a random walk of a thousand operations" do
     for seed <- [1, 7, 13, 29] do
       test "seed #{seed}: every step agrees with a rebuild and with the rules" do
-        walk(unquote(seed), 1_000)
+        walk(unquote(seed), 1_000, 1)
+      end
+
+      # The same walk, with a fire every third step instead of every step. The queue that
+      # `fire_rules/2` coalesces then holds a run of inserts and retractions for one node,
+      # which is the case a fire-per-step walk can never build. It checks only where it
+      # fired: between fires the session is behind the multiset on purpose.
+      test "seed #{seed}: three operations to a fire agrees just the same" do
+        walk(unquote(seed), 1_000, 3)
       end
     end
   end
 
-  defp walk(seed, steps) do
+  defp walk(seed, steps, fire_every) do
     :rand.seed(:exsss, {seed, seed + 1, seed + 2})
 
     {session, multiset} =
@@ -695,24 +776,31 @@ defmodule Rete.PropertyTest do
           case op do
             :insert ->
               f = Enum.random(@universe)
-              {session |> Session.insert(f) |> Session.fire_rules(), [f | multiset]}
+              {session |> Session.insert(f) |> settled!(), [f | multiset]}
 
             :retract ->
               f = Enum.random(multiset)
-              {session |> Session.retract(f) |> Session.fire_rules(), List.delete(multiset, f)}
+              {session |> Session.retract(f) |> settled!(), List.delete(multiset, f)}
           end
 
-        context = "seed #{seed}, step #{step}, holding #{inspect(Enum.sort(multiset))}"
+        if rem(step, fire_every) == 0 do
+          session = session |> Session.fire_rules() |> settled!()
+          context = "seed #{seed}, step #{step}, holding #{inspect(Enum.sort(multiset))}"
 
-        assert expected(multiset) == counts(session), context
-        assert canon(build(Enum.shuffle(multiset))) == canon(session), context
+          assert expected(multiset) == counts(session), context
+          assert canon(build(Enum.shuffle(multiset))) == canon(session), context
 
-        {session, multiset}
+          {session, multiset}
+        else
+          {session, multiset}
+        end
       end)
 
-    # And the walk has to be able to end where it started.
+    # And the walk has to be able to end where it started. The last step only fired if
+    # `fire_every` divides `steps`, and a session with a queued op is not comparable to a
+    # settled one. Firing a settled session costs nothing.
     drained =
-      Enum.reduce(multiset, session, fn f, s ->
+      Enum.reduce(multiset, Session.fire_rules(session), fn f, s ->
         s |> Session.retract(f) |> Session.fire_rules()
       end)
 

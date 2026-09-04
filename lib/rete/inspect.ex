@@ -9,10 +9,23 @@ defmodule Rete.Inspect do
       Rete.Inspect.fired(session)
       Rete.Inspect.why_not(session, {MyRuleset, :some_rule})
 
-  Everything here works on **any** session, with no listener and no setup, because it
-  reads working memory instead of a history. A listener adds what memory cannot know:
-  what happened, in what order, including activations that fired and were later
-  retracted. See `Rete.Listener`.
+  Everything here works with no listener and no setup, because it reads working memory
+  instead of a history. A listener adds what memory cannot know: what happened, in what
+  order, including activations that fired and were later retracted. See `Rete.Listener`.
+
+  **Fire before you inspect.** `why_not/2` and `collection/3` read what propagation built,
+  and `Rete.Session.insert/2` only queues propagation. On a session that never fired they
+  would report zero of everything. That reads as "nothing matched", but the truth is
+  "nothing has been matched yet". Both raise instead.
+
+  `explain/2` and `fired/2` read memories that `insert/2` and `retract/2` update at once,
+  so both answer at any point. They answer about the session as it stands, though, not as
+  it will stand. A queued retract takes the fact out of working memory and leaves the
+  conclusions that rest on it, so `explain/2` shows a support that already left, reported
+  as `origin: :unknown`. That is true of the session now, and it stops being true on the
+  next fire. Fire first for a settled provenance graph.
+
+  `Rete.Session.settled?/1` reports whether a session needs a fire.
 
   A rule is named by `{module, name}`, the identity `Rete.Session.query/3` also uses.
 
@@ -202,6 +215,10 @@ defmodule Rete.Inspect do
   @spec why_not(Session.t(), {module(), atom()}) :: [map()]
   def why_not(%Session{state: state}, {module, name} = ref)
       when is_atom(module) and is_atom(name) do
+    # The name is checked first, deliberately. Whether the rule exists does not depend on
+    # whether the session was fired, and a typo is the more actionable of the two errors.
+    # Reporting "you did not fire" for a name that is not there sends the caller to fix the
+    # wrong thing.
     case terminal(state, ref) do
       nil ->
         raise ArgumentError,
@@ -209,6 +226,8 @@ defmodule Rete.Inspect do
                 Enum.map_join(rule_refs(state), ", ", &Network.ref_string/1)
 
       terminal ->
+        settled!(state, "why_not/2")
+
         state
         |> chain_to(terminal.id)
         |> Enum.map(fn id -> describe_node(state, id) end)
@@ -231,9 +250,40 @@ defmodule Rete.Inspect do
   """
   @spec collection(Session.t(), term(), map()) :: [term()]
   def collection(%Session{state: state}, node_id, join_key) do
+    settled!(state, "collection/3")
+
     state.memory
     |> Memory.groups(node_id, join_key)
     |> Enum.flat_map(fn {_group, elements} -> Enum.map(elements, & &1.fact) end)
+  end
+
+  # Refuses to answer from a session with propagation still queued. Both callers read what
+  # propagation built, and on a session that never fired that is zero of everything. It
+  # reads as "nothing matched" rather than "nothing has been matched yet". A wrong answer
+  # from the tool that explains wrong answers is worse than no answer.
+  #
+  # A session that fired and was then inserted into is refused too. It answers as of that
+  # fire, so the counts are real but describe a network your latest facts have not reached.
+  # That is the same failure, and harder to catch, because the numbers look plausible.
+  #
+  # `Rete.Session.query/3` is deliberately not guarded this way. The difference is what the
+  # caller asked. A query asks what matched, and `[]` is a true answer about a session where
+  # nothing has propagated. These two ask *why* nothing matched, and there the same zero is
+  # a false answer to the question. So the guard belongs here and not there.
+  # `Rete.Session.settled?/1` is the check a caller makes for itself.
+  defp settled!(%State{} = state, called) do
+    if Engine.settled?(state) do
+      :ok
+    else
+      pending = Engine.pending_ops(state)
+      operations = if pending == 1, do: "operation", else: "operations"
+
+      raise ArgumentError,
+            "#{called} needs a session that you fired. This one has #{pending} " <>
+              "propagation #{operations} still queued, so the answer would describe the " <>
+              "network before your facts reached it. Call `Rete.Session.fire_rules/2` " <>
+              "first."
+    end
   end
 
   @doc """

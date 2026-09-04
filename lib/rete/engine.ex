@@ -9,6 +9,9 @@ defmodule Rete.Engine do
   inserts what it returned. Propagation drains to completion **before** the next
   activation fires, so a rule always sees a settled network.
 
+  `fire_rules/2` is the only entry point that drains. `new/1`, `insert/3` and `retract/3`
+  queue work and return.
+
   `fire_rules/2` returns at quiescence. Every rule whose left hand side holds has fired,
   and nothing whose support has gone is still asserting anything.
 
@@ -34,22 +37,27 @@ defmodule Rete.Engine do
   @doc """
   A state over a network, with nothing inserted.
 
-  Plants the root token now rather than on the first propagation. A rule whose whole left
-  hand side is an absence or an empty collection is true of the empty session, and must
-  be able to fire before a fact arrives. See `docs/design/engine.md` §6.
+  Queues the root token rather than propagating it. A rule whose whole left hand side is an
+  absence or an empty collection is true of the empty session. So the token must exist
+  before a fact arrives. `fire_rules/2` is what propagates it. A state nobody has fired
+  holds no matches and no activations. See `docs/design/engine.md` §6.
   """
   @spec new(Network.t()) :: State.t()
   def new(%Network{} = network) do
     {state, ops} = network |> State.new() |> Nodes.seed_root()
 
-    state |> State.enqueue(ops) |> drain()
+    State.enqueue(state, ops)
   end
 
   @doc """
-  Inserts facts and propagates them.
+  Records facts and queues their propagation.
 
-  A fact equal to one already present bumps its count and propagates nothing. The matches
-  it would make already exist.
+  A fact equal to one already present bumps its count and queues nothing. The matches it
+  would make already exist.
+
+  This does **not** propagate. `Rete.Memory` holds the fact at once, so `facts/1` sees it.
+  The alpha work waits in the queue until `fire_rules/2` drains it. See
+  `docs/design/engine.md` §2.
   """
   @spec insert(State.t(), [term()], Rete.Listener.origin()) :: State.t()
   def insert(state, facts, origin \\ :asserted)
@@ -67,14 +75,18 @@ defmodule Rete.Engine do
         end
       end)
 
-    state |> State.enqueue(ordered_ops(batches)) |> drain()
+    State.enqueue(state, ordered_ops(batches))
   end
 
   @doc """
-  Retracts facts and propagates the retraction.
+  Removes facts and queues the retraction.
 
-  Only the last occurrence of a fact propagates. Anything concluded from it is retracted
-  in turn, until the network settles.
+  Only the last occurrence of a fact queues anything. The engine retracts anything
+  concluded from it in turn, once `fire_rules/2` drains the queue and the network settles.
+
+  This does **not** propagate, for the reason `insert/3` gives. Queuing an insert and then
+  a retract of the same fact drains to a net no-op. The queued work for one node keeps the
+  order it arrived in, whatever a caller put between the two calls.
   """
   @spec retract(State.t(), [term()], Rete.Listener.origin()) :: State.t()
   def retract(state, facts, origin \\ :asserted)
@@ -94,7 +106,7 @@ defmodule Rete.Engine do
         end
       end)
 
-    state |> State.enqueue(ordered_ops(batches)) |> drain()
+    State.enqueue(state, ordered_ops(batches))
   end
 
   # Batches are collected newest first. Appending per fact would be quadratic in the size
@@ -103,32 +115,106 @@ defmodule Rete.Engine do
     batches |> Enum.reverse() |> Enum.concat() |> coalesce()
   end
 
-  # Merges the ops of one call that go the same way to the same node, so a node is handed a
-  # batch instead of one element per call. A node's per-call work is not all per item. It
-  # dispatches, groups by join key, and at a negation or a collection reads back what it
-  # already holds. Paying that once per fact is what made an unkeyed negation quadratic.
+  # Merges across calls, once, before a fire drains anything. `insert/3` coalesces the ops
+  # of its own call, and nothing used to span calls because each call drained. Now they
+  # queue, so a caller that inserts one fact at a time hands a node one item per call
+  # instead of one batch. This puts those back together.
+  #
+  # Safe to run over the whole queue only here. `new/1`, `insert/3` and `retract/3` enqueue
+  # nothing but `{direction, node, items}`, and a fire drains to empty, so the queue holds
+  # no `{:event, ...}` or `{:retract_facts, ...}` at this point. Nodes produce both during
+  # the drain. `coalesce/1` rejects both rather than trusting this argument, whenever the
+  # queue holds more than one op. A lone op is returned as it stands, and one op cannot be
+  # merged with anything, so nothing can go wrong there either.
+  #
+  # That is the argument about op **shape**. The argument about **direction** is the merge
+  # window in `coalesce/1`, and this is the call that needs it. A queue built by one call
+  # carries one direction. A queue built by several carries both, for the same node.
+  defp coalesce_queue(%State{queue: queue} = state) do
+    %State{state | queue: queue |> :queue.to_list() |> coalesce() |> :queue.from_list()}
+  end
+
+  # Merges ops that go the same way to the same node, so a node is handed a batch instead of
+  # one element per call. A node's per-call work is not all per item. It dispatches, groups
+  # by join key, and at a negation or a collection reads back what it already holds. Paying
+  # that once per fact is what made an unkeyed negation quadratic.
   #
   # **This decides an order.** A rule's own matches still arrive in fact order. A rule
   # reached by two routes now sees all of one route's matches before the other's. See
-  # `docs/design/engine.md` §5.
+  # `docs/design/engine.md` §7, "what arrival order does not promise".
+  #
+  # **A node's merge window closes when the opposite direction reaches that node.** Merging
+  # moves an op back to where its target first appeared, and an op must never move back past
+  # its own inverse. The two directions do not commute: `Rete.Memory.remove_elements/4`
+  # removes only what it holds, and drops the rest, while `add_elements/4` keeps a duplicate.
+  # So `right[f], right_retract[f], right[f]` merged into `right[f, f], right_retract[f]`
+  # still settles right, and `right_retract[f], right[f], right_retract[f]` merged the same
+  # way loses the second retraction and strands the element for good. See §5, "the retraction
+  # rule". The window rule refuses both, and asks nothing of how the queue was built.
+  #
+  # A rule that only moves inserts back, and never retractions, would keep the first of those
+  # merges. It was rejected. Whether it is sound depends on what the rest of the engine can
+  # put in the queue, and this function cannot see that. The window rule is safe to read on
+  # its own.
+  #
+  # Nothing is lost where it matters. One `insert/3` or `retract/3` call queues one
+  # direction, so no window closes and a batch of any size still merges to one op.
+  #
+  # Only a direction merges. `{:retract_facts, node, facts}` is a 3-tuple too, so without
+  # the check it would merge as though `:retract_facts` were a direction, silently and in a
+  # changed order. `merge_op/2` refuses it, and says so. See `Rete.Engine.State.op/0`.
+  @mergeable [:left, :left_retract, :right, :right_retract]
+
   defp coalesce([]), do: []
   defp coalesce([_only] = ops), do: ops
 
+  # `open` holds the key of the batch each target may still merge into. `merged` only grows,
+  # so its size is a generation number, and a closed window cannot be reopened into the batch
+  # it named. `keys` keeps the order the batches were opened in.
   defp coalesce(ops) do
-    {merged, targets} =
-      Enum.reduce(ops, {%{}, []}, fn {direction, child, items}, {merged, targets} ->
-        target = {direction, child}
+    {merged, keys, _open} = Enum.reduce(ops, {%{}, [], %{}}, &merge_op/2)
 
-        case merged do
-          %{^target => batches} -> {%{merged | target => [items | batches]}, targets}
-          _ -> {Map.put(merged, target, [items]), [target | targets]}
-        end
-      end)
-
-    for {direction, child} = target <- Enum.reverse(targets) do
-      {direction, child, merged |> Map.fetch!(target) |> Enum.reverse() |> Enum.concat()}
+    for {{direction, child}, _generation} = key <- Enum.reverse(keys) do
+      {direction, child, merged |> Map.fetch!(key) |> Enum.reverse() |> Enum.concat()}
     end
   end
+
+  defp merge_op({direction, child, items}, {merged, keys, open})
+       when direction in @mergeable do
+    target = {direction, child}
+    open = Map.delete(open, {opposite(direction), child})
+
+    case open do
+      %{^target => key} ->
+        {Map.update!(merged, key, &[items | &1]), keys, open}
+
+      _ ->
+        key = {target, map_size(merged)}
+        {Map.put(merged, key, [items]), [key | keys], Map.put(open, target, key)}
+    end
+  end
+
+  # Reaching this is a bug in the engine, not in a ruleset. Say which op, and say what the
+  # two ways to get here are, because the caller cannot see the queue from where it stands.
+  defp merge_op(op, _acc) do
+    raise RuntimeError, """
+    #{inspect(op)} cannot be merged. Only #{inspect(@mergeable)} ops can.
+
+    `{:retract_facts, node, facts}` and `{:event, event}` are work a node makes while a \
+    drain runs. A drain ends with an empty queue. So neither can be in the queue at the \
+    point `coalesce_queue/1` merges it, which is before a fire drains anything.
+
+    One of two things is wrong. Something queued drain-time work outside a drain. Or \
+    `Rete.Engine.State.op/0` has a new kind of op, and this function was not told about it.
+
+    Merging it as a direction would reorder it, and report nothing.\
+    """
+  end
+
+  defp opposite(:left), do: :left_retract
+  defp opposite(:left_retract), do: :left
+  defp opposite(:right), do: :right_retract
+  defp opposite(:right_retract), do: :right
 
   @doc """
   Fires until the agenda is empty.
@@ -160,6 +246,7 @@ defmodule Rete.Engine do
 
     state
     |> emit(fn -> {:fire_started, opts} end)
+    |> coalesce_queue()
     |> drain()
     |> fire_loop(cfg, 0, %{})
   end
@@ -355,6 +442,33 @@ defmodule Rete.Engine do
   def facts(%State{memory: memory, network: network}) do
     memory |> Memory.facts() |> Enum.reject(&Network.marker?(network, &1))
   end
+
+  @doc """
+  Whether the state has no propagation queued.
+
+  `false` means a fact reached working memory and no node has seen it yet. A state fresh
+  from `new/1` is unsettled, because the root token is queued too. See
+  `docs/design/engine.md` §2.
+
+  This reads the queue alone, and that is enough. On every state a caller can hold, the
+  agenda is empty whenever the queue is: `fire_loop/4` returns only on `:empty`, and every
+  other way out of a fire raises, which discards the state. So there is no state with work
+  queued nowhere and an activation still waiting. Keep it that way, or this answers `true`
+  about a state that has yet to fire something.
+  """
+  @spec settled?(State.t()) :: boolean()
+  def settled?(%State{queue: queue}), do: :queue.is_empty(queue)
+
+  @doc false
+  # How many propagation operations wait for the next `fire_rules/2`. Counts operations,
+  # not facts: one insert of many facts queues one operation per node the facts reach.
+  #
+  # This exists for the error message in `Rete.Inspect`, which reports the size of what the
+  # caller forgot to fire. It is not a private function only because that caller is in
+  # another module. Ask `settled?/1` whether there is any work. Nothing else needs the
+  # count.
+  @spec pending_ops(State.t()) :: non_neg_integer()
+  def pending_ops(%State{queue: queue}), do: :queue.len(queue)
 
   # --- firing ---------------------------------------------------------------------
 

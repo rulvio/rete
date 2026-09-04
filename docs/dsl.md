@@ -73,7 +73,7 @@ does not apply. Pass `:fact_type_fn` to `Rete.Session.new/2` if your facts use s
 typing scheme.
 
 Facts form a **multiset**. Inserting the same fact twice needs two retractions to remove
-it. The second insert propagates nothing, because the matches it would make already exist.
+it. The second insert queues nothing, because the matches it would make already exist.
 
 ## Left hand side elements
 
@@ -92,6 +92,7 @@ it. The second insert propagates nothing, because the matches it would make alre
 | `{:not, [{:order, cid}]}` | a gate — `:and`, `:or`, `:not`, `:nand`, `:nor`, `:xor`, `:xnor` |
 | `%{salience: 100}` **first** | the options map, not a condition |
 | `) when <guard> do` | a rule-level guard over every binding |
+| no conditions at all | fires once, on the first `fire_rules/2` — see below |
 
 A worked example using most of them:
 
@@ -121,6 +122,41 @@ becomes plain `amt`, which is already how this DSL spells a join.
 
 Variables named `_` or `_amt` are discarded, in any position, the same as anywhere else in
 Elixir. They do not bind. A guard cannot read one.
+
+### A production with no conditions
+
+A rule may declare no conditions at all. Write `defrule startup()`, or omit the
+parentheses.
+
+```elixir
+defrule startup do
+  {:started, :once}
+end
+```
+
+Such a rule is true of the empty session. It fires on the first `fire_rules/2`, with
+nothing inserted. It never fires again, however much you insert afterward.
+
+Its conclusion rests on the root token instead of on a fact. So retracting everything you
+inserted leaves the conclusion in place. This is the one conclusion
+`Rete.Session.retract/2` cannot reach. `Rete.Inspect.explain/2` reports it as `:derived`
+with no supports.
+
+Salience applies as usual. So a rule with no conditions can run before the rest of the
+ruleset, and seed a fact the other rules match on.
+
+A query with no conditions answers exactly one row, which its body computes:
+
+```elixir
+defquery constant(), do: :constant
+
+MyRuleset.constant(Rete.Session.new([MyRuleset]))   #=> []
+MyRuleset.constant(session)                         #=> [:constant]
+```
+
+Fire first, like any other query. After that the row never varies. The root token is the
+whole match, and no fact can add to it or take from it. The query binds nothing, so any
+filter raises an error. Read it as a `SELECT` with no `FROM`.
 
 ## Bindings and joins
 
@@ -326,23 +362,32 @@ Gathering is cheap. A member is prepended, so a change costs the engine one cons
 the list the body receives is the one the engine already holds. Reducing that list to a
 number in the right hand side, as above, is the shape the engine is built for.
 
-What the rest costs depends on **how members arrive**, not on how many there are. Everything
-inserted in one call is one change, so the rule fires once per call rather than once per
-member. Over 4,000 members:
+What the rest costs depends on **how members arrive**, not on how many there are. A
+collection re-emits its group once per change, and every member that arrives before one
+`fire_rules/2` is one change. So the rule fires once per fire, not once per member. Over
+4,000 members:
 
-| members per `insert` call | body reduces the list | body concludes the list |
+| members per fire | body reduces the list | body concludes the list |
 |---|---|---|
 | 1 | 27 ms | 408 ms |
 | 10 | 4.6 ms | 43 ms |
 | 100 | 3.0 ms | 6.8 ms |
 | all 4,000 | 3.4 ms | 3.3 ms |
 
-So **insert in batches** where the caller can. Both columns fall with the batch, and by 100 a
-member at a time neither costs anything worth naming.
+So **fire once per batch**, and let the members arrive however they arrive. Both columns
+fall with the batch, and by 100 a member at a time neither costs anything worth naming.
 
-Where you cannot batch — one event per call — **conclude what you computed, not what you
-gathered.** `{:spend, name, orders}` concludes a fact that grows with the group, and the
-engine hashes that whole fact on every change. That is the 408 ms against 27 ms above.
+The batch is a batch of *inserts between fires*, not a batch inside one `insert/2` call.
+Feeding 4,000 members one call at a time and firing once reaches the last row, the same as
+one call carrying all 4,000. Only a `fire_rules/2` between them puts you back on the first.
+So a caller that genuinely gets one event per call has nothing to restructure: collect the
+events, fire when you want an answer. Before 0.5.0 each call propagated on its own, and the
+first row was the only thing that shape could reach. `mix bench` contrasts the three under
+"1,000 collection members, one per call, fired every call and fired once".
+
+Where you cannot defer the fire, **conclude what you computed, not what you gathered.**
+`{:spend, name, orders}` concludes a fact that grows with the group, and the engine hashes
+that whole fact on every change. That is the 408 ms against 27 ms above.
 
 ### The empty-collection rule
 
@@ -546,8 +591,10 @@ Two things to know:
 * filtering happens on the **bindings**, before the body runs. So a filter names a
   variable, not a shape of the result. You can filter on something the body never
   returns.
-* a query reads the session as it stands. If you query one with pending activations, you
-  see what was true before they fired.
+* a query reads propagated state, so it answers **as of the most recent fire**. On a
+  session you never fired that is `[]`. On one you fired and then inserted into, it is the
+  answer from before that insert. See "Expecting anything to happen before `fire_rules/2`"
+  below.
 
 Row order is unspecified. Rows come back in the order the facts arrived in, so the same
 facts fed in a different order answer in a different order. **Sort the result yourself if
@@ -653,7 +700,8 @@ Two consequences surprise people:
 * **a conclusion cannot hold itself up.** If a rule's match already rests on the fact it
   concludes, that fact does not get a second support. So retracting what you inserted
   really does empty the session. `symmetric({:edge, a, b}) -> {:edge, b, a}` does not
-  leave two immortal facts behind.
+  leave two immortal facts behind. A rule with **no conditions** is the one exception: its
+  support is the root token rather than a fact, so its conclusion stays.
 * **a rule that concludes something its own left hand side matches on will loop.**
   `fire_rules/2` runs to quiescence, and it does not cap activations unless you ask it to.
   Pass `:max_cycles` for a cap — it defaults to `:infinity`. Give it an integer, and it
@@ -794,19 +842,41 @@ There is no matching fact, so there is nothing to bind `amt` to. The negation *r
 `cid`, to scope itself to this customer. `amt` is existentially quantified, so it does not
 escape the negation. If you want the amount, write a match instead of a negation.
 
-### Expecting a rule to fire before `fire_rules/2`
+### Expecting anything to happen before `fire_rules/2`
 
 ```elixir
-session = Rete.Session.insert(session, {:order, 1, 250})
+session =
+  [MyRuleset] |> Rete.Session.new() |> Rete.Session.insert({:order, 1, 250})
+
 Rete.Session.facts(session)  #=> just the order; no conclusions
+MyRuleset.orders(session)    #=> [] — nothing has matched yet
 ```
 
-Inserting propagates matches and queues activations. Nothing runs until `fire_rules/2`.
-This is what lets you reason about a batch of facts together. `Rete.Session.pending/1`
-shows what is waiting.
+`insert/2` and `retract/2` record facts and queue the work. **`fire_rules/2` is the only
+call that matches anything.** It propagates everything waiting, runs the rules that match,
+and returns once the session settles.
 
-The same applies to querying. A query answered before firing tells you what was true
-before firing.
+So a session you have not fired holds facts and nothing else. The engine has activated no
+rule, and a query answers nothing. This is what lets you reason about a batch of facts
+together, instead of each fact starting a cascade of its own.
+
+The sharper case is the second insert, because the answer is stale rather than empty:
+
+```elixir
+settled = Rete.Session.fire_rules(session)
+MyRuleset.orders(settled)      #=> [250]
+
+queued = Rete.Session.insert(settled, {:order, 2, 900})
+MyRuleset.orders(queued)       #=> [250] — the answer from before the insert
+Rete.Session.settled?(queued)  #=> false
+
+MyRuleset.orders(Rete.Session.fire_rules(queued))  #=> [250, 900]
+```
+
+**A query answers as of the most recent fire.** Fire before you query. A query cannot
+raise here, because the last settled answer is a true answer about some state of the
+session. `Rete.Session.settled?/1` reports whether a session has work waiting, for code
+that did not do the insert itself.
 
 ### Reading a collection-local variable outside its collection
 

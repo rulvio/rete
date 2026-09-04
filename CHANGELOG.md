@@ -4,6 +4,162 @@ All notable changes to `rete` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.5.0
+
+`fire_rules/2` is now the only call that propagates. **This release has breaking changes.**
+
+### Added
+
+* **`Rete.Session.settled?/1`** reports whether a session has work waiting for
+  `fire_rules/2`. A query cannot raise on an unfired session, because `[]` is a true answer
+  about one. So this is the way to tell "no match" apart from "not matched yet". A session
+  fresh from `new/1` is not settled, because `new/1` queues the root token.
+
+### Changed
+
+* **`insert/2` and `retract/2` no longer propagate.** They record the fact and queue the
+  work. `fire_rules/2` drains that queue, matches everything waiting, runs the rules that
+  match, and returns at quiescence.
+
+  A session you have not fired holds facts and nothing else. `Rete.Session.facts/1` still
+  answers, because `insert/2` updates working memory at once. Nothing else does: the engine
+  activates no rule, and **a query answers as of the most recent fire**. On a session you
+  never fired that is `[]`. On one you fired and then inserted into, it is the answer from
+  before that insert. Watch for the second case in review: a stale result looks right, and
+  an empty one at least looks wrong.
+
+  Two problems drove this. Building a session queued activations before the caller did
+  anything, so `pending/1` was non-empty on a session nobody touched.
+
+  A listener could never observe those activations either. `Rete.Engine.State` starts with
+  no listeners, and `Rete.Session.with_listener/3` can only attach afterward. So
+  `:activation_added` went to nobody, and a listener later saw `:activation_fired` for a
+  rule it never saw added.
+
+  **A listener attached to a fresh session now misses nothing.** `insert/2` and `retract/2`
+  emit `:fact_inserted`, `:fact_retracted` and `:fact_duplicated`, because they update
+  working memory at once. Every other event happens inside `fire_rules/2`: all of
+  `:propagated`, and all of `:activation_added`, `:activation_removed` and
+  `:activation_fired`. See `docs/design/observability.md` §1.
+
+  Batching is the other gain. Any number of inserts and retractions now cost one settle. A
+  fire coalesces the queue before it drains. So facts fed one call at a time reach a node as
+  one batch. Feeding 1,000 orders one call at a time now costs what one call carrying all
+  1,000 costs. `mix bench` measures the two side by side, under "1,000 facts, in one insert
+  call and in 1,000".
+
+  A node's batch closes when the opposite direction reaches that node, because merging past
+  a retraction would drop it. So a run of inserts merges, a run of retractions merges, and a
+  caller that alternates the two on one node gets one batch per run. Where you put your call
+  boundaries never changes where the session lands.
+
+* **One ordering moved, and it was documented as unspecified.** A rule reachable by two
+  routes — two disjunction branches over one fact type, say — used to fire fact by fact
+  when its facts arrived in separate calls, and route by route when they arrived in one.
+  It is now route by route either way.
+
+  ```elixir
+  # a rule whose two branches both match every {:n, _}
+  session |> Session.insert({:n, 5}) |> Session.insert({:n, 6}) |> Session.fire_rules()
+  # 0.4.0 fires 5, 5, 6, 6.  0.5.0 fires 5, 6, 5, 6, which is what one
+  # insert call carrying both facts already fired in 0.4.0.
+  ```
+
+  The cause is the coalescing above: the merge used to run over one call, because each call
+  drained, and it now runs over the whole queue. So the call boundary stops deciding the
+  sequence. A retraction between the two inserts brings the old order back, because it
+  closes that node's merge window.
+
+  Both are arrival orders, and both settle to the same facts. What this changes is the
+  order of `:activation_fired` events, which is what a trace reads.
+  `docs/design/engine.md` §7 states what arrival order does and does not promise. A rule's
+  own matches still arrive in fact order, which is the part rules rest on, and it did not
+  move.
+
+* **`Rete.Inspect.why_not/2` and `collection/3` now raise on a session with propagation
+  queued.** Both read what propagation built. On a session that never fired that is zero of
+  everything. It reads as "nothing matched", but the truth is "nothing has been matched
+  yet". The error names the pending count and says to call `fire_rules/2`.
+
+  `explain/2` and `fired/2` are unchanged. They read memories that `insert/2` and
+  `retract/2` update at once, so both answer at any point — about the session as it stands,
+  not as it will stand. A queued retract shows a conclusion whose support already left,
+  reported as `origin: :unknown`. Fire first for a settled provenance graph.
+
+* **`Rete.Session.pending/1` is gone.** `fire_rules/2` returns at quiescence, and nothing
+  propagates before it. So the function can only ever answer `[]`. `Rete.Activation` no
+  longer reaches the public API. Use `Rete.Listener` to observe activations, and
+  `settled?/1` to ask whether a session has work waiting.
+
+  Nothing replaces it, and nothing will. Reporting what *would* activate means matching,
+  and matching before a fire is the work this release moved into the fire. `pending/1` also
+  had no counterpart in clara-rules, so no ported ruleset depended on the contract. See
+  `docs/design/engine.md` §12.
+
+* **A production with no conditions is documented.** `defrule startup do ... end` is legal,
+  and always was. No code changed for it. Its timing moved with everything else here: it is
+  true of the empty session, so it fires once, on the first `fire_rules/2`, with nothing
+  inserted.
+
+  Its support is the root token rather than a fact, so it is the one conclusion `retract/2`
+  cannot reach. A query written the same way answers one row in every fired session, and
+  binds nothing, so any filter raises. `docs/dsl.md` states this for rule authors,
+  `docs/design/engine.md` §6 gives the reason, and `Rete.EngineTest` pins both.
+
+* **One deliberate divergence from Clara.** Clara's
+  `test_negation/test-simple-negation` queries a session that nobody inserted into and
+  nobody fired. It expects one row. Clara plants the root token when it builds the session.
+  This engine answers `[]` there. That test fires every other session before it queries it,
+  and those cases agree exactly. See `docs/design/engine.md` §12.
+
+### Migration
+
+Add a `fire_rules/2` before any query that ran against an unfired session:
+
+```elixir
+# before
+session |> Session.insert(facts) |> MyRules.some_query()
+
+# after
+session |> Session.insert(facts) |> Session.fire_rules() |> MyRules.some_query()
+```
+
+Grep for the same shape on a session that fired earlier. It is the case to look hardest
+for, because the query returns real rows and none of them account for the new facts:
+
+```elixir
+settled = session |> Session.insert(first_batch) |> Session.fire_rules()
+
+# before: the insert propagated, so this saw both batches
+settled |> Session.insert(second_batch) |> MyRules.some_query()
+# after: this answers as of the fire above, and second_batch is not in it
+
+# fix
+settled |> Session.insert(second_batch) |> Session.fire_rules() |> MyRules.some_query()
+```
+
+`Session.settled?/1` is the assertion to reach for where a function receives a session it
+did not build.
+
+Replace `Session.pending/1` with a listener:
+
+```elixir
+session
+|> Session.with_listener(Rete.Listener.Collect, [])
+|> Session.fire_rules()
+|> Rete.Listener.Collect.by_tag(:activation_fired)
+```
+
+Where `pending/1` only answered "is there work waiting", use `settled?/1`:
+
+```elixir
+# before
+if Session.pending(session) != [], do: Session.fire_rules(session), else: session
+
+# after
+if Session.settled?(session), do: session, else: Session.fire_rules(session)
+```
+
 ## 0.4.0
 
 Node sharing now reaches across module boundaries. Composing rulesets costs what writing

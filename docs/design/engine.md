@@ -47,10 +47,51 @@ Four consequences follow, and all of them are load-bearing:
 ## 2. Two nested loops
 
 ```
-insert / retract  ->  enqueue alpha ops  ->  drain
+insert / retract  ->  update memory, enqueue alpha ops. Nothing else.
 fire_rules        ->  drain, then: pop the most salient activation, run it,
                       insert what it returned, drain, repeat until the agenda is empty
 ```
+
+**`fire_rules/2` is the only entry point that propagates.** `insert/3` and `retract/3`
+record the fact and queue the work. `new/1` queues the root token the same way. So a state
+nobody has fired holds facts, and no matches, tokens or activations.
+
+Two things follow. A caller may batch any number of inserts and retractions for the cost of
+one settle. And a query reads propagated state, so it answers **as of the most recent
+fire**. On a session that never fired that is `[]`. On one that fired and then received an
+insert, it is the previous answer, which is stale rather than empty. The stale case is the
+one that catches people out, because an empty result at least looks wrong.
+
+`Rete.Session.settled?/1` reports an empty queue. A query does not raise on a full one,
+because the last settled answer is a true answer about some state of the session.
+`Rete.Inspect.why_not/2` and `collection/3` do raise, because they answer *why* a rule did
+not match, and an answer about the wrong state of the session is false to that question.
+See `observability.md` §2 for the split, and §12 for why the query side answers `[]`
+rather than raising.
+
+A fire **coalesces the queue before it drains it**, so work that spans several calls reaches
+a node as one batch. `insert/3` already merged the ops of its own call, and nothing used to
+span calls because each call drained. Now they queue, so a caller feeding one fact at a time
+would otherwise hand a node one item per call. With the merge, 1,000 single-fact calls cost
+what one call carrying 1,000 facts costs. This is safe to run over the whole queue only at
+that point. The queue then holds nothing but `{direction, node, items}`. Nodes produce
+`{:event, ...}` and `{:retract_facts, ...}` during the drain.
+
+**A node's merge window closes when the opposite direction reaches that node.** Merging
+moves an op back to where its target first appeared, and the two directions do not commute.
+`Rete.Memory.remove_elements/4` removes only the occurrences it holds and drops the rest,
+which is the retraction rule in §5. So an op moved back past its own inverse can lose a
+retraction: the fact leaves working memory, the element stays in the node, and no later fire
+reaches it, because the queue is empty and `settled?/1` answers `true`. The window rule
+refuses that move, and asks nothing of how the queue was built. One `insert/3` or
+`retract/3` call queues one direction, so a batch of any size still merges to one op. Only a
+caller that alternates the two directions on one node across calls gets more than one, and
+it gets one per run.
+
+Where the caller put its call boundaries is therefore not part of what a session means. Any
+sequence of inserts and retractions batched before one fire settles where firing after every
+call settles. Queuing an insert and then a retract of the same fact drains to a net no-op.
+`Rete.PropertyTest` pins the general statement over random sequences.
 
 **Propagation drains to completion before the next activation fires.** A rule must see a
 settled network, or it could act on a half-built match.
@@ -199,14 +240,30 @@ need one. But a `Negation` hanging off the beta root has to pass *something* whi
 matches. An `Accumulate` there has to emit its collection to someone too.
 
 Classic Rete answers this with a single empty token, seeded at the root, and this engine
-does the same. It plants that token at **state creation**, not on the first fact. A rule
+does the same. `new/1` **queues** that token, and the first `fire_rules/2` plants it. A rule
 whose whole left hand side is an absence, or an empty collection, is true of the empty
-session, and it must be able to fire before anything is inserted.
+session. It must be able to fire before you insert anything. It can, because firing drains
+the queued seed before it fires anything.
 
 `Rete.Memory.root_seeded?` makes seeding idempotent. A second root token would give every
 such rule a second support, and no retraction would ever clear it.
 
 It is machinery, not a match. `Rete.Inspect` never presents it as a fact.
+
+### A production with no conditions
+
+A production that declares nothing is the degenerate case of all of this. Its terminal
+hangs straight off the beta root, so the seeded token is its whole match. It therefore gets
+exactly one activation, on the first fire.
+
+Its conclusion rests on the root token, which no retraction reaches. So it is the one
+conclusion that survives retracting every fact the user asserted. That does not break the
+guarantee in §8. The conclusion is still well founded: the root token is its support, and
+that support never goes.
+
+A query written the same way holds that one token and answers one row, in every session
+after a fire. `docs/dsl.md` states both for rule authors, and `Rete.EngineTest` pins them
+under "the root token".
 
 ## 7. Firing
 
@@ -250,20 +307,27 @@ the property suite confirms it. What arrival order does decide is the order
 
 ### What arrival order does not promise
 
-**Order within one parent, not across parents.** `Rete.Engine.coalesce/1` merges the ops of
-one insert or retract call that go the same way to the same node, so a node is handed a
-whole batch at once instead of one element per call. Ops keep the position of the first
-fact that produced one for a given child, so a rule's own matches still arrive in fact
-order — which is the guarantee above, and the one rules rest on.
+**Order within one parent, not across parents.** `Rete.Engine.coalesce/1` merges the ops
+that go the same way to the same node, so a node is handed a whole batch at once instead of
+one element per call. Ops keep the position of the first fact that produced one for a given
+child, so a rule's own matches still arrive in fact order — which is the guarantee above,
+and the one rules rest on.
 
-What changed with it: a rule reachable by **two different routes** within a single call now
-sees all of one route's matches before any of the other's, where it used to see them
-interleaved fact by fact. Inserting `{:n, 5}` and `{:n, 6}` into a rule whose two
-disjunction branches both match them fires `5, 6, 5, 6` and used to fire `5, 5, 6, 6`. Both
-are arrival orders. Only the first is stable when one fact type feeds several conditions,
-and the settled facts are identical either way.
+What changed with it: a rule reachable by **two different routes** now sees all of one
+route's matches before any of the other's, where it used to see them interleaved fact by
+fact. Inserting `{:n, 5}` and `{:n, 6}` into a rule whose two disjunction branches both
+match them fires `5, 6, 5, 6` and used to fire `5, 5, 6, 6`. Both are arrival orders. Only
+the first is stable when one fact type feeds several conditions, and the settled facts are
+identical either way.
 
-That is pinned by a test rather than left to the suite, because the suite stayed green
+**The call boundary does not decide it, from 0.5.0.** The merge used to run over one insert
+or retract call, because each call drained. A fire now coalesces the whole queue, so those
+two facts fire `5, 6, 5, 6` whether they arrive in one call or in two. Before 0.5.0 the
+two-call feed fired `5, 5, 6, 6`. A retraction between them is the one thing that brings
+the old sequence back: it closes the node's merge window, so the inserts on either side
+stay separate batches. See §2.
+
+That is pinned by tests rather than left to the suite, because the suite stayed green
 through the change: nothing else reads the sequence, only what the session settles to.
 
 Batching is not a micro-optimization. A node's per-call work is not all per item — it
@@ -310,8 +374,10 @@ A query terminal stores the tokens that reach it, instead of activating.
 parameters. `Rete.Compiler` rejects, at build time, a parameter the left hand side does
 not bind on every path — such a filter could never be satisfied.
 
-A query reads the session as it stands. So a query answered before `fire_rules/2` reports
-what was true before the pending activations fired.
+A query reads propagated state, so it answers **as of the most recent fire**. Nothing
+propagates before `fire_rules/2`, so a session nobody fired answers `[]`, and a session
+fired and then inserted into answers from before that insert. A query does not raise on
+either. `Rete.Inspect.why_not/2` does. See §2.
 
 ## 10. What is asserted about all of this
 
@@ -320,22 +386,35 @@ propagated, the duplicate fact just collapses into a count bump in the multiset.
 `Rete.Session.facts/1` still looks perfect. The corruption surfaces much later, as a fact
 that survives a retraction that should have removed it.
 
-The test suite therefore asserts on `session.state.memory` instead. These four invariants
+The test suite therefore asserts on `session.state.memory` instead. These five invariants
 are the ones that actually catch engine bugs:
 
-* **full drain.** Retract everything. Every memory then equals a **fresh session's**
-  (`Rete.Session.new([Mod]).state.memory`). This pins both "drained" and "exactly one root
-  token" — an emptiness check alone cannot see either one.
+* **full drain.** Retract everything. Every memory then equals that of an **empty session
+  that has fired** (`[Mod] |> Rete.Session.new() |> Rete.Session.fire_rules()`). This pins
+  both "drained" and "exactly one root token" — an emptiness check alone cannot see either
+  one. The baseline has to be fired, from 0.5.0: `new/1` queues the root token rather than
+  planting it, so an unfired session has no token to compare against. See §2.
 * **support counting.** A fact concluded by exactly one match is held exactly once. Two
   supports need two retractions, and the first retraction leaves the fact standing.
 * **round trip.** Insert X, fire, retract X, fire, and compare against the state before.
 * **order independence.** The same facts, in any order and any batching, give the same
   derived state. Any sequence of inserts and retracts leaves a session equal to one
   rebuilt from the surviving facts.
+* **fire boundaries do not count.** Any sequence of inserts and retractions batched before
+  one `fire_rules/2` settles where firing after every call settles. Where the caller put its
+  calls is not part of what a session means.
 
-One more invariant needs a direct test against the memory, since no end-to-end property
-reaches it: **a memory reports the occurrences it actually held, not the ones it was asked
-to remove**.
+  This is the invariant that catches a bad merge in `coalesce/1`, and it needs saying
+  separately from the one above, which held throughout 0.4.0. A queue carrying both
+  directions for one node is only ever built by a caller that batches *across* calls, so no
+  property that fires every call can reach it. See §2.
+
+Two more invariants need a direct test, since no end-to-end property over the facts reaches
+either. **A memory reports the occurrences it actually held, not the ones it was asked to
+remove.** And **`settled?/1` answers for the agenda as well as the queue**: it reads the
+queue alone, so every session a caller can hold must have an empty agenda whenever its queue
+is empty. Nothing in the engine enforces the second. The property suite asserts it at every
+intermediate session it builds, fired or not.
 
 ---
 
@@ -528,9 +607,36 @@ the rule instead.
   returns an answer that is wrong, not just late. The cost: an oscillating ruleset now
   spins until something interrupts it. `observability.md` §3 carries the numbers for
   choosing a cap where that matters.
+* **An unfired session answers no query. This diverges from Clara.** Clara's
+  `test_negation/test-simple-negation` queries `empty-session`. Nobody inserted into it,
+  and nobody fired it. The test expects one row. Clara plants the root token when it builds
+  the session. This engine answers `[]` there.
+
+  The two agree everywhere else in that test. Eleven of its sessions receive an insert, and
+  the test fires all eleven before it queries them. So deferring insert and retract costs
+  nothing against Clara. Only the untouched session differs.
+
+  The trade is deliberate. Propagating at construction meant a caller saw queued
+  activations on a session they never touched. It also meant a listener could never
+  observe the matching `:activation_added`. `Rete.Engine.State` starts with no listeners,
+  and `Rete.Session.with_listener/3` can only attach afterward. One entry point that
+  propagates is worth more than agreeing with Clara on the empty case. `Rete.BehaviorTest`
+  records the divergence where it pins the Clara case.
 * **No partial firing.** `fire_rules/2` runs to quiescence in the calling process. There
   is no fire-one-activation option, no async variant, and no way to interrupt a settling
   pass other than the cycle cap.
+* **Nothing reports what *would* activate before it activates.** Working out which rules a
+  queued fact satisfies means matching it, and matching before a fire is exactly the work
+  this design moved into the fire. A function that answered it would do that work twice, or
+  do it early and throw it away when the caller inserted one more fact.
+
+  So the engine reports two things instead, and neither costs anything.
+  `Rete.Session.settled?/1` says that work is waiting, and not what it is.
+  `Rete.Listener` reports each activation as it is added and as it fires, which is the same
+  information at the moment it stops being a guess. `Rete.Inspect.why_not/2` answers the
+  question after the fact, on a settled session.
+
+  `Rete.Session.pending/1` was the function that tried the other way, and 0.5.0 removed it.
 * **No checkpoint or migration API, but a session is trivially serializable.** A session
   holds no PID, ETS table, or other process-local handle. It is plain data, plus function
   references into the ruleset and listener modules that built it. Because of this,
@@ -539,6 +645,7 @@ the rule instead.
   checkpoint API, versioned migration, and distributed sync. The receiving process also
   needs the same compiled ruleset and listener modules loaded, since the function
   references resolve against them.
+
 ---
 
 ## 13. Performance
@@ -570,7 +677,9 @@ Each has a **control** beside it in the suite, because an exponent alone does no
 half of a scenario is slow. Two rules concluding the same fact used to run 37× the
 *disjoint* conclusion of the same two rules, and now runs level with it. The unkeyed
 negation runs against the keyed one. The collection runs at both batch shapes and at one
-member per call.
+member per call. A fourth collection scenario separates the call from the fire, because
+0.5.0 made those two different things: it runs 1,000 members one per call, firing every
+call and firing once, against one call carrying all of them.
 
 The three collection rows are one fix, and the only one that changed what the engine
 guarantees. See `network.md` §3.
@@ -599,10 +708,13 @@ activation cancelled. Each run walks the whole list, so the body traverses about
 — 8M at n = 4,000, which is the 16.9 ms above at roughly 2 ns a cell.
 
 **That count is a function of how members arrive, not of how many there are.** Alpha batching
-(§7) folds every member arriving in one `insert` call into one group change, so the rule fires
-once per call. The same 4,000 members, and the concluding-a-list shape below alongside:
+(§7) folds every member that reaches the node in one drain into one group change, so the rule
+fires once per **fire**, not once per `insert` call. A fire coalesces the whole queue, so
+4,000 members fed one call at a time and fired once cost what one call carrying 4,000 costs.
+Before 0.5.0 each call drained on its own, and a call was a change. The same 4,000 members,
+and the concluding-a-list shape below alongside:
 
-| members per call | firings | reads it | ignores it | the body's share | concludes the list |
+| members per fire | firings | reads it | ignores it | the body's share | concludes the list |
 |---|---|---|---|---|---|
 | 1 | 4,001 | 27.1 ms | 10.0 ms | 17.1 ms | 408 ms |
 | 10 | 401 | 4.6 ms | 3.3 ms | 1.3 ms | 43 ms |

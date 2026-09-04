@@ -9,7 +9,10 @@ defmodule Rete.Session do
   Facts you insert stay until you retract them. Facts a *rule* concludes are logical: the
   engine holds them only while the match behind them holds. That is why a rule's right
   hand side only inserts. It is also why retracting a fact removes anything concluded from
-  it too, transitively. Nothing fires until `fire_rules/2`.
+  it too, transitively.
+
+  `fire_rules/2` is the only call that matches anything. `insert/2` and `retract/2` record
+  facts and queue the work. So a session you have not fired holds facts, and no matches.
 
   The examples here run against this ruleset:
 
@@ -76,6 +79,9 @@ defmodule Rete.Session do
   Facts are a multiset. Inserting a fact equal to one already present bumps its count
   instead of duplicating its matches, so retracting one occurrence leaves the other.
 
+  Inserting does not match anything. It records the fact and queues the work.
+  `fire_rules/2` is what matches, and until you call it no rule has seen the fact.
+
       iex> alias Rete.Session
       iex> session = Session.new([Rete.Doc.Orders]) |> Session.insert({:customer, 1})
       iex> Session.facts(session)
@@ -90,12 +96,16 @@ defmodule Rete.Session do
   Anything concluded from them is retracted too, transitively. Retracting a fact that is
   not present does nothing.
 
+  Like `insert/2`, this queues the work rather than doing it. The fact leaves at once, and
+  the conclusions that rested on it leave when `fire_rules/2` drains the queue.
+
       iex> alias Rete.Session
       iex> session =
       ...>   Session.new([Rete.Doc.Orders])
       ...>   |> Session.insert([{:customer, 1}, {:order, 1, 250}])
       ...>   |> Session.fire_rules()
       ...>   |> Session.retract({:customer, 1})
+      ...>   |> Session.fire_rules()
       iex> Session.facts(session)
       [{:order, 1, 250}]
   """
@@ -124,19 +134,41 @@ defmodule Rete.Session do
     * `:timeout` — milliseconds one body may take, or `:infinity`, the default. Applies
       only when `:concurrency` is above `1`.
 
-  Inserting queues activations. Firing runs them and leaves the agenda empty.
+  **This is the only call that propagates.** `insert/2` and `retract/2` queue work. Firing
+  drains that queue, matches everything waiting, runs the rules that match, and returns at
+  quiescence. So a session you have not fired holds facts but no matches.
 
       iex> alias Rete.Session
       iex> queued =
       ...>   Session.new([Rete.Doc.Orders])
       ...>   |> Session.insert([{:customer, 1}, {:order, 1, 250}])
-      iex> length(Session.pending(queued))
-      1
-      iex> Session.pending(Session.fire_rules(queued))
+      iex> Rete.Doc.Orders.flagged_for(queued)
       []
+      iex> Rete.Doc.Orders.flagged_for(Session.fire_rules(queued))
+      [{1, 250}]
   """
   @spec fire_rules(t(), keyword()) :: t()
   def fire_rules(session, opts \\ []), do: update(session, &Engine.fire_rules(&1, opts))
+
+  @doc """
+  Whether the session has no work waiting for `fire_rules/2`.
+
+  `false` means `insert/2` or `retract/2` recorded a fact that no rule has seen yet. A
+  query on such a session answers as though the fact never arrived, so this is the check
+  to make when you did not write the `insert/2` yourself.
+
+  A session fresh from `new/1` is **not** settled. `new/1` queues the root token, which
+  the first fire plants. So a rule with no conditions has not fired yet either.
+
+      iex> alias Rete.Session
+      iex> queued = Session.new([Rete.Doc.Orders]) |> Session.insert({:customer, 1})
+      iex> Session.settled?(queued)
+      false
+      iex> Session.settled?(Session.fire_rules(queued))
+      true
+  """
+  @spec settled?(t()) :: boolean()
+  def settled?(%__MODULE__{state: state}), do: Engine.settled?(state)
 
   @doc """
   Runs a query by `{module, name}`: one result per match, computed by its body.
@@ -153,6 +185,13 @@ defmodule Rete.Session do
   may name any variable the left hand side binds, as a keyword list or a map. There is no
   separate parameter declaration. Naming something the query does not bind raises an
   error, instead of answering `[]`.
+
+  **A query answers as of the most recent fire.** On a session you never fired that is
+  `[]`. On one you fired and then inserted into, it is the answer from before that insert,
+  which is stale rather than empty. A query reads propagated state either way, and it does
+  not raise. `Rete.Inspect.why_not/2` raises in the same position, because a diagnostic
+  that reports "nothing matched" is misleading when the truth is "nothing has been matched
+  yet". A result set is not. Call `settled?/1` to tell the two cases apart.
 
   Row order is **unspecified**. Rows come back in the order the facts arrived, so the same
   facts fed in a different order answer in a different order. Sort the result yourself if
@@ -171,6 +210,23 @@ defmodule Rete.Session do
       ...>   |> Session.fire_rules()
       iex> Session.query(session, {Rete.Doc.Orders, :flagged_for}, cid: 1)
       [{1, 250}]
+
+  A second order, queued and not yet fired. The answer is the one from before it, not
+  `[]`:
+
+      iex> alias Rete.Session
+      iex> stale =
+      ...>   Session.new([Rete.Doc.Orders])
+      ...>   |> Session.insert([{:customer, 1}, {:order, 1, 250}])
+      ...>   |> Session.fire_rules()
+      ...>   |> Session.insert({:order, 1, 900})
+      iex> Session.settled?(stale)
+      false
+      iex> Session.query(stale, {Rete.Doc.Orders, :flagged_for}, cid: 1)
+      [{1, 250}]
+      iex> fired = Session.fire_rules(stale)
+      iex> fired |> Session.query({Rete.Doc.Orders, :flagged_for}, cid: 1) |> Enum.sort()
+      [{1, 250}, {1, 900}]
   """
   @spec query(t(), {module(), atom()}, keyword() | %{atom() => term()}) :: [term()]
   def query(%__MODULE__{state: state}, ref, filters \\ []),
@@ -180,17 +236,15 @@ defmodule Rete.Session do
   Every fact the session holds, inserted or concluded.
 
   Unordered. A session is a set of facts, not a sequence.
+
+  The two halves answer on different clocks. `insert/2` and `retract/2` update working
+  memory at once, so an inserted fact appears here before anything matches it. A concluded
+  fact is as of the most recent fire, because concluding one is what `fire_rules/2` does.
+  So a session with a queued retract shows the conclusions that rested on the fact it took
+  out. `settled?/1` reports whether a fire is owed.
   """
   @spec facts(t()) :: [term()]
   def facts(%__MODULE__{state: state}), do: Engine.facts(state)
-
-  @doc """
-  The activations waiting to fire, most salient first.
-
-  Empty after `fire_rules/2` unless a rule inserted something during it.
-  """
-  @spec pending(t()) :: [Rete.Activation.t()]
-  def pending(%__MODULE__{state: state}), do: Rete.Agenda.to_list(state.agenda)
 
   @doc """
   Attaches a listener, returning a new session.

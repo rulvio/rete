@@ -79,8 +79,8 @@ defmodule Rete.Activation do
   @moduledoc """
   A rule whose left hand side is satisfied, waiting to fire.
 
-  **Internal**, but `Rete.Session.pending/1` returns these. Read their fields freely. Do
-  not depend on their functions.
+  **Internal.** No public function returns one. `Rete.Listener` reports a rule's activation
+  through events instead.
 
   Ordered by `:salience` descending, then `:internal_salience` descending, then `:order`
   ascending. `:order` is compile order, so two rules of equal salience fire in the order
