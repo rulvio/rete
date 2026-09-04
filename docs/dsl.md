@@ -591,8 +591,10 @@ Two things to know:
 * filtering happens on the **bindings**, before the body runs. So a filter names a
   variable, not a shape of the result. You can filter on something the body never
   returns.
-* a query reads the session as it stands. If you query one with pending activations, you
-  see what was true before they fired.
+* a query reads propagated state, so it answers **as of the most recent fire**. On a
+  session you never fired that is `[]`. On one you fired and then inserted into, it is the
+  answer from before that insert. See "Expecting anything to happen before `fire_rules/2`"
+  below.
 
 Row order is unspecified. Rows come back in the order the facts arrived in, so the same
 facts fed in a different order answer in a different order. **Sort the result yourself if

@@ -236,6 +236,12 @@ defmodule Rete.Session do
   Every fact the session holds, inserted or concluded.
 
   Unordered. A session is a set of facts, not a sequence.
+
+  The two halves answer on different clocks. `insert/2` and `retract/2` update working
+  memory at once, so an inserted fact appears here before anything matches it. A concluded
+  fact is as of the most recent fire, because concluding one is what `fire_rules/2` does.
+  So a session with a queued retract shows the conclusions that rested on the fact it took
+  out. `settled?/1` reports whether a fire is owed.
   """
   @spec facts(t()) :: [term()]
   def facts(%__MODULE__{state: state}), do: Engine.facts(state)

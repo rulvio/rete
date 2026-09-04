@@ -785,8 +785,19 @@ defmodule Rete.EngineTest do
     end
 
     # `docs/design/engine.md` §2 claims this. The queued insert and the queued retract keep
-    # the order they arrived in, so they cancel when they drain. This compares the memory
-    # struct, not the facts: a leftover element or token would not appear in `facts/1`.
+    # the order they arrived in, so they cancel when they drain. This compares the memory,
+    # not the facts: a leftover element or token would not appear in `facts/1`.
+    #
+    # Through `Rete.Test.Canon`, as everywhere in this block that compares two sessions fed
+    # by different call boundaries. Batching decides the order a rule reached by two routes
+    # sees its matches, which §7 states is not a contract, so two such memories are not
+    # `==` even where the engine is right. `Deferred` has one route and would compare
+    # exactly today. Canonicalizing says which differences the claim is about, and keeps a
+    # second condition on this ruleset from failing the test for a documented reason.
+    # Order is all it hides: a stranded element or a support imbalance still shows.
+    #
+    # A comparison against a drained or empty session stays exact. Nothing is left to hold
+    # an order.
     test "an insert and a retract queued together drain to a net no-op" do
       cancelled =
         Session.new([Deferred])
@@ -796,7 +807,7 @@ defmodule Rete.EngineTest do
 
       never = Session.new([Deferred]) |> Session.insert({:cust, 1}) |> Session.fire_rules()
 
-      assert never.state.memory == cancelled.state.memory
+      assert Canon.dump(never) == Canon.dump(cancelled)
       assert [] == Deferred.flagged(cancelled)
     end
 
@@ -805,9 +816,9 @@ defmodule Rete.EngineTest do
     # These three tests do that, in the two arrangements and in the shape a caller writes.
     #
     # Each compares against the same calls with a fire after every one of them. That is the
-    # reference: batching call boundaries must not change where the session lands. The
-    # memory struct is the lens, because a stranded element or a phantom conclusion is
-    # exactly the failure that `facts/1` alone can miss.
+    # reference: batching call boundaries must not change where the session lands. Memory is
+    # the lens, because a stranded element or a phantom conclusion is exactly the failure
+    # that `facts/1` alone can miss.
     test "insert, retract and insert of one fact across calls settles as one insert does" do
       churned =
         Session.new([Deferred])
@@ -822,7 +833,7 @@ defmodule Rete.EngineTest do
         |> Session.insert([{:cust, 1}, {:order, 1, 250}])
         |> Session.fire_rules()
 
-      assert straight.state.memory == churned.state.memory
+      assert Canon.dump(straight) == Canon.dump(churned)
       assert [{1, 250}] == Deferred.flagged(churned)
 
       # And the fact really is held once, not twice: one retraction empties it.
@@ -869,14 +880,15 @@ defmodule Rete.EngineTest do
 
       assert [{:cust, 1}] == Session.facts(batched)
       assert [] == Deferred.flagged(batched)
-      assert stepwise.state.memory == batched.state.memory
+      assert Canon.dump(stepwise) == Canon.dump(batched)
 
       # Down to the element the join holds, which is where the stranding would show.
-      assert ([Deferred]
-              |> Session.new()
-              |> Session.insert({:cust, 1})
-              |> Session.fire_rules()).state.memory ==
-               batched.state.memory
+      assert Canon.dump(
+               [Deferred]
+               |> Session.new()
+               |> Session.insert({:cust, 1})
+               |> Session.fire_rules()
+             ) == Canon.dump(batched)
     end
 
     # The realistic shape: a value that changes twice, written as retract-then-insert, all
@@ -915,7 +927,7 @@ defmodule Rete.EngineTest do
                batched |> Session.facts() |> Enum.sort()
 
       assert [{1, 300}] == Deferred.flagged(batched)
-      assert stepwise.state.memory == batched.state.memory
+      assert Canon.dump(stepwise) == Canon.dump(batched)
     end
 
     # Feeds a fresh session, then fires it with a listener attached. Returns the settled
@@ -952,7 +964,7 @@ defmodule Rete.EngineTest do
           Enum.reduce(orders, Session.insert(session, {:cust, 1}), &Session.insert(&2, &1))
         end)
 
-      assert batched.state.memory == one_at_a_time.state.memory
+      assert Canon.dump(batched) == Canon.dump(one_at_a_time)
       assert Deferred.flagged(batched) == Deferred.flagged(one_at_a_time)
       assert 25 == length(Deferred.flagged(batched))
 

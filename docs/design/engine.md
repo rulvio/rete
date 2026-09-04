@@ -66,7 +66,8 @@ one that catches people out, because an empty result at least looks wrong.
 because the last settled answer is a true answer about some state of the session.
 `Rete.Inspect.why_not/2` and `collection/3` do raise, because they answer *why* a rule did
 not match, and an answer about the wrong state of the session is false to that question.
-See §12.
+See `observability.md` §2 for the split, and §12 for why the query side answers `[]`
+rather than raising.
 
 A fire **coalesces the queue before it drains it**, so work that spans several calls reaches
 a node as one batch. `insert/3` already merged the ops of its own call, and nothing used to
@@ -373,8 +374,10 @@ A query terminal stores the tokens that reach it, instead of activating.
 parameters. `Rete.Compiler` rejects, at build time, a parameter the left hand side does
 not bind on every path — such a filter could never be satisfied.
 
-A query reads the session as it stands. So a query answered before `fire_rules/2` reports
-what was true before the pending activations fired.
+A query reads propagated state, so it answers **as of the most recent fire**. Nothing
+propagates before `fire_rules/2`, so a session nobody fired answers `[]`, and a session
+fired and then inserted into answers from before that insert. A query does not raise on
+either. `Rete.Inspect.why_not/2` does. See §2.
 
 ## 10. What is asserted about all of this
 
@@ -642,6 +645,7 @@ the rule instead.
   checkpoint API, versioned migration, and distributed sync. The receiving process also
   needs the same compiled ruleset and listener modules loaded, since the function
   references resolve against them.
+
 ---
 
 ## 13. Performance
