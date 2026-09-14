@@ -429,13 +429,31 @@ defmodule Rete.DSL.ParserTest do
       assert {42, _} = Parser.compile_pattern(__ENV__, quote(do: {42, a, b}))
     end
 
-    test "rejects nil as a type" do
-      assert_raise ArgumentError, ~r/must declare its type with __type__/, fn ->
-        Parser.compile_pattern(__ENV__, quote(do: %{__type__: nil, id: id}))
-      end
+    # Every shape reports a `nil` type the same way. A tuple tag used to fall through to
+    # the generic "unsupported condition" message, which named three shapes but never said
+    # that `nil` was the problem.
+    test "rejects nil as a type, in every shape, with one message" do
+      patterns = [
+        quote(do: %{__type__: nil, id: id}),
+        quote(do: {nil, id}),
+        quote(do: {nil}),
+        quote(do: {nil, a, b})
+      ]
 
-      assert_raise ArgumentError, ~r/unsupported condition/, fn ->
-        Parser.compile_pattern(__ENV__, quote(do: {nil, id}))
+      for pattern <- patterns do
+        error =
+          assert_raise ArgumentError, fn -> Parser.compile_pattern(__ENV__, pattern) end
+
+        assert error.message =~ "nil is not a fact type",
+               "wrong message for #{Macro.to_string(pattern)}: #{error.message}"
+      end
+    end
+
+    # Omitting `__type__` is not the same as writing `nil`, and the two errors differ:
+    # one tells you to declare a type, the other tells you that `nil` is not one.
+    test "a map with no __type__ at all is a different error" do
+      assert_raise ArgumentError, ~r/must declare its type with __type__/, fn ->
+        Parser.compile_pattern(__ENV__, quote(do: %{id: id}))
       end
     end
 

@@ -45,7 +45,9 @@ All notable changes to `rete` are recorded here. The format follows
   short name from `inspect/1` for a type that is not an atom, only so the generated
   function name reads well in a stacktrace. It is not required to be unique. The hash at
   the end of each code supplies uniqueness, because that hash covers the raw pattern, and
-  the pattern holds the type. Atom types render exactly as before, so no existing
+  the pattern holds the type. A type with no letter and no digit, such as `"-"` or `%{}`,
+  gets the name `EMPTY`, so a code reads `fact_EMPTY_bind_id_expr_1234` rather than
+  `fact__bind_id_expr_1234`. Atom types render exactly as before, so no existing
   expression code changes. `Rete.DSL.Codegen` is internal, and semantic versioning does
   not cover it.
 
@@ -64,6 +66,14 @@ All notable changes to `rete` are recorded here. The format follows
   is the outcome the raising clause exists to prevent.
 
 ### Fixed
+
+* **A `nil` type in a pattern now reports the same way in every shape.** `{nil, id}` fell
+  through to the generic "unsupported condition" message, which names the three fact
+  shapes but never says that `nil` is the problem. `%{__type__: nil}` reported "a map fact
+  pattern must declare its type", which confuses writing `nil` with omitting the key. All
+  of `{nil, id}`, `%{__type__: nil}` and `%Mod{__type__: nil}` now raise "nil is not a
+  fact type ...", and the message says what to write instead. Omitting `__type__` from a
+  map is still its own, different error.
 
 * **A first-position map fact pattern that omits `__type__` now says so.** A leading
   `%{...}` literal is the options map unless it carries `__type__`. So

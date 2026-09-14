@@ -77,6 +77,10 @@ applies the module. A plain `%Order{id: id}` does not constrain the shape, becau
 `Order` is the type and the index has already applied it. That is also what lets a derived
 type reach it.
 
+You can only write `%Order{__type__: :vip, ...}` when `Order` declares a `__type__` field.
+Elixir rejects an unknown struct key at compile time, so a struct without the field gives
+a `KeyError` before this engine sees the pattern. Use a tagged map, or add the field.
+
 A type is **any term except `nil`**. `"express"`, `42` and `{:tenant, 7}` are all types,
 and `derive/2` relates them like any other type. The index stores the type as a map key,
 so it does not need to be an atom.
@@ -85,6 +89,11 @@ so it does not need to be an atom.
 unset struct field fall back to the module, so `%MyApp.Order{}` is still a
 `MyApp.Order` even on a struct that declares `__type__`. A plain `%{__type__: nil}` has no
 module to fall back to, so it raises.
+
+A *condition* is stricter than a fact here: `nil` written in a pattern always raises,
+whatever the shape. `{nil, id}`, `%{__type__: nil}` and `%Order{__type__: nil}` all give
+the same error. There is no reason to write it, and an unset field on a fact is not the
+same as `nil` typed out by hand. Omit `__type__` to type a struct pattern by its module.
 
 Every other value raises when inserted. A fact with an unexpected type would match
 nothing, and it would do so silently. You could not tell that case apart from a rule that

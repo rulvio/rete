@@ -37,6 +37,10 @@ defmodule Rete.DSL.Codegen do
   @typedoc "The variable ASTs of the bindings an expression destructures."
   @type bind :: %{atom() => Macro.t()}
 
+  # Stands in for a type whose `inspect/1` holds no letter and no digit. See
+  # `type_label/1`.
+  @empty_label "EMPTY"
+
   # --------------------------------------------------------------------------
   # expression construction
   # --------------------------------------------------------------------------
@@ -263,6 +267,10 @@ defmodule Rete.DSL.Codegen do
   A type may be any term except `nil`. For a type that is not an atom, this returns a
   short name built from `inspect/1`, so `"express"` becomes `express`.
 
+  A type with no letters and no digits, such as `"-"` or `%{}`, leaves nothing to build a
+  name from. Those get `#{@empty_label}`, so the code reads `fact_#{@empty_label}_bind_id_expr_1234`
+  rather than `fact__bind_id_expr_1234`, where an empty segment looks like a defect.
+
   The result is **for readability only**. Two types may share a name: `"a-b"` and `"a_b"`
   both become `a_b`. They still get different codes, because every code ends in
   `expr_hash/2` over the raw pattern, and the pattern holds the type. Making this result
@@ -278,10 +286,13 @@ defmodule Rete.DSL.Codegen do
   end
 
   def type_label(type) do
-    type
-    |> inspect(limit: 5, printable_limit: 32)
-    |> String.replace(~r/[^A-Za-z0-9]+/, "_")
-    |> String.trim("_")
+    slug =
+      type
+      |> inspect(limit: 5, printable_limit: 32)
+      |> String.replace(~r/[^A-Za-z0-9]+/, "_")
+      |> String.trim("_")
+
+    if slug == "", do: @empty_label, else: slug
   end
 
   @doc """

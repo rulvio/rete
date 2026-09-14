@@ -538,6 +538,15 @@ defmodule Rete.DSL.CodegenTest do
       assert Codegen.type_label("a-b") == Codegen.type_label("a_b")
     end
 
+    # A type with no letter and no digit leaves nothing to build a name from. Without a
+    # stand-in the code reads `fact__bind_id_expr_1234`, and the empty segment looks like
+    # a defect rather than a type nobody can name.
+    test "type_label/1 names a type it cannot slug" do
+      assert "EMPTY" == Codegen.type_label("-")
+      assert "EMPTY" == Codegen.type_label(%{})
+      assert "EMPTY" == Codegen.type_label(" ")
+    end
+
     test "expr_hash/2 ignores metadata and therefore line numbers" do
       a = quote(line: 1, do: {:order, id})
       b = quote(line: 99, do: {:order, id})

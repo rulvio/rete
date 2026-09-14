@@ -43,6 +43,11 @@ defmodule Rete.DSL.Parser do
   @typedoc "The `Macro.Env` of the caller of `defrule`/`defquery`."
   @type env :: Macro.Env.t()
 
+  # The field list of a map or struct AST node, as `{key, value}` pairs. A key is not
+  # always an atom, so this is not a `t:keyword/0`: `%{"id" => id}` is a valid pattern,
+  # and it gives `[{"id", ...}]`.
+  @typep fields :: [{Macro.t(), Macro.t()}]
+
   @doc """
   Parses a production declaration and body into a `Rete.IR.Production`.
 
@@ -285,7 +290,7 @@ defmodule Rete.DSL.Parser do
       # The module is the type, so the index already applied it. A `__struct__` check
       # would compare every fact and learn nothing. It would also break derivation,
       # because the index routes a descendant type here on purpose.
-      :none ->
+      :absent ->
         {module, {:%{}, meta, fields}}
 
       # The declared type routes instead, so the index no longer guarantees the module.
@@ -296,6 +301,9 @@ defmodule Rete.DSL.Parser do
       {:ok, type} ->
         rest = Keyword.delete(fields, :__type__)
         {type, {:%, struct_meta, [module, {:%{}, meta, rest}]}}
+
+      :nil_type ->
+        nil_type!(pattern)
 
       :not_literal ->
         not_literal!(fields, pattern)
@@ -309,10 +317,13 @@ defmodule Rete.DSL.Parser do
         {type, {:%{}, meta, Keyword.delete(fields, :__type__)}}
 
       # A map has no module to fall back to, so it must declare a type.
-      :none ->
+      :absent ->
         raise ArgumentError,
               "a map fact pattern must declare its type with __type__, e.g. " <>
                 "%{__type__: :order, id: id}, got: " <> Macro.to_string(pattern)
+
+      :nil_type ->
+        nil_type!(pattern)
 
       :not_literal ->
         not_literal!(fields, pattern)
@@ -321,18 +332,18 @@ defmodule Rete.DSL.Parser do
 
   def compile_pattern(_env, pattern), do: unsupported!(pattern)
 
-  # Reads the type an AST node declares, at compile time. This is the only place that
+  # Reads the type an AST node writes, at compile time. This is the only place that
   # decides what counts as a written type, for every shape. It returns an answer instead
   # of raising, because each of the three callers treats the answers differently.
   #
   #   {:ok, type}   a literal, and a usable type
-  #   :none         no type: the node is absent, or it is `nil`
+  #   :nil_type     a literal `nil`, which declares no type at all
   #   :not_literal  a type is written, but its value is known only at run time
-  @spec read_type(Macro.t()) :: {:ok, term()} | :none | :not_literal
+  @spec read_type(Macro.t()) :: {:ok, term()} | :nil_type | :not_literal
   defp read_type(ast) do
     if Macro.quoted_literal?(ast) do
       case literal_value(ast) do
-        nil -> :none
+        nil -> :nil_type
         type -> {:ok, type}
       end
     else
@@ -340,24 +351,31 @@ defmodule Rete.DSL.Parser do
     end
   end
 
-  # Reads the `__type__` a map or struct pattern declares. The caller then drops the key
-  # from the pattern, so the alpha never matches it as an ordinary field.
-  @spec declared_type(keyword()) :: {:ok, term()} | :none | :not_literal
+  # Reads the `__type__` a map or struct pattern declares, and adds the one answer a bare
+  # AST node cannot give: the key is not there at all. The caller then drops the key from
+  # the pattern, so the alpha never matches it as an ordinary field.
+  #
+  # `fields` is the field list of a map AST. A key need not be an atom, because
+  # `%{"id" => id, __type__: :row}` is a valid pattern. `Keyword.fetch/2` and
+  # `Keyword.delete/2` both work on any list of two-element tuples.
+  @spec declared_type(fields()) :: {:ok, term()} | :absent | :nil_type | :not_literal
   defp declared_type(fields) do
     case Keyword.fetch(fields, :__type__) do
-      :error -> :none
+      :error -> :absent
       {:ok, ast} -> read_type(ast)
     end
   end
 
   # Reads the type from the first element of a tuple pattern. Every tuple pattern has a
-  # first element, so `:none` needs no separate handling here. A tag that is not a usable
-  # type makes the whole condition unsupported, and that error names the three shapes.
+  # first element, so there is no `:absent` answer here. A tag whose value is unknown at
+  # compile time makes the whole condition unsupported, and that error names the three
+  # shapes.
   @spec tag_type!(Macro.t(), Macro.t()) :: term()
   defp tag_type!(ast, pattern) do
     case read_type(ast) do
       {:ok, type} -> type
-      _absent_or_not_literal -> unsupported!(pattern)
+      :nil_type -> nil_type!(pattern)
+      :not_literal -> unsupported!(pattern)
     end
   end
 
@@ -377,7 +395,19 @@ defmodule Rete.DSL.Parser do
             Macro.to_string(pattern)
   end
 
-  @spec not_literal!(keyword(), Macro.t()) :: no_return()
+  # Every shape reports a `nil` type the same way, wherever the `nil` is written. The
+  # message matches `Rete.Taxonomy.default_fact_type/1`, which rejects a `nil` type at
+  # run time for the same reason.
+  @spec nil_type!(Macro.t()) :: no_return()
+  defp nil_type!(pattern) do
+    raise ArgumentError,
+          "nil is not a fact type, so this condition could never match: " <>
+            Macro.to_string(pattern) <>
+            ". nil means that no type is declared. Write a " <>
+            "real type, or on a struct pattern omit __type__ to use the module instead."
+  end
+
+  @spec not_literal!(fields(), Macro.t()) :: no_return()
   defp not_literal!(fields, pattern) do
     raise ArgumentError,
           "the __type__ of a fact pattern must be a literal, because the alpha index " <>

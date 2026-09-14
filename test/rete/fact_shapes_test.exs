@@ -775,6 +775,42 @@ defmodule Rete.FactShapesTest do
       assert [] == tagged(run(Gates, both), :neither)
     end
 
+    defmodule StringTypedNegation do
+      use Rete.Ruleset
+
+      # Rete.Compiler.Negation rebuilds a "join_<type_label>_bind_" prefix and parses the
+      # filter's code back apart, to find out which bindings the filter reads. That prefix
+      # holds a type label, so a type that is not an atom takes a different path through
+      # it. The guard below is what makes the compiler build a join filter at all.
+      defrule flagged(
+                {:limit, lim},
+                %{__type__: "order", cid: cid},
+                {:not,
+                 [
+                   %{__type__: "ship", cid: cid, weight: w} when w > lim,
+                   %{__type__: "hold", cid: cid}
+                 ]}
+              ) do
+        {:flagged, cid}
+      end
+    end
+
+    test "a compound negation works over types that are not atoms" do
+      base = [{:limit, 10}, %{__type__: "order", cid: 1}]
+      flags = &tagged(run(StringTypedNegation, &1), :flagged)
+
+      assert [{:flagged, 1}] == flags.(base)
+
+      blockers = [%{__type__: "ship", cid: 1, weight: 50}, %{__type__: "hold", cid: 1}]
+
+      assert [] == flags.(base ++ blockers)
+
+      # The guard inside the negation still runs: a light shipment does not block.
+      light = [%{__type__: "ship", cid: 1, weight: 1}, %{__type__: "hold", cid: 1}]
+
+      assert [{:flagged, 1}] == flags.(base ++ light)
+    end
+
     test "a rule level guard runs over bindings a map condition contributed" do
       customer = %Customer{id: 1, name: "ann"}
 
@@ -874,6 +910,35 @@ defmodule Rete.FactShapesTest do
       assert [{:dash, 1}] == Collide.dash(session)
       assert [{:under, 2}] == Collide.under(session)
       assert 1 == length(Network.alphas_for(Compiler.build([Collide]), %{__type__: "a-b", id: 1}))
+    end
+
+    defmodule Unnameable do
+      use Rete.Ruleset
+
+      # Neither type has a letter or a digit, so `Rete.DSL.Codegen.type_label/1` cannot
+      # build a name from either one and returns "EMPTY" for both. This is the hardest
+      # case for the label: the two conditions share it, and it carries no information.
+      defquery dash(%{__type__: "-", id: id}), do: {:dash, id}
+      defquery empty(%{__type__: %{}, id: id}), do: {:empty, id}
+
+      # A guard reading an outer binding builds a join filter code from the same label.
+      defquery guarded({:limit, lim}, %{__type__: "-", amt: amt} when amt > lim), do: amt
+    end
+
+    test "a type with no usable name still routes, and still gets its own node" do
+      facts = [%{__type__: "-", id: 1, amt: 50}, %{__type__: %{}, id: 2}, {:limit, 10}]
+      session = run(Unnameable, facts)
+
+      assert [{:dash, 1}] == Unnameable.dash(session)
+      assert [{:empty, 2}] == Unnameable.empty(session)
+      assert [50] == Unnameable.guarded(session)
+    end
+
+    test "the label stands in for the empty name inside the expression code" do
+      codes = Compiler.build([Unnameable]).alphas |> Map.keys() |> Enum.map(&Atom.to_string/1)
+
+      assert Enum.any?(codes, &String.starts_with?(&1, "fact_EMPTY_bind_id_expr_"))
+      refute Enum.any?(codes, &String.starts_with?(&1, "fact__bind_"))
     end
 
     test "nil is the one term that is not a type" do

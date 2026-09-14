@@ -697,10 +697,13 @@ Parsing rules and disambiguations:
 
 Compile-time errors (all `ArgumentError`):
 
-* a map fact pattern with no `__type__`, or with `__type__: nil` (which reads as none).
+* a map fact pattern with no `__type__` ("a map fact pattern must declare its type ...").
+* a type written as `nil`, in any shape: `{nil, id}`, `%{__type__: nil}` and
+  `%Mod{__type__: nil}` all give one message, "nil is not a fact type ...". A pattern is
+  stricter than a fact here. At run time an unset struct field falls back to the module,
+  but writing `nil` in a pattern is never what anyone means, so it is refused.
 * a `__type__` that is not a literal, in a map or a struct pattern. It cannot be bound.
-* a tuple pattern whose first element is not a literal, or is `nil` ("unsupported
-  condition ...", since a tuple has no "unwritten type" case to fall back to).
+* a tuple pattern whose first element is not a literal ("unsupported condition ...").
 * a struct pattern whose alias does not expand to a module.
 * any other pattern shape ("unsupported condition ...").
 * binding an element *inside* a collection (`[f = {:t, x}]`).
