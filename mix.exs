@@ -83,16 +83,17 @@ defmodule Rete.MixProject do
         "docs/design/observability.md": [title: "Observability"],
         LICENSE: [title: "License"]
       ],
-      # Names with no page to link to. The first three are private, the fourth is hidden in
-      # OTP, and the last was removed in 0.5.0 and is named only by the changelog entry that
-      # records the removal. ExDoc renders them as plain code instead of trying, and warning
-      # that it cannot.
+      # Names with no page to link to. The first three are private. The fourth is hidden
+      # in OTP. The last two no longer exist, and only a changelog entry names them, to
+      # record the removal or the rename. ExDoc renders all of them as plain code, instead
+      # of trying to link them and warning that it cannot.
       skip_code_autolink_to: [
         "Rete.Engine.coalesce/1",
         "Rete.Engine.well_founded/3",
         "Rete.Inspect.derivations/2",
         ":erts_debug.size_shared/1",
-        "Rete.Session.pending/1"
+        "Rete.Session.pending/1",
+        "Rete.DSL.Codegen.type_code/1"
       ],
       groups_for_extras: [
         Guides: ["README.md", "docs/dsl.md"],

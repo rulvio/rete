@@ -66,9 +66,28 @@ own **type**: the thing the alpha index routes on:
 | `{:order, 1, 250}` — a tagged tuple of any arity, including `{:tick}` | `:order` |
 | `%MyApp.Order{id: 1}` — a struct | `MyApp.Order` |
 | `%{__type__: :order, id: 1}` — a tagged map | `:order` |
+| `%MyApp.Order{__type__: :vip, id: 1}` — a struct that declares one | `:vip` |
 
-Anything else raises an error when inserted. If a fact had the wrong type by accident, it
-would match nothing, silently. You could not tell that case apart from a rule that simply
+A **`__type__` always takes precedence**, on a struct as well. It is an explicit
+declaration, and a declaration outranks the module.
+
+In a *condition*, writing both means both. `%Order{__type__: :vip, id: id}` matches a fact
+that is an `Order` **and** is typed `:vip`. The index routes on `:vip`, and the alpha
+applies the module. A plain `%Order{id: id}` does not constrain the shape, because there
+`Order` is the type and the index has already applied it. That is also what lets a derived
+type reach it.
+
+A type is **any term except `nil`**. `"express"`, `42` and `{:tenant, 7}` are all types,
+and `derive/2` relates them like any other type. The index stores the type as a map key,
+so it does not need to be an atom.
+
+`nil` is the one exception. It means that a fact declares no type. This is what lets an
+unset struct field fall back to the module, so `%MyApp.Order{}` is still a
+`MyApp.Order` even on a struct that declares `__type__`. A plain `%{__type__: nil}` has no
+module to fall back to, so it raises.
+
+Every other value raises when inserted. A fact with an unexpected type would match
+nothing, and it would do so silently. You could not tell that case apart from a rule that
 does not apply. Pass `:fact_type_fn` to `Rete.Session.new/2` if your facts use some other
 typing scheme.
 
@@ -83,6 +102,7 @@ it. The second insert queues nothing, because the matches it would make already 
 | `{:tick}` | a fact pattern that binds nothing |
 | `%Order{id: id}` | struct fact pattern; the type is the module |
 | `%{__type__: :order, id: id}` | tagged map fact pattern |
+| `%Order{__type__: :vip, id: id}` | two constraints: an `Order`, **and** a `:vip` |
 | `o = {:order, cid}` | bind the whole fact to `o` |
 | `{:order, amt} when amt > 10` | per-condition guard |
 | `o = {:order, amt} when amt > 10` | both |
@@ -492,12 +512,20 @@ on purpose. A fact's type, and its derived ancestors, decide which alphas the fa
 reaches. That is why widening a hierarchy never recompiles a single expression.
 
 Struct types work the same way, with the module as the type: `derive MyApp.Refund,
-MyApp.Adjustment`.
+MyApp.Adjustment`. So does any other term: `derive "express", "shipment"` and
+`derive {:tenant, 7}, {:tenant, :any}` are ordinary derivations.
+
+A derivation names types, never shapes. `derive MyApp.Refund, :adjustment` is therefore
+allowed, and a `%MyApp.Refund{}` then reaches a condition written as
+`%{__type__: :adjustment, id: id}`. An alpha pattern checks only the fields it names, not
+the shape. If the parent's pattern names a field that the child does not have, the fact
+does not match. This is not an error.
 
 ## Options: salience
 
-A `%{...}` literal in **first** position is the rule's options, not a condition. The
-exception: a `__type__` key makes it a tagged-map condition instead.
+A `%{...}` literal in **first** position is the rule's options, not a condition. There is
+one exception: a `__type__` key makes it a tagged-map condition instead. A map fact
+pattern in that position that omits `__type__` is refused, and the error says so.
 
 ```elixir
 defrule urgent(%{salience: 100}, {:alarm, id}) do

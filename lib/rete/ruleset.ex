@@ -211,6 +211,7 @@ defmodule Rete.Ruleset do
       {:user, id}                      fact pattern, any arity, including {:tick}
       %User{id: id}                    struct fact pattern, the type is the module
       %{__type__: :user, id: id}       tagged map fact pattern
+      %User{__type__: :vip, id: id}    a declared type overrides the module
       user = {:user, id}               bind the whole fact
       {:order, total} when total > 10  per condition guard
       orders = [{:order, id}]          collect all matching facts, bound or anonymous

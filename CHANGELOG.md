@@ -4,6 +4,84 @@ All notable changes to `rete` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+**This release changes how facts are typed.** Two rules replace one.
+
+### Changed
+
+* **A `__type__` now takes precedence over the struct module.**
+  `%MyApp.Order{__type__: :vip, id: 1}` is a `:vip`, not a `MyApp.Order`. A `__type__` is
+  an explicit declaration, and a declaration outranks the module.
+
+  `__type__` is also never ordinary data. `Rete.DSL.Parser.compile_pattern/2` now drops it
+  from a **struct** pattern, as it always did from a tagged map. A struct pattern can
+  therefore no longer bind or match the key. `%MyApp.Order{__type__: t}` is a compile
+  error.
+
+  In a condition, writing both means **both**. `%MyApp.Order{__type__: :vip, id: id}`
+  matches a fact that is a `MyApp.Order` *and* is typed `:vip`. The index routes on the
+  declared type, so it no longer guarantees the module. The struct pattern keeps its
+  `__struct__` check to apply the module itself. A plain `%MyApp.Order{id: id}` still
+  drops that check, because there the module is the type and the index has applied it.
+  That is also what lets a derived type reach it. Neither form checks the `__type__`
+  *value* again. An alpha that applied the taxonomy would break `derive/2`.
+
+  You can only write `%Mod{__type__: ...}` when `Mod` declares a `__type__` field. Elixir
+  rejects an unknown struct key at compile time.
+
+  **Migration.** A struct that declares a `__type__` field *and* sets it changes type. If
+  you used the field as data, rename it. A struct with no such field, or with the field
+  unset, does not change.
+
+* **A fact type may be any term except `nil`.** `"express"`, `42` and `{:tenant, 7}` are
+  all types, and `derive/2` relates them like any other type. Nothing depended on the atom
+  constraint: `Taxo` documents a tag as "any term, because Taxo stores it as a map key",
+  and the `Rete.Taxonomy` index is a plain map lookup. The change covers tuple tags as
+  well, so `{"order", 1}` is a fact of type `"order"`.
+
+  A pattern must write the type as a **literal**, because the alpha index routes on it at
+  compile time. `Rete.DSL.Codegen.type_code/1` is renamed **`type_label/1`**. It builds a
+  short name from `inspect/1` for a type that is not an atom, only so the generated
+  function name reads well in a stacktrace. It is not required to be unique. The hash at
+  the end of each code supplies uniqueness, because that hash covers the raw pattern, and
+  the pattern holds the type. Atom types render exactly as before, so no existing
+  expression code changes. `Rete.DSL.Codegen` is internal, and semantic versioning does
+  not cover it.
+
+  **Migration.** A tuple whose first element is neither `nil` nor an atom used to raise on
+  insert. It is now a fact. If you relied on that error to catch a malformed value, it no
+  longer raises.
+
+* **`nil` is the one term that is not a type.** It means that a fact declares no type.
+  This is what lets an unset struct field fall back to the module, so a new
+  `%MyApp.Order{}` that declares `__type__` is still a `MyApp.Order`. A plain
+  `%{__type__: nil}` has no module to fall back to, so it raises.
+
+  A map with `__type__: nil` was previously accepted and typed `nil`. No condition could
+  be written against `nil`, because `compile_pattern/2` refused to compile one. Such a
+  fact therefore reached no alpha node and matched nothing, and it did so silently. That
+  is the outcome the raising clause exists to prevent.
+
+### Fixed
+
+* **A first-position map fact pattern that omits `__type__` now says so.** A leading
+  `%{...}` literal is the options map unless it carries `__type__`. So
+  `defrule r(%{cid: cid})` was refused as an options map, with "`:cid` is not an option".
+  The same condition one slot later produced the parser's "declare its type with
+  `__type__`" message instead. The options error now names both readings, so the error no
+  longer depends on where the condition appears.
+
+### Tests
+
+* **Map and struct facts are now tested end to end.** `test/rete/fact_shapes_test.exs`
+  inserts both shapes into a real session and fires the rules. It covers joins between all
+  three shapes, guards, pinned join keys, whole-fact bindings, collections, negations,
+  compound negations, disjunctions, truth maintenance, `Rete.Inspect.explain/2`, queries
+  with and without an index, `derive` across shapes, alpha routing, node sharing between
+  modules, maps with string keys, and nested patterns. Before this, no test inserted a
+  struct fact into a session, and one test covered tagged maps.
+
 ## 0.5.0
 
 `fire_rules/2` is now the only call that propagates. **This release has breaking changes.**

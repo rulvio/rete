@@ -170,7 +170,7 @@ defmodule Rete.Compiler.Negation do
   end
 
   defp filter_var_segment(code, type) do
-    prefix = "join_" <> Codegen.type_code(type) <> "_bind_"
+    prefix = "join_" <> Codegen.type_label(type) <> "_bind_"
     string = Atom.to_string(code)
 
     with true <- String.starts_with?(string, prefix),

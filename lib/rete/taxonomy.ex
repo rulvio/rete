@@ -27,8 +27,16 @@ defmodule Rete.Taxonomy do
   leaking. See `docs/design/network.md` §2.
   """
 
-  @typedoc "A fact type: an atom tag, or a module for a struct fact."
-  @type fact_type :: atom() | module()
+  @typedoc """
+  A fact type: any term except `nil`.
+
+  `Taxo` stores a type as a map key. This module indexes on it the same way. Neither needs
+  the type to be an atom.
+
+  `nil` is the one exception. The engine uses `nil` to mean that a fact declares no type.
+  See `default_fact_type/1`.
+  """
+  @type fact_type :: term()
 
   @typedoc "An ordered taxonomy declaration, as returned by `Rete.get_taxo_data/1`."
   @type declaration :: {:derive, fact_type(), fact_type()} | {:underive, fact_type(), fact_type()}
@@ -208,32 +216,61 @@ defmodule Rete.Taxonomy do
   @doc """
   The default `:fact_type_fn`.
 
-    * a struct is typed by its module.
-    * a tagged tuple `{:type, ...}`, of any arity, is typed by its first element.
-    * a tagged map `%{__type__: type}` is typed by that value.
+  A type is **any term except `nil`**, in every position below. `Taxo` and the alpha index
+  both store a type as a map key, so an atom is not required. `"express"`, `42` and
+  `{:tenant, 7}` are all types, and `derive/2` relates them like any other type.
 
-  Anything else raises an error. If a fact had the wrong type by accident, it would
-  match nothing, silently. You could not tell that case apart from a rule that simply
-  does not apply.
+  These three rules apply in order:
+
+    * a `__type__` key with a value other than `nil` gives the fact its type. This holds
+      **on a struct too**. An explicit declaration takes precedence over the module.
+    * otherwise, a struct takes its type from its module. A struct that declares a
+      `__type__` field but leaves it unset therefore lands here.
+    * a tagged tuple `{type, ...}` takes its type from its first element, at any arity.
+
+  `nil` is the one value that is not a type. The engine uses it to mean that a fact
+  declares no type. This is why an unset `__type__` field on a struct falls through to the
+  module. A plain map has no module, so `%{__type__: nil}` raises instead.
+
+  Every other value raises as well. A fact with an unexpected type would match nothing,
+  and it would do so silently. You could not tell that case apart from a rule that does
+  not apply.
 
       iex> Rete.Taxonomy.default_fact_type({:order, 1, 99})
       :order
       iex> Rete.Taxonomy.default_fact_type(%{__type__: :order, id: 1})
       :order
+      iex> Rete.Taxonomy.default_fact_type({"order", 1})
+      "order"
       iex> Rete.Taxonomy.default_fact_type(%Rete.IR.Test{})
       Rete.IR.Test
   """
   @spec default_fact_type(term()) :: fact_type()
+
+  # The three clauses that find a type, in precedence order.
+  def default_fact_type(%{__type__: type}) when not is_nil(type), do: type
+
+  # Every struct the clause above did not take. That is a struct with no `__type__` field,
+  # and a struct whose field is unset. Both declare no type, so the module gives it.
   def default_fact_type(%module{}), do: module
-  def default_fact_type(%{__type__: type}) when is_atom(type), do: type
 
   def default_fact_type(fact)
-      when is_tuple(fact) and tuple_size(fact) > 0 and is_atom(elem(fact, 0)),
+      when is_tuple(fact) and tuple_size(fact) > 0 and not is_nil(elem(fact, 0)),
       do: elem(fact, 0)
+
+  # The two clauses that raise. Only a *plain* map reaches this one. A struct with an
+  # unset `__type__` already took its type from its module, and a map has no module.
+  def default_fact_type(%{__type__: nil} = fact) do
+    raise ArgumentError,
+          "cannot determine the fact type of #{inspect(fact)}: nil is not a fact type. " <>
+            "It means that the fact declares no type. A struct then uses its module, " <>
+            "but a plain map has no module to use."
+  end
 
   def default_fact_type(fact) do
     raise ArgumentError,
           "cannot determine the fact type of #{inspect(fact)}: expected a struct, " <>
-            "a tagged tuple {:type, ...} or a tagged map %{__type__: type}"
+            "a tagged tuple {type, ...} or a tagged map %{__type__: type}. A type may be " <>
+            "any term except nil."
   end
 end

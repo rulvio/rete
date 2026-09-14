@@ -48,7 +48,8 @@ call a rule yourself.
 Four ideas carry the whole model.
 
 **Facts are plain data.** A fact is a tagged tuple, a struct, or a map with a `__type__`
-key. There is no fact API. `{:order, 1, 250}` is a fact.
+key. There is no fact API. `{:order, 1, 250}` is a fact. A `__type__` wins over the struct
+module, and a type may be any term except `nil`.
 
 **A rule is a pattern over several facts at once.** The engine matches its conditions
 independently, then joins them on the variables they share.

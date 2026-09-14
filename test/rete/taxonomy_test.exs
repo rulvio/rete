@@ -16,11 +16,17 @@ defmodule Rete.TaxonomyTest.Order do
   defstruct [:id]
 end
 
+defmodule Rete.TaxonomyTest.Tagged do
+  @moduledoc false
+  defstruct [:__type__, :id]
+end
+
 defmodule Rete.TaxonomyTest do
   use ExUnit.Case, async: true
 
   alias Rete.Taxonomy
   alias Rete.TaxonomyTest.Order
+  alias Rete.TaxonomyTest.Tagged
 
   doctest Rete.Taxonomy
 
@@ -140,21 +146,49 @@ defmodule Rete.TaxonomyTest do
       assert :order == Taxonomy.default_fact_type(%{__type__: :order, id: 1})
     end
 
-    test "a struct is typed by its module even when it carries a __type__ field" do
+    # `Taxo` and the alpha index both store a type as a map key. Neither one ever needed
+    # the type to be an atom.
+    test "any term except nil is a type" do
+      assert "order" == Taxonomy.default_fact_type({"order", 1})
+      assert "order" == Taxonomy.default_fact_type(%{__type__: "order"})
+      assert 42 == Taxonomy.default_fact_type({42, :a})
+      assert {:tenant, 7} == Taxonomy.default_fact_type(%{__type__: {:tenant, 7}})
+    end
+
+    # An explicit type is a declaration, so it takes precedence over the module.
+    test "a struct with a __type__ field is typed by that field, not its module" do
+      assert :express == Taxonomy.default_fact_type(%Tagged{__type__: :express, id: 1})
+      assert "express" == Taxonomy.default_fact_type(%Tagged{__type__: "express", id: 1})
+    end
+
+    # `nil` means that a fact declares no type, and a struct field defaults to `nil`. An
+    # unset `__type__` must therefore count as unwritten. Otherwise every new struct that
+    # declares the field would take the type `nil`.
+    test "a struct whose __type__ is unset falls back to its module" do
+      assert Tagged == Taxonomy.default_fact_type(%Tagged{id: 1})
+      assert Tagged == Taxonomy.default_fact_type(%Tagged{__type__: nil, id: 1})
       assert Order == Taxonomy.default_fact_type(%Order{id: 1})
     end
 
     test "an untypable value raises naming it" do
-      for fact <- [%{id: 1}, {"order", 1}, [:order, 1], :order, 42, "order"] do
+      for fact <- [%{id: 1}, [:order, 1], :order, 42, "order", {}] do
         assert_raise ArgumentError, ~r/cannot determine the fact type of/, fn ->
           Taxonomy.default_fact_type(fact)
         end
       end
     end
 
-    test "a tagged map whose __type__ is not an atom raises" do
+    # A plain map has no module to fall back to, so `nil` leaves it with no type at all.
+    test "a tagged map whose __type__ is nil raises" do
+      error =
+        assert_raise ArgumentError, fn -> Taxonomy.default_fact_type(%{__type__: nil, id: 1}) end
+
+      assert error.message =~ "nil is not a fact type"
+    end
+
+    test "a tuple whose tag is nil raises" do
       assert_raise ArgumentError, ~r/cannot determine the fact type of/, fn ->
-        Taxonomy.default_fact_type(%{__type__: "order"})
+        Taxonomy.default_fact_type({nil, 1})
       end
     end
   end

@@ -520,9 +520,22 @@ defmodule Rete.DSL.CodegenTest do
       assert :__fact_tick_bind_expr_7__ == Codegen.expr_name(:fact_tick_bind_expr_7)
     end
 
-    test "type_code/1 strips the Elixir prefix and the dots of a module" do
-      assert "order" == Codegen.type_code(:order)
-      assert "String_Chars" == Codegen.type_code(String.Chars)
+    test "type_label/1 strips the Elixir prefix and the dots of a module" do
+      assert "order" == Codegen.type_label(:order)
+      assert "String_Chars" == Codegen.type_label(String.Chars)
+    end
+
+    test "type_label/1 slugs a type that is not an atom" do
+      assert "express" == Codegen.type_label("express")
+      assert "42" == Codegen.type_label(42)
+      assert "tenant_7" == Codegen.type_label({:tenant, 7})
+    end
+
+    # This is a label, not a code, and it identifies nothing on its own. `expr_code/3`
+    # appends a hash over the raw pattern, and the pattern holds the type, so the two full
+    # codes still differ. This test records that the shared name is intended.
+    test "type_label/1 need not be unique" do
+      assert Codegen.type_label("a-b") == Codegen.type_label("a_b")
     end
 
     test "expr_hash/2 ignores metadata and therefore line numbers" do
