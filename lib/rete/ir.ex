@@ -93,7 +93,7 @@ defmodule Rete.IR do
           }
 
     @type t :: %__MODULE__{
-            type: atom() | module(),
+            type: term(),
             fact_binding: atom() | nil,
             bind: [atom()],
             alpha: Rete.IR.Expr.t(),
@@ -132,7 +132,7 @@ defmodule Rete.IR do
     """
 
     @type t :: %__MODULE__{
-            type: atom() | module(),
+            type: term(),
             coll_binding: atom() | nil,
             bind: [atom()],
             alpha: Rete.IR.Expr.t(),

@@ -151,7 +151,7 @@ downstream, so there is nothing to hand the RHS.
 
 | field | type | set by | meaning |
 |---|---|---|---|
-| `:type` | `atom \| module` | W1 | declared fact type, see §4 |
+| `:type` | `term` (never `nil`) | W1 | declared fact type, see §4 |
 | `:fact_binding` | `atom \| nil` | W1 | the `f` in `f = {:order, id}`; **not** in `:bind` |
 | `:bind` | `[atom]`, **sorted** | W1 | variables bound by the pattern itself |
 | `:alpha` | `%Expr{arity: 1, kind: :alpha}` | W1, rebuilt by W2b | `(fact) -> bindings_map \| nil` |
@@ -507,15 +507,39 @@ decides whether to propagate a fact to a node. This is asserted on purpose, in
 | `{:order, id, amt}` | `:order` | `{_, id, amt}` |
 | `%Order{id: id}` | `Order` (expanded module) | `%{id: id}` - the `__struct__` check is dropped |
 | `%{__type__: :order, id: id}` | `:order` | `%{id: id}` - the `__type__` key is dropped |
+| `%Order{__type__: :vip, id: id}` | `:vip` - the declared type wins | `%Order{id: id}` - the `__struct__` check is **kept** |
+| `{"order", id}` | `"order"` | `{_, id}` |
 
-Facts at runtime are therefore any-arity tagged tuples, structs (with the module as the
-type), or tagged maps (`%{__type__: t}`).
+A fact at run time is therefore a tagged tuple of any arity, a struct, or a tagged map. A
+`__type__` key overrides the module wherever it appears. It is a declaration, not data, so
+no pattern matches it as a field.
+
+The two struct rows above follow one rule, not two: a pattern keeps the `__struct__` check
+only when the index does not already guarantee the module.
+
+* `%Order{f: v}` drops the check. `Order` is the type, so the index applied it. A second
+  check would compare every fact and learn nothing. It would also break derivation,
+  because the index routes a descendant type here on purpose.
+* `%Order{__type__: :vip, f: v}` keeps the check. `:vip` is the type, so the index
+  guarantees nothing about the shape. The module is then the only constraint left for the
+  alpha to apply, and the condition reads "an `Order`, **and** a `:vip`".
+
+Both rows drop the `__type__` *value*. An alpha must never check a type a second time, or
+a derived type would stop matching.
+
+A type is any term except `nil`. `Taxo` and the alpha index both store a type as a map
+key, so an atom is not required. `nil` is reserved to mean *no* type. That is what lets an
+unset struct field fall back to the module.
+
+A pattern must write the type as a **literal**, because the alpha index routes on it at
+compile time. `Rete.DSL.Parser` tests the AST with `Macro.quoted_literal?/1`, then reads
+the value with `Code.eval_quoted/1`. Evaluation is safe because that test has passed.
 
 ---
 
 ## 5. Expression naming and hashing
 
-`Rete.DSL.Codegen` owns this. `expr_code/3`, `expr_name/1`, `type_code/1`, and
+`Rete.DSL.Codegen` owns this. `expr_code/3`, `expr_name/1`, `type_label/1`, and
 `expr_hash/2` each have exactly one implementation, and both `Parser` and `Bindings` call
 them.
 
@@ -526,8 +550,16 @@ test_bind_<v1>_..._expr_<hash>                    test over bindings only
 join_<type>_bind_<v1>_..._expr_<hash>             join filter
 ```
 
-* `<type>` is the type atom. A module loses its `Elixir.` prefix, and `.` becomes `_`
-  (`MyApp.Order` → `MyApp_Order`).
+The `<type>` segment is a **label**, not an identifier. `type_label/1` turns a type that
+is not an atom into a short, readable name, and two types may share one: `"a-b"` and
+`"a_b"` both give `a_b`. Only `<hash>` makes a code unique. That hash covers the raw
+pattern, and the pattern holds the type, so two different types always give two different
+codes. The hash carries the whole identity of an expression. The other segments only make
+the generated function name readable in a stacktrace.
+
+* `<type>` is the type label. An atom type is rendered as written, and a module loses its
+  `Elixir.` prefix, with `.` becoming `_` (`MyApp.Order` → `MyApp_Order`). Any other type
+  is named from `inspect/1`, and a type with no letter and no digit gets `EMPTY`.
 * `<v...>` are the variables the expression reads, **sorted**, joined with `_`. An empty
   bind set gives `fact_tick_bind_expr_<hash>`. For a join filter, these are the guard's
   variables from both sides — for example, `join_order_bind_amt_t_expr_<hash>` for
@@ -635,6 +667,7 @@ feeds the generated function table, not the network.
 | `{:type, a, b, ...}` (any arity, incl. `{:type}`) | `Fact` |
 | `%Mod{f: v}` | `Fact`, `type: Mod` |
 | `%{__type__: :type, f: v}` | `Fact`, `type: :type` |
+| `%Mod{__type__: :type, f: v}` | `Fact`, `type: :type` — the declaration outranks the module |
 | `f = <pattern>` | `Fact` with `fact_binding: :f` |
 | `<pattern> when <guard>` | `Fact`, guard split between `:alpha` and `:join_filter` |
 | `f = <pattern> when <guard>` | both |
@@ -665,7 +698,13 @@ Parsing rules and disambiguations:
 
 Compile-time errors (all `ArgumentError`):
 
-* a map fact pattern with no `__type__`, or a non-literal-atom `__type__`.
+* a map fact pattern with no `__type__` ("a map fact pattern must declare its type ...").
+* a type written as `nil`, in any shape: `{nil, id}`, `%{__type__: nil}` and
+  `%Mod{__type__: nil}` all give one message, "nil is not a fact type ...". A pattern is
+  stricter than a fact here. At run time an unset struct field falls back to the module,
+  but writing `nil` in a pattern is never what anyone means, so it is refused.
+* a `__type__` that is not a literal, in a map or a struct pattern. It cannot be bound.
+* a tuple pattern whose first element is not a literal ("unsupported condition ...").
 * a struct pattern whose alias does not expand to a module.
 * any other pattern shape ("unsupported condition ...").
 * binding an element *inside* a collection (`[f = {:t, x}]`).

@@ -286,5 +286,24 @@ defmodule Rete.QueryIndexTest do
       assert error.message =~ "sets [:saliance]"
       assert error.message =~ "index :flag"
     end
+
+    # A leading map literal is the options map unless it carries `__type__`. A map fact
+    # pattern that omits its type is therefore refused as an options map. The parser's own
+    # "declare its type with __type__" message cannot be reached in first position, but the
+    # same pattern one slot later does produce it. The error must name both readings.
+    # Otherwise the message depends on where the condition appears.
+    test "a first position map fact pattern that forgot __type__ is told so" do
+      error =
+        assert_raise ArgumentError, fn ->
+          defmodule Untyped do
+            use Rete.Ruleset
+
+            defrule flag(%{cid: cid}), do: {:flagged, cid}
+          end
+        end
+
+      assert error.message =~ "sets [:cid]"
+      assert error.message =~ "__type__"
+    end
   end
 end

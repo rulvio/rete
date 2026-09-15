@@ -14,6 +14,7 @@ defmodule Rete.DSL.Parser do
       {:type, a, b, ...}              fact pattern of any arity, including {:type}
       %Mod{f: v}                      struct fact pattern, type is the module
       %{__type__: :type, f: v}        tagged map fact pattern
+      %Mod{__type__: :type, f: v}     struct pattern, the declared type overrides the module
       f = <pattern>                   bind the whole fact to f
       <pattern> when <guard>          per condition guard
       [<pattern>]                     collection binding (collect all), anonymous
@@ -22,6 +23,10 @@ defmodule Rete.DSL.Parser do
 
   A leading `%{...}` literal is the options map, not a fact pattern. A rule level guard
   becomes a trailing `Rete.IR.Test`.
+
+  A type is any term except `nil`. A pattern must write it as a literal. `__type__` always
+  declares a type. It is never a field to match on, so the parser drops it from every
+  pattern that names it.
 
   Expression codes stay stable across compilations of the same source. This is what lets
   the network share nodes. The compiler qualifies module attributes with the defining
@@ -37,6 +42,11 @@ defmodule Rete.DSL.Parser do
 
   @typedoc "The `Macro.Env` of the caller of `defrule`/`defquery`."
   @type env :: Macro.Env.t()
+
+  # The field list of a map or struct AST node, as `{key, value}` pairs. A key is not
+  # always an atom, so this is not a `t:keyword/0`: `%{"id" => id}` is a valid pattern,
+  # and it gives `[{"id", ...}]`.
+  @typep fields :: [{Macro.t(), Macro.t()}]
 
   @doc """
   Parses a production declaration and body into a `Rete.IR.Production`.
@@ -113,7 +123,9 @@ defmodule Rete.DSL.Parser do
               "#{name} sets #{inspect(unknown)}, which is not an option. " <>
                 "The options map takes #{inspect(@known_opts)}. An index is declared " <>
                 "separately, with `index :#{name}, [...]`. A silently ignored option is " <>
-                "worse than a rejected one, so this is an error rather than a no-op."
+                "worse than a rejected one, so this is an error rather than a no-op. " <>
+                "If you meant a map fact pattern rather than the options map, declare " <>
+                "its type: `%{__type__: :some_type, ...}`."
     end
   end
 
@@ -241,53 +253,174 @@ defmodule Rete.DSL.Parser do
   @doc """
   Compiles a fact pattern into `{type, argument_pattern}`.
 
-  The argument pattern is what the generated alpha function matches the fact against. It
-  never checks the fact type. The tag slot of a tuple becomes `_`. A struct pattern loses
-  its `__struct__` check. A tagged map pattern loses its `__type__` key. Type filtering,
-  including taxonomy, happens later, when the alpha index decides whether to propagate a
-  fact to a node.
+  The generated alpha function matches the fact against the argument pattern. That pattern
+  never checks the fact type. The tag slot of a tuple becomes `_`. Every pattern loses its
+  `__type__` key, because that key declares a type and is not data to match on. The alpha
+  index applies the type later, when it decides which nodes a fact reaches.
+
+  A struct pattern keeps its `__struct__` check only when it needs one:
+
+    * `%Mod{f: v}` drops the check. `Mod` is the type, so the index already applied it.
+    * `%Mod{__type__: t, f: v}` keeps the check. Here `t` is the type, so the index no
+      longer guarantees the module. The alpha must apply it, and the condition means "a
+      `Mod`, **and** a `t`".
+
+  A type is any term except `nil`. This matches `Rete.Taxonomy.default_fact_type/1`. A
+  pattern must write the type as a **literal**, because the parser reads it at compile
+  time. The alpha index routes on that value, so it cannot come from run time.
   """
-  @spec compile_pattern(env(), Macro.t()) :: {atom() | module(), Macro.t()}
+  @spec compile_pattern(env(), Macro.t()) :: {term(), Macro.t()}
   def compile_pattern(env, pattern)
 
-  # {:type, a} - literal two element tuple
-  def compile_pattern(_env, {type, arg}) when is_atom(type) do
-    {type, {{:_, [], nil}, arg}}
+  # {type, a} - literal two element tuple
+  def compile_pattern(_env, {tag, arg} = pattern) do
+    {tag_type!(tag, pattern), {{:_, [], nil}, arg}}
   end
 
-  # {:type}, {:type, a, b, ...} - any other arity
-  def compile_pattern(_env, {:{}, meta, [type | args]}) when is_atom(type) do
-    {type, {:{}, meta, [{:_, [], nil} | args]}}
+  # {type}, {type, a, b, ...} - any other arity
+  def compile_pattern(_env, {:{}, meta, [tag | args]} = pattern) do
+    {tag_type!(tag, pattern), {:{}, meta, [{:_, [], nil} | args]}}
   end
 
-  # %Mod{f: v}
-  def compile_pattern(env, {:%, _, [alias_ast, {:%{}, meta, fields}]}) do
-    {expand_type(env, alias_ast), {:%{}, meta, fields}}
-  end
+  # %Mod{f: v}, and %Mod{__type__: type, f: v} where the declared type wins
+  def compile_pattern(env, {:%, struct_meta, [alias_ast, {:%{}, meta, fields}]} = pattern) do
+    module = expand_type(env, alias_ast)
 
-  # %{__type__: :type, f: v}
-  def compile_pattern(_env, {:%{}, meta, fields} = pattern) when is_list(fields) do
-    case Keyword.fetch(fields, :__type__) do
-      {:ok, type} when is_atom(type) and not is_nil(type) ->
-        {type, {:%{}, meta, Keyword.delete(fields, :__type__)}}
+    case declared_type(fields) do
+      # The module is the type, so the index already applied it. A `__struct__` check
+      # would compare every fact and learn nothing. It would also break derivation,
+      # because the index routes a descendant type here on purpose.
+      :absent ->
+        {module, {:%{}, meta, fields}}
 
-      {:ok, other} ->
-        raise ArgumentError,
-              "the __type__ of a map fact pattern must be a literal atom, got: " <>
-                Macro.to_string(other)
+      # The declared type routes instead, so the index no longer guarantees the module.
+      # Facts of this type may be maps, or other structs. The module is therefore a
+      # constraint the alpha must apply, and the struct pattern applies it. The
+      # `__type__` value stays dropped: an alpha must never check a type again, or a
+      # derived type routed here would stop matching.
+      {:ok, type} ->
+        rest = Keyword.delete(fields, :__type__)
+        {type, {:%, struct_meta, [module, {:%{}, meta, rest}]}}
 
-      :error ->
-        raise ArgumentError,
-              "a map fact pattern must declare its type with __type__, e.g. " <>
-                "%{__type__: :order, id: id}, got: " <> Macro.to_string(pattern)
+      :nil_type ->
+        nil_type!(pattern)
+
+      :not_literal ->
+        not_literal!(fields, pattern)
     end
   end
 
-  def compile_pattern(_env, pattern) do
+  # %{__type__: type, f: v}
+  def compile_pattern(_env, {:%{}, meta, fields} = pattern) when is_list(fields) do
+    case declared_type(fields) do
+      {:ok, type} ->
+        {type, {:%{}, meta, Keyword.delete(fields, :__type__)}}
+
+      # A map has no module to fall back to, so it must declare a type.
+      :absent ->
+        raise ArgumentError,
+              "a map fact pattern must declare its type with __type__, e.g. " <>
+                "%{__type__: :order, id: id}, got: " <> Macro.to_string(pattern)
+
+      :nil_type ->
+        nil_type!(pattern)
+
+      :not_literal ->
+        not_literal!(fields, pattern)
+    end
+  end
+
+  def compile_pattern(_env, pattern), do: unsupported!(pattern)
+
+  # Reads the type an AST node writes, at compile time. This is the only place that
+  # decides what counts as a written type, for every shape. It returns an answer instead
+  # of raising, because each of the three callers treats the answers differently.
+  #
+  #   {:ok, type}   a literal, and a usable type
+  #   :nil_type     a literal `nil`, which declares no type at all
+  #   :not_literal  a type is written, but its value is known only at run time
+  @spec read_type(Macro.t()) :: {:ok, term()} | :nil_type | :not_literal
+  defp read_type(ast) do
+    if Macro.quoted_literal?(ast) do
+      case literal_value(ast) do
+        nil -> :nil_type
+        type -> {:ok, type}
+      end
+    else
+      :not_literal
+    end
+  end
+
+  # Reads the `__type__` a map or struct pattern declares, and adds the one answer a bare
+  # AST node cannot give: the key is not there at all. The caller then drops the key from
+  # the pattern, so the alpha never matches it as an ordinary field.
+  #
+  # `fields` is the field list of a map AST. A key need not be an atom, because
+  # `%{"id" => id, __type__: :row}` is a valid pattern. `Keyword.fetch/2` and
+  # `Keyword.delete/2` both work on any list of two-element tuples.
+  @spec declared_type(fields()) :: {:ok, term()} | :absent | :nil_type | :not_literal
+  defp declared_type(fields) do
+    case Keyword.fetch(fields, :__type__) do
+      :error -> :absent
+      {:ok, ast} -> read_type(ast)
+    end
+  end
+
+  # Reads the type from the first element of a tuple pattern. Every tuple pattern has a
+  # first element, so there is no `:absent` answer here. A tag whose value is unknown at
+  # compile time makes the whole condition unsupported, and that error names the three
+  # shapes.
+  @spec tag_type!(Macro.t(), Macro.t()) :: term()
+  defp tag_type!(ast, pattern) do
+    case read_type(ast) do
+      {:ok, type} -> type
+      :nil_type -> nil_type!(pattern)
+      :not_literal -> unsupported!(pattern)
+    end
+  end
+
+  # A quoted literal is not always equal to its own value. For example, `%{a: 1}` quotes
+  # to `{:%{}, [], [a: 1]}`. Evaluation is safe here, because `Macro.quoted_literal?/1`
+  # has already confirmed that the AST holds no call and no variable.
+  #
+  # `Macro.quoted_literal?/1` counts an alias and a struct literal as literals, so this can
+  # reach `Mod.__struct__/1` for a type written as `%Mod{}`. That makes the ruleset depend
+  # on `Mod` at compile time. A module that is not available yet therefore fails with
+  # Elixir's own struct error, not with a message from this module. Writing a struct as a
+  # fact type is rare, and the alternative — reimplementing literal evaluation here — would
+  # cost more than the better message is worth.
+  defp literal_value(ast) do
+    {value, _binding} = Code.eval_quoted(ast)
+    value
+  end
+
+  @spec unsupported!(Macro.t()) :: no_return()
+  defp unsupported!(pattern) do
     raise ArgumentError,
           "unsupported condition, expected a tagged tuple such as {:order, id}, a struct " <>
             "such as %Order{id: id}, or a tagged map such as %{__type__: :order, id: id}, got: " <>
             Macro.to_string(pattern)
+  end
+
+  # Every shape reports a `nil` type the same way, wherever the `nil` is written. The
+  # message matches `Rete.Taxonomy.default_fact_type/1`, which rejects a `nil` type at
+  # run time for the same reason.
+  @spec nil_type!(Macro.t()) :: no_return()
+  defp nil_type!(pattern) do
+    raise ArgumentError,
+          "nil is not a fact type, so this condition could never match: " <>
+            Macro.to_string(pattern) <>
+            ". nil means that no type is declared. Write a " <>
+            "real type, or on a struct pattern omit __type__ to use the module instead."
+  end
+
+  @spec not_literal!(fields(), Macro.t()) :: no_return()
+  defp not_literal!(fields, pattern) do
+    raise ArgumentError,
+          "the __type__ of a fact pattern must be a literal, because the alpha index " <>
+            "routes on it at compile time, got: " <>
+            Macro.to_string(Keyword.fetch!(fields, :__type__)) <>
+            " in " <> Macro.to_string(pattern)
   end
 
   defp expand_type(env, alias_ast) do

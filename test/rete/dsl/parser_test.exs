@@ -3,6 +3,11 @@ defmodule ReteParserTestOrder do
   defstruct [:id, :amount]
 end
 
+defmodule ReteParserTestTagged do
+  @moduledoc false
+  defstruct [:__type__, :id]
+end
+
 defmodule Rete.DSL.ParserTest do
   use ExUnit.Case, async: true
 
@@ -49,6 +54,10 @@ defmodule Rete.DSL.ParserTest do
     # side may not read it. See Rete.DSL.Bindings.mark_inert/1.
     defrule struct_coll(orders = [%ReteParserTestOrder{id: id}]) do
       {:orders, length(orders)}
+    end
+
+    defrule struct_declared_type(%ReteParserTestTagged{__type__: :vip, id: id}) do
+      {:vip, id}
     end
 
     # --- tagged maps ------------------------------------------------------
@@ -188,6 +197,25 @@ defmodule Rete.DSL.ParserTest do
                cond_at(:struct_coll, 0)
 
       assert %{id: 3} == alpha(:struct_coll).(%ReteParserTestOrder{id: 3})
+    end
+
+    # This is the opposite case to the first test in this block. There the module is the
+    # type, so the index guarantees it, and a second check would only cost time. Here
+    # `:vip` is the type, so the index guarantees nothing about the shape. The module
+    # becomes a constraint the alpha must apply, and the condition means "a Tagged, *and*
+    # a :vip".
+    test "a declared __type__ takes the type and the struct check is kept" do
+      assert %IR.Fact{type: :vip, bind: [:id]} = cond_at(:struct_declared_type, 0)
+
+      assert %{id: 1} == alpha(:struct_declared_type).(%ReteParserTestTagged{id: 1})
+
+      # routed here as :vip, but not a Tagged
+      assert nil == alpha(:struct_declared_type).(%{__type__: :vip, id: 1})
+      assert nil == alpha(:struct_declared_type).(%ReteParserTestOrder{id: 1})
+
+      # the type value itself is not re-checked, so a derived type still matches
+      assert %{id: 1} ==
+               alpha(:struct_declared_type).(%ReteParserTestTagged{__type__: :other, id: 1})
     end
   end
 
@@ -383,8 +411,49 @@ defmodule Rete.DSL.ParserTest do
     end
 
     test "rejects a non literal __type__" do
-      assert_raise ArgumentError, ~r/must be a literal atom/, fn ->
+      assert_raise ArgumentError, ~r/__type__ of a fact pattern must be a literal/, fn ->
         Parser.compile_pattern(__ENV__, quote(do: %{__type__: t, id: id}))
+      end
+    end
+
+    # The parser reads a type at compile time, because the alpha index routes on it. The
+    # type does not have to be an atom: `Taxo` and the index both store it as a map key.
+    test "any literal is a type" do
+      assert {"order", _} = Parser.compile_pattern(__ENV__, quote(do: %{__type__: "order"}))
+      assert {42, _} = Parser.compile_pattern(__ENV__, quote(do: %{__type__: 42}))
+
+      assert {{:tenant, 7}, _} =
+               Parser.compile_pattern(__ENV__, quote(do: %{__type__: {:tenant, 7}}))
+
+      assert {"order", _} = Parser.compile_pattern(__ENV__, quote(do: {"order", id}))
+      assert {42, _} = Parser.compile_pattern(__ENV__, quote(do: {42, a, b}))
+    end
+
+    # Every shape reports a `nil` type the same way. A tuple tag used to fall through to
+    # the generic "unsupported condition" message, which named three shapes but never said
+    # that `nil` was the problem.
+    test "rejects nil as a type, in every shape, with one message" do
+      patterns = [
+        quote(do: %{__type__: nil, id: id}),
+        quote(do: {nil, id}),
+        quote(do: {nil}),
+        quote(do: {nil, a, b})
+      ]
+
+      for pattern <- patterns do
+        error =
+          assert_raise ArgumentError, fn -> Parser.compile_pattern(__ENV__, pattern) end
+
+        assert error.message =~ "nil is not a fact type",
+               "wrong message for #{Macro.to_string(pattern)}: #{error.message}"
+      end
+    end
+
+    # Omitting `__type__` is not the same as writing `nil`, and the two errors differ:
+    # one tells you to declare a type, the other tells you that `nil` is not one.
+    test "a map with no __type__ at all is a different error" do
+      assert_raise ArgumentError, ~r/must declare its type with __type__/, fn ->
+        Parser.compile_pattern(__ENV__, quote(do: %{id: id}))
       end
     end
 

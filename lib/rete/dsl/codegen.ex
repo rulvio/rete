@@ -37,6 +37,10 @@ defmodule Rete.DSL.Codegen do
   @typedoc "The variable ASTs of the bindings an expression destructures."
   @type bind :: %{atom() => Macro.t()}
 
+  # Stands in for a type whose `inspect/1` holds no letter and no digit. See
+  # `type_label/1`.
+  @empty_label "EMPTY"
+
   # --------------------------------------------------------------------------
   # expression construction
   # --------------------------------------------------------------------------
@@ -58,7 +62,7 @@ defmodule Rete.DSL.Codegen do
   """
   @spec alpha_expr(
           Macro.Env.t(),
-          atom() | module(),
+          term(),
           Macro.t(),
           Macro.t(),
           Macro.t() | nil,
@@ -84,7 +88,8 @@ defmodule Rete.DSL.Codegen do
           {[:test, :fact], body}
       end
 
-    code = expr_code(prefix ++ [type_code(type), :bind], Map.keys(bind), expr_hash(pattern, body))
+    code =
+      expr_code(prefix ++ [type_label(type), :bind], Map.keys(bind), expr_hash(pattern, body))
 
     %IR.Expr{
       code: code,
@@ -131,7 +136,7 @@ defmodule Rete.DSL.Codegen do
   """
   @spec join_filter_expr(
           Macro.Env.t(),
-          atom() | module(),
+          term(),
           MapSet.t(atom()) | [atom()],
           Macro.t()
         ) :: IR.Expr.t()
@@ -150,7 +155,7 @@ defmodule Rete.DSL.Codegen do
 
     args = [bind_pattern(token_vars), bind_pattern(fact_vars)]
     body = quote(do: if(unquote(guard), do: true, else: false))
-    code = expr_code([:join, type_code(type), :bind], Map.keys(vars), expr_hash(args, body))
+    code = expr_code([:join, type_label(type), :bind], Map.keys(vars), expr_hash(args, body))
 
     %IR.Expr{
       code: code,
@@ -258,13 +263,36 @@ defmodule Rete.DSL.Codegen do
 
   Module types lose their `Elixir.` prefix and their dots, so `MyApp.Order`
   becomes `MyApp_Order` and codes stay readable.
+
+  A type may be any term except `nil`. For a type that is not an atom, this returns a
+  short name built from `inspect/1`, so `"express"` becomes `express`.
+
+  A type with no letters and no digits, such as `"-"` or `%{}`, leaves nothing to build a
+  name from. Those get `#{@empty_label}`, so the code reads `fact_#{@empty_label}_bind_id_expr_1234`
+  rather than `fact__bind_id_expr_1234`, where an empty segment looks like a defect.
+
+  The result is **for readability only**. Two types may share a name: `"a-b"` and `"a_b"`
+  both become `a_b`. They still get different codes, because every code ends in
+  `expr_hash/2` over the raw pattern, and the pattern holds the type. Making this result
+  unique as well would add nothing, and it would make every generated function name
+  harder to read.
   """
-  @spec type_code(atom() | module()) :: String.t()
-  def type_code(type) when is_atom(type) do
+  @spec type_label(term()) :: String.t()
+  def type_label(type) when is_atom(type) do
     case Atom.to_string(type) do
       "Elixir." <> rest -> String.replace(rest, ".", "_")
       other -> other
     end
+  end
+
+  def type_label(type) do
+    slug =
+      type
+      |> inspect(limit: 5, printable_limit: 32)
+      |> String.replace(~r/[^A-Za-z0-9]+/, "_")
+      |> String.trim("_")
+
+    if slug == "", do: @empty_label, else: slug
   end
 
   @doc """
