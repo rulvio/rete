@@ -946,7 +946,7 @@ defmodule Rete.FactShapesTest do
         run(AnyTerm, [%{__type__: nil, id: 1}])
       end
 
-      assert_raise ArgumentError, ~r/cannot determine the fact type/, fn ->
+      assert_raise ArgumentError, ~r/nil is not a fact type/, fn ->
         run(AnyTerm, [{nil, 1}])
       end
     end

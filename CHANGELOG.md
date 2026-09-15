@@ -40,6 +40,13 @@ All notable changes to `rete` are recorded here. The format follows
   and the `Rete.Taxonomy` index is a plain map lookup. The change covers tuple tags as
   well, so `{"order", 1}` is a fact of type `"order"`.
 
+  `Rete.Taxonomy.fact_type/0` is therefore `term()`, and so are `:type` on
+  `Rete.IR.Fact` and `Rete.IR.Coll`. Dialyzer can no longer check those positions, because
+  no Erlang type says "any term except `nil`". The one constraint that remains is checked
+  where it can be: `default_fact_type/1` at run time, and `Rete.DSL.Parser` at compile
+  time. This is the cost of the change, and it is the reason both of those raise a message
+  that names `nil` rather than a generic one.
+
   A pattern must write the type as a **literal**, because the alpha index routes on it at
   compile time. `Rete.DSL.Codegen.type_code/1` is renamed **`type_label/1`**. It builds a
   short name from `inspect/1` for a type that is not an atom, only so the generated

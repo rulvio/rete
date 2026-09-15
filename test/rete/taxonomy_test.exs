@@ -186,10 +186,13 @@ defmodule Rete.TaxonomyTest do
       assert error.message =~ "nil is not a fact type"
     end
 
-    test "a tuple whose tag is nil raises" do
-      assert_raise ArgumentError, ~r/cannot determine the fact type of/, fn ->
-        Taxonomy.default_fact_type({nil, 1})
-      end
+    # A tuple has only its first element to be typed by, so it reports `nil` the same way
+    # a map does. The generic "expected a struct, a tagged tuple ..." message would name
+    # three shapes without saying that `nil` is the problem.
+    test "a tuple whose tag is nil raises, with the same message as a map" do
+      error = assert_raise ArgumentError, fn -> Taxonomy.default_fact_type({nil, 1}) end
+
+      assert error.message =~ "nil is not a fact type"
     end
   end
 

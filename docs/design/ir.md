@@ -557,8 +557,9 @@ pattern, and the pattern holds the type, so two different types always give two 
 codes. The hash carries the whole identity of an expression. The other segments only make
 the generated function name readable in a stacktrace.
 
-* `<type>` is the type atom. A module loses its `Elixir.` prefix, and `.` becomes `_`
-  (`MyApp.Order` → `MyApp_Order`).
+* `<type>` is the type label. An atom type is rendered as written, and a module loses its
+  `Elixir.` prefix, with `.` becoming `_` (`MyApp.Order` → `MyApp_Order`). Any other type
+  is named from `inspect/1`, and a type with no letter and no digit gets `EMPTY`.
 * `<v...>` are the variables the expression reads, **sorted**, joined with `_`. An empty
   bind set gives `fact_tick_bind_expr_<hash>`. For a join filter, these are the guard's
   variables from both sides — for example, `join_order_bind_amt_t_expr_<hash>` for

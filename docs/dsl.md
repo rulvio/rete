@@ -81,6 +81,11 @@ You can only write `%Order{__type__: :vip, ...}` when `Order` declares a `__type
 Elixir rejects an unknown struct key at compile time, so a struct without the field gives
 a `KeyError` before this engine sees the pattern. Use a tagged map, or add the field.
 
+Only the **outermost** `__type__` declares. A fact has one type, so a `__type__` nested
+inside a field is ordinary data, and a pattern matches it like any other key.
+`{:order, %{__type__: :billing, city: c}}` is an `:order` whose second element is matched
+against a map with those two keys.
+
 A type is **any term except `nil`**. `"express"`, `42` and `{:tenant, 7}` are all types,
 and `derive/2` relates them like any other type. The index stores the type as a map key,
 so it does not need to be an atom.

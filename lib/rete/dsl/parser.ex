@@ -382,6 +382,13 @@ defmodule Rete.DSL.Parser do
   # A quoted literal is not always equal to its own value. For example, `%{a: 1}` quotes
   # to `{:%{}, [], [a: 1]}`. Evaluation is safe here, because `Macro.quoted_literal?/1`
   # has already confirmed that the AST holds no call and no variable.
+  #
+  # `Macro.quoted_literal?/1` counts an alias and a struct literal as literals, so this can
+  # reach `Mod.__struct__/1` for a type written as `%Mod{}`. That makes the ruleset depend
+  # on `Mod` at compile time. A module that is not available yet therefore fails with
+  # Elixir's own struct error, not with a message from this module. Writing a struct as a
+  # fact type is rare, and the alternative — reimplementing literal evaluation here — would
+  # cost more than the better message is worth.
   defp literal_value(ast) do
     {value, _binding} = Code.eval_quoted(ast)
     value

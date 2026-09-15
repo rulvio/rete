@@ -230,7 +230,8 @@ defmodule Rete.Taxonomy do
 
   `nil` is the one value that is not a type. The engine uses it to mean that a fact
   declares no type. This is why an unset `__type__` field on a struct falls through to the
-  module. A plain map has no module, so `%{__type__: nil}` raises instead.
+  module. A shape with nothing left to fall back on raises instead, and says so: both
+  `%{__type__: nil}` and `{nil, 1}` report that `nil` is not a fact type.
 
   Every other value raises as well. A fact with an unexpected type would match nothing,
   and it would do so silently. You could not tell that case apart from a rule that does
@@ -258,13 +259,19 @@ defmodule Rete.Taxonomy do
       when is_tuple(fact) and tuple_size(fact) > 0 and not is_nil(elem(fact, 0)),
       do: elem(fact, 0)
 
-  # The two clauses that raise. Only a *plain* map reaches this one. A struct with an
-  # unset `__type__` already took its type from its module, and a map has no module.
+  # The three clauses that raise. A `nil` type reports the same way wherever it is
+  # written, as it does at compile time in `Rete.DSL.Parser`. Each message then names what
+  # that shape had left to fall back on.
+
+  # Only a *plain* map reaches this one. A struct with an unset `__type__` already took
+  # its type from its module, and a map has no module.
   def default_fact_type(%{__type__: nil} = fact) do
-    raise ArgumentError,
-          "cannot determine the fact type of #{inspect(fact)}: nil is not a fact type. " <>
-            "It means that the fact declares no type. A struct then uses its module, " <>
-            "but a plain map has no module to use."
+    nil_type!(fact, "A struct then uses its module, but a plain map has no module to use.")
+  end
+
+  def default_fact_type(fact)
+      when is_tuple(fact) and tuple_size(fact) > 0 and is_nil(elem(fact, 0)) do
+    nil_type!(fact, "A tuple is typed by its first element, and it has nothing else to use.")
   end
 
   def default_fact_type(fact) do
@@ -272,5 +279,12 @@ defmodule Rete.Taxonomy do
           "cannot determine the fact type of #{inspect(fact)}: expected a struct, " <>
             "a tagged tuple {type, ...} or a tagged map %{__type__: type}. A type may be " <>
             "any term except nil."
+  end
+
+  @spec nil_type!(term(), String.t()) :: no_return()
+  defp nil_type!(fact, fallback) do
+    raise ArgumentError,
+          "cannot determine the fact type of #{inspect(fact)}: nil is not a fact type. " <>
+            "It means that the fact declares no type. " <> fallback
   end
 end
