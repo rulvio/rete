@@ -4,9 +4,12 @@ All notable changes to `rete` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.6.0
 
-**This release changes how facts are typed.** Two rules replace one.
+**This release changes how facts are typed.** Two rules replace one. **It has breaking
+changes**, and both are silent: a struct that sets a `__type__` field changes type, and a
+tuple whose tag is not an atom no longer raises on insert. Each is described below, under
+"Migration".
 
 ### Changed
 
@@ -40,7 +43,7 @@ All notable changes to `rete` are recorded here. The format follows
   and the `Rete.Taxonomy` index is a plain map lookup. The change covers tuple tags as
   well, so `{"order", 1}` is a fact of type `"order"`.
 
-  `Rete.Taxonomy.fact_type/0` is therefore `term()`, and so are `:type` on
+  `t:Rete.Taxonomy.fact_type/0` is therefore `term()`, and so are `:type` on
   `Rete.IR.Fact` and `Rete.IR.Coll`. Dialyzer can no longer check those positions, because
   no Erlang type says "any term except `nil`". The one constraint that remains is checked
   where it can be: `default_fact_type/1` at run time, and `Rete.DSL.Parser` at compile
