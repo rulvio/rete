@@ -181,9 +181,10 @@ defmodule Rete.Session do
   A query is addressed by module and name together because two rulesets composed into one
   session may each define a `:summary`.
 
-  `params` gives a value for every parameter the query's head declares, and for nothing
-  else, as a keyword list or a map. A query with no head takes none. A partial, extra or
-  unknown key raises, instead of answering `[]`.
+  `params` gives a value for every parameter that the head of the query declares, and for
+  no other name. Write it as a keyword list or a map. A query with no head takes no
+  parameters. A partial key, an extra key or an unknown key raises an error. It does not
+  answer `[]`.
 
   **A query answers as of the most recent fire.** On a session you never fired that is
   `[]`. On one you fired and then inserted into, it is the answer from before that insert,
@@ -198,10 +199,10 @@ defmodule Rete.Session do
 
   The *set* of rows never varies, and one feed always answers the same way.
 
-  A query's parameters are what its matches are keyed on, so reading one is a map lookup
-  rather than a scan of every match. A parameter matches a binding by **term equality**, as
-  a map key does: `1` and `1.0` are different parameter values, though `==` calls them
-  equal.
+  The engine keys the matches of a query on its parameters. A read is thus a map lookup,
+  and not a scan of every match. A parameter matches a binding by **term equality**, in the
+  same way as a map key. `1` and `1.0` are therefore different parameter values, but `==`
+  reports that they are equal.
 
       iex> alias Rete.Session
       iex> session =

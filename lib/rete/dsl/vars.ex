@@ -9,10 +9,10 @@ defmodule Rete.DSL.Vars do
     * `read_vars/1` — what does this *expression* read from its enclosing scope? This
       decides whether a guard is local to its condition, or needs a join filter.
 
-  Both functions are scope-aware, unlike a plain `Macro.prewalk/3`. A traversal that
-  collects every `{name, meta, nil}` node would report the parameter of
-  `fn v -> v > 0 end`, a comprehension generator, a `case` clause head, and the `binary`
-  in `<<rest::binary>>`, as all bound by the rule. A spurious name like that is not in
+  Both functions are scope-aware, unlike a plain `Macro.prewalk/3`. Take a traversal that
+  collects every `{name, meta, nil}` node. It would report four things as bound by the
+  rule: the parameter of `fn v -> v > 0 end`, a comprehension generator, a `case` clause
+  head, and the `binary` in `<<rest::binary>>`. A spurious name like that is not in
   the condition's own bindings. So the guard would be judged non-local, lifted into a
   join filter, and destructured from a token that can never carry it. The rule would
   then never fire.
@@ -109,10 +109,10 @@ defmodule Rete.DSL.Vars do
   @doc """
   The variables an expression reads from its enclosing scope, as a `MapSet`.
 
-  Excluded: `^pinned` and `@attr` (compile-time constants), the anonymous `_`,
-  and anything bound by a construct *inside* the expression — `fn` parameters,
-  `for`/`with` generators, `case`/`receive`/`try` clause heads, and `=` earlier
-  in the same block.
+  This excludes `^pinned` and `@attr`, which are compile-time constants, and the
+  anonymous `_`. It also excludes anything that a construct *inside* the expression binds:
+  `fn` parameters, `for`/`with` generators, `case`/`receive`/`try` clause heads, and `=`
+  earlier in the same block.
 
   `_`-prefixed names are deliberately kept. `_t` in `amt > _t` genuinely is a
   read of `_t`. Treating it as local would inline it into the alpha function,

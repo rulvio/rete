@@ -53,9 +53,9 @@ defmodule Rete.DSL.Codegen do
   the alpha part of the per-condition guard, or `nil`. `bind` maps every bound variable
   to its AST.
 
-  The hash is taken over `{pattern, body}`. So a condition whose guard was wholly lifted
-  into a join filter produces exactly the same code as the same condition written
-  without a guard, and it shares that condition's alpha node.
+  The hash is taken over `{pattern, body}`. Take a condition whose guard moved fully into
+  a join filter. It thus produces exactly the same code as the same condition written with
+  no guard, and it shares the alpha node of that condition.
 
   `env` is the caller's environment. It resolves the unqualified calls of the guard, so
   the expression can record whether its meaning depends on the module that wrote it.
@@ -376,8 +376,8 @@ defmodule Rete.DSL.Codegen do
       MyRuleset.summary(session, cid: 1)
 
   It delegates to `Rete.Session.query/3`, with `{__MODULE__, name}`. This is what lets
-  two rulesets use the same query name freely — the pair is the identity, and the caller
-  writes the module, instead of hoping the bare name is unique.
+  two rulesets use the same query name. The pair is the identity, and the caller writes
+  the module. The caller does not depend on a bare name being unique.
   """
   @spec query_def(IR.Production.t()) :: Macro.t() | nil
   def query_def(%IR.Production{type: :query, name: name}) do

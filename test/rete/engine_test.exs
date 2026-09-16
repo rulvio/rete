@@ -1290,8 +1290,8 @@ defmodule Rete.EngineTest do
       assert error.message =~ "takes no parameters, and was given [:id]"
       assert error.message =~ "It binds []"
 
-      # Nothing is bound, so there is no head that would make `id` a parameter. The
-      # message must not suggest one that would not compile.
+      # Nothing is bound, so no head can make `id` a parameter. The message must not
+      # suggest a head that would not compile.
       refute error.message =~ "defquery constant"
     end
   end
@@ -1820,8 +1820,8 @@ defmodule Rete.EngineTest do
         {cid, amt}
       end
 
-      # The same conditions, read by a parameter. A head and no head are two queries,
-      # because the head is what the matches are keyed on.
+      # The same conditions, read by a parameter. A query with a head and a query without
+      # one are two queries, because the head is what keys the matches.
       defquery flagged_by(cid)({:flagged, cid, amt}) do
         {cid, amt}
       end
@@ -1852,8 +1852,8 @@ defmodule Rete.EngineTest do
       assert [{1, 250}, {1, 900}, {2, 300}] == Queries.flagged_for(session)
     end
 
-    # The head declares them, and a call gives a value for each, as a keyword list or a
-    # map. A value nothing matches answers `[]`, because that is a real answer.
+    # The head declares the parameters. A call gives a value for each one, as a keyword
+    # list or a map. A value that matches nothing answers `[]`, which is a true answer.
     test "a query is read by its parameters, as a keyword list or a map" do
       session = run([Queries], [{:order, 1, 250}, {:order, 1, 900}, {:order, 2, 300}])
 
@@ -1862,15 +1862,16 @@ defmodule Rete.EngineTest do
       assert [] == Queries.flagged_by(session, cid: 99)
     end
 
-    # A parameter keys on the bindings, before the body runs, which is what makes it name
-    # a variable rather than a shape of the result.
+    # A parameter keys on the bindings, before the body runs. It thus names a variable,
+    # and not a part of the result.
     test "a parameter names a binding even when the body hides it" do
       session = run([Queries], [{:order, 1, 250}, {:order, 2, 300}])
 
       assert [%{customer: 1, doubled: 500}] == Queries.summary_by(session, amt: 250)
     end
 
-    # A head and no head are two queries. Neither can answer the other's call.
+    # A query with a head and a query without one are two queries. Neither one can answer
+    # the call of the other.
     test "a headless query takes no parameters, and a parameterised one takes all of them" do
       session = run([Queries], [{:order, 1, 250}])
 

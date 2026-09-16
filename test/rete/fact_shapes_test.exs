@@ -409,8 +409,8 @@ defmodule Rete.FactShapesTest do
       for i <- 1..20, do: %Order{id: i, cid: rem(i, 4), amount: i}
     end
 
-    # A parameter keys on the binding, not on the shape it came out of. A field of a
-    # tagged map and a field of a struct have to key the same way a tuple slot does.
+    # A parameter keys on the binding, and not on the shape that supplied it. A field of a
+    # tagged map and a field of a struct must key in the same way as a tuple element.
     test "a parameter answers the same rows as filtering the headless query" do
       facts = rec_facts() ++ order_facts()
       plain = run(Plain, facts)

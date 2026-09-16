@@ -693,10 +693,10 @@ IO.puts("")
         }}
      end
 
-   # Only the keyed shape gets a scaling scenario. Reading a headless query is linear in
-   # the match count, measured one session at a time in `docs/design/engine.md` §13.
-   # Measured here it would read as a step and then a plateau, which is the heap talking,
-   # not the engine.
+   # Only the keyed shape gets a scaling scenario. To read a query with no head is linear
+   # in the match count. `docs/design/engine.md` §13 measures that one session at a time.
+   # A measurement here would show a step and then a flat line. That is an effect of the
+   # heap, and not of the engine.
    Bench.scenario(
      "a query read by a parameter, selecting 1 of n",
      [500, 1_000, 2_000, 4_000],
@@ -704,8 +704,9 @@ IO.puts("")
      note: "`defquery rows(cid)(...)`, so the read is one bucket and n stops mattering"
    )
 
-   # The choice a ruleset author now faces. A headless query cannot be read by `cid` at
-   # all, so the honest comparison is against building every row and filtering them here.
+   # This is the choice that a ruleset author now makes. A query with no head cannot be
+   # read by `cid`. The correct comparison is thus against code that builds every row and
+   # then filters the rows here.
    Bench.compare(
      "one row out of 4,000 matches, by parameter and by filtering in Elixir",
      [{"headless, filter after", :plain}, {"parameter cid", :keyed}],
@@ -722,7 +723,7 @@ IO.puts("")
 
          for _ <- 1..200, do: Bench.KeyedQuery.rows(session, cid: 1)
      end,
-     note: "one row returned either way — the number a head exists to move"
+     note: "one row returned in each case. A head decreases this number."
    )
 
    :ok

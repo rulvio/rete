@@ -6,10 +6,10 @@ This project is a forward-chaining rules engine for Elixir, based on the
 [Rete algorithm](https://en.wikipedia.org/wiki/Rete_algorithm). A rule reads as a function:
 its **arguments are the conditions**, and its **body is what follows**.
 
-Use it where the logic is a pile of interacting conditions: pricing, eligibility, alerting,
-policy, validation, or diagnosis. This is the code that becomes a nest of `cond` clauses
-nobody wants to touch. The question that matters here is not "what happens next" but "what
-is true now".
+Use it where the logic is many interacting conditions: pricing, eligibility, alerting,
+policy, validation, or diagnosis. This is the code that usually becomes a deep stack of
+`cond` clauses that nobody wants to change. The question that matters here is not "what
+happens next" but "what is true now".
 
 ```elixir
 defrule dormant({:customer, cid, name}, {:not, [{:order, cid, _}]}) do
@@ -70,9 +70,9 @@ the engine inserts the facts it returns *logically*. It remembers which match pr
 fact.
 
 If you take away any fact behind that match, the conclusion is withdrawn. Anything
-concluded from that conclusion is withdrawn too, until the session settles. A pile of
-functions cannot give you this. It is also why a rule's right hand side can only insert
-facts: keeping a conclusion true as the world changes is the engine's job, not yours.
+concluded from that conclusion is withdrawn too, until the session settles. Plain functions
+cannot give you this. It is also why a rule's right hand side can only insert facts. To
+keep a conclusion true as the world changes is the work of the engine, and not your work.
 
 The name comes from the algorithm underneath. Rete compiles the rules into a network that
 shares work between them.
@@ -197,10 +197,10 @@ Retail.large_orders(session, cid: 1)
 A query returns **what its body computes**, one result per match. It answers in whatever
 shape suits the caller, instead of handing back raw bindings.
 
-The `(cid)` before the conditions is the query's **head**: its parameters. They are what
-its matches are keyed on, so a read is a map lookup rather than a scan, and a call names
-every one of them and nothing else. Omit the head for a query that takes no parameters and
-answers with every match it holds.
+The `(cid)` before the conditions is the **head** of the query. It declares the parameters.
+The engine keys the matches on those parameters, so a read is a map lookup and not a scan.
+A call must name every parameter, and no other name. Write no head for a query that takes
+no parameters and answers with every match that it holds.
 
 A query is identified by `{module, name}`, never by a bare name. Because of this, two
 rulesets that each define a `:summary` compose into one session without collision.

@@ -182,9 +182,9 @@ defmodule Rete.Memory do
   @doc """
   The collection groups at a node under a join key, `group_key => members`.
 
-  A member is whatever the node stored: a plain collection keeps facts, because that is
-  what it binds, and a filtered one keeps `Rete.Element`s, because its filter needs the
-  bindings the alpha produced. `Rete.Memory` does not interpret them.
+  A member is whatever the node stored. A plain collection keeps facts, because that is
+  what it binds. A filtered one keeps `Rete.Element`s, because its filter needs the bindings
+  that the alpha produced. `Rete.Memory` does not interpret them.
   """
   @spec groups(t(), node_id(), key()) :: %{key() => [term()]}
   def groups(%__MODULE__{accum: accum}, node_id, key) do
@@ -206,9 +206,9 @@ defmodule Rete.Memory do
   collection a rule can legitimately see is `[]`, and only `Rete.Engine.Nodes` knows which
   of the two an absent group means. See `remove_from_group/5`.
 
-  This is the list the node hands to the rule, not a view built for the occasion. That is
-  the point of it: a member change has to produce the collection's old value and its new
-  one, and materializing either would be O(k) on the hottest path there is.
+  This is the list that the node gives to the rule. It is not a view built for one call.
+  That is deliberate: a member change must produce the old value of the collection and the
+  new one. To build either one would be O(k), on the path that runs most often.
   """
   @spec group(t(), node_id(), key(), key()) :: [term()] | nil
   def group(%__MODULE__{} = memory, node_id, key, group_key) do
@@ -223,9 +223,9 @@ defmodule Rete.Memory do
 
   Do not reintroduce a sort here. This node used to keep members in term order, so that a
   collection's order — and not merely its membership — was a function of the fact set.
-  Nothing asks for that: `docs/dsl.md` has always said a rule may not depend on the
-  gathered order, so the sort could only ever help rules that were already outside the
-  contract, and it charged O(k) to every member change of every collection to do it. A rule
+  Nothing asks for that. `docs/dsl.md` has always said that a rule may not depend on the
+  gathered order. The sort could thus help only the rules that were already outside the
+  contract, and it charged O(k) to every member change of every collection. A rule
   that needs a particular order sorts in its own right hand side, once per firing rather
   than once per member.
   """
@@ -238,9 +238,9 @@ defmodule Rete.Memory do
   Removes one occurrence of a member from a collection group, reporting whether it was
   there. O(position).
 
-  `:absent` rather than a silent no-op, for the same reason `remove_elements/4` leaves an
-  absent element out of what it returns: a caller that emitted a retract-and-resend for a
-  group nothing actually changed would churn every match downstream of it.
+  This returns `:absent`, and not a no-op with no message. `remove_elements/4` leaves an
+  absent element out of what it returns for the same reason. A caller could otherwise emit a
+  retract-and-resend for a group that did not change, and disturb every match below it.
 
   A group that loses its last member is dropped. The join key that held the last group
   goes with it, and so does the node, if that was its last join key. Both are binding
@@ -315,14 +315,14 @@ defmodule Rete.Memory do
   Empty for a fact the user asserted. A fact two rules concluded has two entries, and one
   rule may appear twice if it concluded the fact on two activations of the same match.
 
-  This is the index behind well-founded support. Reading it is a map lookup, which is the
-  whole point: the answer used to be recomputed from every insertion record in the
-  session, on every conclusion that was already present.
+  This is the index behind well-founded support. To read it is a map lookup, and that is
+  the purpose of it. Before, the engine recomputed the answer from every insertion record in
+  the session, for every conclusion that was already present.
 
-  Falls back to that recomputation when the index has not been built, so a one-off reader
-  like `Rete.Inspect.derivations/2` gets a correct answer without forcing a build on a
-  session that would otherwise never need one. A caller that will ask repeatedly should
-  call `index_inserters/1` first and keep what it returns.
+  This falls back to that recomputation when the index is not built. A reader that asks one
+  time, such as `Rete.Inspect.derivations/2`, thus gets a correct answer. It does not force
+  a build on a session that would never need one. A caller that asks repeatedly should call
+  `index_inserters/1` first, and keep what it returns.
   """
   @spec inserters(t(), term()) :: [inserter()]
   def inserters(%__MODULE__{inserters: nil, insertions: insertions}, fact) do
@@ -340,9 +340,9 @@ defmodule Rete.Memory do
   Builds the `inserters` index if it is not built, and returns the memory holding it.
 
   One pass over every insertion record. After this, `add_insertion/4` and
-  `take_insertion/3` keep it in step, so the pass happens at most once per session — and
-  not at all in a session where no rule ever concludes what another already concluded,
-  which is the only thing that consults it.
+  `take_insertion/3` keep it in step. The pass thus happens one time in a session at most.
+  It does not happen at all in a session where no rule concludes what another rule already
+  concluded, because only that consults the index.
   """
   @spec index_inserters(t()) :: t()
   def index_inserters(%__MODULE__{inserters: nil} = memory) do

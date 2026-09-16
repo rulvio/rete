@@ -28,7 +28,7 @@ defmodule Rete.Ruleset do
       Rete.DSL.Normalize   rewrite gates into conditions, negations and :or
       Rete.Compiler.Sort   order the conditions so every join has its keys
       Rete.DSL.Bindings    classify join/new bindings, split guards
-      build/4              recompute :bind from the result, and check the head against it
+      build/4              recompute :bind from the result, then check the head against it
       Rete.DSL.Codegen     emit the expression functions and the RHS
 
   See `docs/design/ir.md` §1 for the contract between the phases.
@@ -88,8 +88,8 @@ defmodule Rete.Ruleset do
   # binds nothing downstream, that a rule-level guard only reads, and that a disjunction
   # binds the union of its branches. See `docs/design/ir.md` §2.
   #
-  # The head is checked here for the same reason: a parameter has to be a binding, and
-  # what the production binds is only known now.
+  # This checks the head for the same reason: a parameter must be a binding, and only now
+  # is it known what the production binds.
   defp resolve_bindings(%IR.Production{lhs: lhs, __ast__: ast} = production) do
     {guaranteed, optional} = IR.lhs_bindings(lhs)
     bind = Enum.sort(guaranteed ++ optional)
@@ -99,9 +99,10 @@ defmodule Rete.Ruleset do
     %IR.Production{production | bind: bind, __ast__: %{ast | bind: bind_ast(ast.bind, bind)}}
   end
 
-  # A parameter keys every match a query holds, so it has to be a binding every match
-  # carries. That rules out a variable only some branches of a disjunction bind: the
-  # matches from the other branches would key on its absence, and no call could name them.
+  # A parameter keys every match that a query holds. It must thus be a binding that every
+  # match carries. This excludes a variable that only some branches of a disjunction bind:
+  # the matches of the other branches would key on its absence, and no call could name
+  # them.
   defp check_params!(%IR.Production{params: []}, _guaranteed, _optional), do: :ok
 
   defp check_params!(%IR.Production{params: params} = production, guaranteed, optional) do
@@ -115,10 +116,10 @@ defmodule Rete.Ruleset do
       (partial = Enum.filter(params, &(&1 in optional))) != [] ->
         raise ArgumentError,
               "#{signature(production)} names #{inspect(partial)}, which only some " <>
-                "branches of its disjunction bind. A parameter keys every match, so it " <>
-                "has to be one every match carries. This query guarantees " <>
+                "branches of its disjunction bind. A parameter keys every match, so " <>
+                "every match must carry it. This query guarantees " <>
                 "#{inspect(guaranteed)}. Filter on #{inspect(partial)} in your own code, " <>
-                "or split the disjunction into one query per branch."
+                "or write one query for each branch."
 
       true ->
         :ok
@@ -257,29 +258,30 @@ defmodule Rete.Ruleset do
   and why two rulesets may each define one of the same name. Use `Rete.Session.query/3`,
   with `{MyRuleset, :find_user}`, when the query is decided at runtime.
 
-  A **head** before the conditions declares the query's parameters: the bindings its
-  matches are keyed on, and the only way it is read.
+  A **head** before the conditions declares the parameters of the query. The engine keys
+  the matches of the query on those parameters, and they are the only way to read it.
 
       defquery find_user(id)({:user, id, name}) do
         {id, name}
       end
       #=> MyRuleset.find_user(session, id: 1)  [{1, "Ada"}]
 
-  A call names **every** parameter and nothing else, so reading a query is one map
-  lookup rather than a scan. A partial, extra or unknown key raises, instead of answering
-  `[]`.
+  A call must name **every** parameter, and no other name. A read is thus one map lookup,
+  and not a scan. A partial key, an extra key or an unknown key raises an error. It does
+  not answer `[]`.
 
-  A query written **without** a head takes no parameters, and answers with every match it
-  holds, in arrival order. That is the default, and it costs nothing extra.
+  A query **without** a head takes no parameters. It answers with every match that it
+  holds, in arrival order. This is the default, and it costs nothing more.
 
       defquery all_users({:user, id, name}) do
         {id, name}
       end
       #=> MyRuleset.all_users(session)  [{1, "Ada"}, {2, "Grace"}]
 
-  A parameter must be a variable the left hand side binds, and one **every** match
-  carries — so not a variable only some branches of a disjunction bind. A rule cannot take
-  parameters, because a rule is never read. See `docs/dsl.md`.
+  A parameter must be a variable that the left hand side binds. **Every** match must also
+  carry that variable. Thus you cannot use a variable that only some branches of a
+  disjunction bind. A rule cannot take parameters, because you never read a rule. See
+  `docs/dsl.md`.
   """
   defmacro defquery(decl, body) do
     defproduction(__CALLER__, decl, body, :query)
@@ -289,17 +291,17 @@ defmodule Rete.Ruleset do
   defmacro defquery(decl), do: no_body!(decl, :query)
 
   @doc false
-  # A query's bindings are keyed by its head now, and that keying is the only one, so an
-  # `index` line has nothing left to declare. It raises rather than being undefined,
-  # because "undefined function index/2" does not say what to write instead.
+  # The engine now keys the matches of a query on its head, and that keying is the only
+  # one. An `index` line thus has nothing to declare. This raises an error instead of being
+  # undefined, because "undefined function index/2" does not tell you what to write.
   @spec index(atom(), [atom()]) :: no_return()
   defmacro index(name, keys) do
     raise ArgumentError,
-          "index #{inspect(name)}, #{inspect(keys)} is no longer a declaration. A query's " <>
-            "matches are keyed on its parameters, which are its head: " <>
+          "index #{inspect(name)}, #{inspect(keys)} is no longer a declaration. The " <>
+            "engine keys the matches of a query on its parameters, which are its head: " <>
             "`defquery #{name}(#{keys |> List.wrap() |> Enum.join(", ")})(<conditions>)`. " <>
-            "That keying is the only one, so there is no second index to declare, and a " <>
-            "call names every parameter and nothing else."
+            "That keying is the only one, so there is no second index to declare. A call " <>
+            "must name every parameter, and no other name."
   end
 
   @doc """

@@ -366,12 +366,12 @@ defmodule Rete.Engine.Nodes do
     {state, Enum.reverse(reversed)}
   end
 
-  # A query stores its matches keyed on its parameters, which is the one keying there is.
-  # `Rete.Engine.query/3` reads a call's parameters straight back out as that key, so a
-  # read is a map lookup rather than a scan. See `Rete.Ruleset.defquery/2`.
+  # A query stores its matches keyed on its parameters. This is the only keying there is.
+  # `Rete.Engine.query/3` uses the parameters of a call as that key, so a read is a map
+  # lookup and not a scan. See `Rete.Ruleset.defquery/2`.
   #
-  # A query with no parameters keys everything on `%{}`, which is one bucket, so it still
-  # hands its rows back in arrival order.
+  # A query with no parameters keys every token on `%{}`, which is one bucket. It thus
+  # still returns its rows in arrival order.
   defp dispatch(%Node.Query{} = node, :left, tokens, %State{} = state) do
     memory = by_params(node, tokens, state.memory, &Memory.add_tokens/4)
 
@@ -392,19 +392,20 @@ defmodule Rete.Engine.Nodes do
     raise ArgumentError, "no #{kind} behavior for #{inspect(node)}"
   end
 
-  # Applies `fun` to the query's store, one call per bucket. Grouping first keeps that to
-  # one call per distinct parameter value rather than one per token.
+  # This applies `fun` to the store of the query, one call for each bucket. The grouping
+  # runs first, so there is one call for each distinct parameter value, and not one call
+  # for each token.
   #
-  # A query with no parameters has `Token.join_key(token, [])` return `%{}` for every
-  # token, so it groups into the single bucket, and this costs one call.
+  # For a query with no parameters, `Token.join_key(token, [])` returns `%{}` for every
+  # token. All of them thus group into the single bucket, and this costs one call.
   defp by_params(%Node.Query{} = node, tokens, memory, fun) do
     tokens
     |> Enum.group_by(&Token.join_key(&1, node.params))
     |> Enum.reduce(memory, fn {key, group}, memory -> fun.(memory, node.id, key, group) end)
   end
 
-  # `remove_tokens/4` returns what it found. Nothing downstream of a query reads that, so
-  # what it found is not news.
+  # `remove_tokens/4` returns what it found. Nothing below a query reads that, so this
+  # discards it.
   defp drop_tokens(memory, node_id, key, tokens) do
     {memory, _removed} = Memory.remove_tokens(memory, node_id, key, tokens)
     memory

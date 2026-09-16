@@ -195,10 +195,10 @@ defmodule Rete.Inspect do
   @doc """
   How far a rule got, condition by condition.
 
-  This answers "why did this not fire?". Each entry reports what one node on the rule's
-  chain holds: `:elements` are facts that matched this condition alone, `:tokens` are
-  partial matches from the left, and `:activations` (terminals only) is how many matches
-  it concluded from.
+  This answers "why did this not fire?". Each entry reports what one node on the chain of
+  the rule holds. `:elements` are the facts that matched this condition alone. `:tokens`
+  are partial matches from the left. `:activations`, on terminals only, is the number of
+  matches that it concluded from.
 
   ```
   [%{node: 1, kind: "root_join", type: :customer, elements: 3, tokens: 0},

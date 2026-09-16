@@ -23,7 +23,7 @@ Status: implemented, end to end.
 Clara propagates by **mutating a transient memory**, while calling down the node tree. At
 the end of `fire-rules`, it converts that memory back to a persistent one. This duality is
 why Clara needs an `ITransport` abstraction, four activation protocols, and seventeen
-listener methods sprinkled through every node.
+listener methods distributed through every node.
 
 This engine runs a **flat propagation loop over an explicit work queue** instead. A node
 is a function of state. It returns the new state, plus the work it produced. The loop does
@@ -80,8 +80,8 @@ that point. The queue then holds nothing but `{direction, node, items}`. Nodes p
 **A node's merge window closes when the opposite direction reaches that node.** Merging
 moves an op back to where its target first appeared, and the two directions do not commute.
 `Rete.Memory.remove_elements/4` removes only the occurrences it holds and drops the rest,
-which is the retraction rule in §5. So an op moved back past its own inverse can lose a
-retraction: the fact leaves working memory, the element stays in the node, and no later fire
+which is the retraction rule in §5. An op moved back past its own inverse can thus lose a
+retraction. The fact leaves working memory, and the element stays in the node. No later fire
 reaches it, because the queue is empty and `settled?/1` answers `true`. The window rule
 refuses that move, and asks nothing of how the queue was built. One `insert/3` or
 `retract/3` call queues one direction, so a batch of any size still merges to one op. Only a
@@ -223,8 +223,8 @@ why a rule over a collection fires once per group, not once per gathered fact.
 
 The engine gathers in **reverse arrival order** — a member is prepended, nothing is sorted
 — so the stored list *is* the value the rule receives. That is what makes a member change
-cheap: the old collection and the new one are both in hand, sharing every cons cell but
-one, with nothing built to produce either. Sorting instead would mean walking the group to
+cheap. The old collection and the new one are both available, and they share every cons cell
+but one. Neither one is built. Sorting instead would mean walking the group to
 find each member's position, which is O(k) per change and quadratic over a group's life.
 
 A collection's *order* is therefore not a function of its fact set. Its *membership* is.
@@ -297,8 +297,9 @@ agenda. It holds because each of these steps preserves arrival order, in turn:
 * a bucket hands its items back in the order they were pushed (`Rete.Bucket`).
 * a batch of items arriving at a node splits into join groups in the order each key first
   appeared, not in map order. `Enum.group_by/2` returns a map. Elixir iterates a map of up
-  to 32 keys in term order, and a larger map in an internal hash order — so taking that
-  order would change a rule's firing sequence the moment a node saw its 33rd join key.
+  to 32 keys in term order, and a larger map in an internal hash order. To take that order
+  would thus change the firing sequence of a rule as soon as a node saw its 33rd join
+  key.
 * the agenda appends within a bucket, rather than inserting.
 
 None of this changes what a session *concludes*. That outcome is order-independent, and
@@ -310,11 +311,11 @@ the property suite confirms it. What arrival order does decide is the order
 **Order within one parent, not across parents.** `Rete.Engine.coalesce/1` merges the ops
 that go the same way to the same node, so a node is handed a whole batch at once instead of
 one element per call. Ops keep the position of the first fact that produced one for a given
-child, so a rule's own matches still arrive in fact order — which is the guarantee above,
-and the one rules rest on.
+child. The matches of a rule thus still arrive in fact order. That is the guarantee above,
+and the one that rules depend on.
 
-What changed with it: a rule reachable by **two different routes** now sees all of one
-route's matches before any of the other's, where it used to see them interleaved fact by
+This changed one thing. A rule that **two different routes** reach now sees all of the
+matches of one route before any of the other. Before, it saw them interleaved fact by
 fact. Inserting `{:n, 5}` and `{:n, 6}` into a rule whose two disjunction branches both
 match them fires `5, 6, 5, 6` and used to fire `5, 5, 6, 6`. Both are arrival orders. Only
 the first is stable when one fact type feeds several conditions, and the settled facts are
@@ -369,10 +370,23 @@ goes away, while the circular one would still have held, the fact goes away with
 
 ## 9. Queries
 
-A query terminal stores the tokens that reach it, instead of activating.
-`Rete.Engine.query/3` returns their `:bindings`, filtered by equality against the given
-parameters. `Rete.Compiler` rejects, at build time, a parameter the left hand side does
-not bind on every path — such a filter could never be satisfied.
+A query terminal stores the tokens that reach it. It does not activate. It stores each
+token under the **parameters** of the query, which are its head. `Rete.Engine.query/3` is
+thus a map lookup on the key that a call supplies. For each token that it finds, it returns
+the value that the *body* of the query computes from the bindings of that token. It returns
+one row for each match, and not the bindings.
+
+A call names every parameter, and no other name. A partial key is not a more narrow lookup.
+It is a different key, so the engine raises an error instead of an answer of `[]`. A query
+with no head takes no parameters. It stores every token under `%{}`, which is one bucket,
+and it reads that bucket in arrival order.
+
+At compile time, `Rete.Ruleset.build/4` rejects a parameter that the left hand side does
+not bind on **every** path. If only some branches of a disjunction bind a variable, the
+tokens of the other branches do not carry it. Such a variable can key neither those tokens
+nor a call that names it.
+
+§13 "Queries" gives the cost, and the mechanism that this replaced.
 
 A query reads propagated state, so it answers **as of the most recent fire**. Nothing
 propagates before `fire_rules/2`, so a session nobody fired answers `[]`, and a session
@@ -411,9 +425,9 @@ are the ones that actually catch engine bugs:
 
 Two more invariants need a direct test, since no end-to-end property over the facts reaches
 either. **A memory reports the occurrences it actually held, not the ones it was asked to
-remove.** And **`settled?/1` answers for the agenda as well as the queue**: it reads the
-queue alone, so every session a caller can hold must have an empty agenda whenever its queue
-is empty. Nothing in the engine enforces the second. The property suite asserts it at every
+remove.** And **`settled?/1` answers for the agenda as well as the queue**. It reads the
+queue alone. Every session that a caller can hold must thus have an empty agenda whenever
+its queue is empty. Nothing in the engine enforces the second. The property suite asserts it at every
 intermediate session it builds, fired or not.
 
 ---
@@ -570,9 +584,9 @@ the rule instead.
 
   A rule that *reduces* its collection pays a further O(k) per firing. That cost is in the
   body, not the engine. This list used to put it in the engine, and argued for an accumulator
-  on the strength of it. Both were wrong, and §13 carries the correction: what the measurement
-  actually shows, why batching removes most of it, and why a rule that folds and concludes a
-  scalar already covers the case without changing what `defrule` accepts.
+  on the strength of it. Both were wrong. §13 gives the correction: what the measurement
+  shows, and why batching removes most of the cost. It also shows that a rule which folds
+  and concludes a scalar already covers the case, and that `defrule` needs no change.
 
 * **An unchanged conclusion is retracted and re-asserted.** When a token is replaced, the
   engine retracts what the old token concluded and inserts what the new one concludes. It
@@ -589,9 +603,9 @@ the rule instead.
   18.5 ms with three.
 
   Nothing observable is wrong, because a body is pure and returns facts. The waste is the
-  firing and the listener churn. A fix has to defer a production's retraction to the end of
-  the cycle and cancel it if the same fact is re-concluded, which is a change to truth
-  maintenance rather than a local one. It is the largest unclaimed win left.
+  firing and the listener churn. A fix must defer the retraction of a production to the end of
+  the cycle, and cancel it if a rule concludes the same fact again. That is a change to
+  truth maintenance, and not a local change. It is the largest unclaimed win left.
 
 * **A dropped circular support is not reconsidered.** See §8.
 * **The loop guard counts activations, not activation-group transitions.** Clara's signal
@@ -678,8 +692,8 @@ half of a scenario is slow. Two rules concluding the same fact used to run 37× 
 *disjoint* conclusion of the same two rules, and now runs level with it. The unkeyed
 negation runs against the keyed one. The collection runs at both batch shapes and at one
 member per call. A fourth collection scenario separates the call from the fire, because
-0.5.0 made those two different things: it runs 1,000 members one per call, firing every
-call and firing once, against one call carrying all of them.
+0.5.0 made those two different things. It runs 1,000 members one per call, and it fires
+every call and then one time. It compares this against one call that carries all of them.
 
 The three collection rows are one fix, and the only one that changed what the engine
 guarantees. See `network.md` §3.
@@ -704,8 +718,8 @@ column is the body, and it grows about 5× per doubling, at or a little above th
 predicts. At 4,000 members the body is nearly twice the engine.
 
 The body runs n + 1 times, once per member and once for the empty collection, with no
-activation cancelled. Each run walks the whole list, so the body traverses about n²/2 cells
-— 8M at n = 4,000, which is the 16.9 ms above at roughly 2 ns a cell.
+activation cancelled. Each run walks the whole list, so the body traverses about n²/2 cells.
+That is 8M at n = 4,000. It gives the 16.9 ms above, at approximately 2 ns for each cell.
 
 **That count is a function of how members arrive, not of how many there are.** Alpha batching
 (§7) folds every member that reaches the node in one drain into one group change, so the rule
@@ -743,10 +757,10 @@ so `acc/count` re-fires as often as gathering does. What changes is what the tok
 scalar the engine maintained once per member at O(1), rather than a list the body folds at
 O(k) per firing. That is the body's share above, and nothing else.
 
-For collect-all it buys nothing at all, in either engine. Clara's add path is incremental —
-it folds new facts into the previous reduced value rather than re-reducing — but for `acc/all`
-the reduced value *is* the list, so it changes on every member and the body receives the whole
-thing. Retraction is worse there than here: `drop-one-of` walks the collection twice and
+For collect-all it buys nothing at all, in either engine. The add path of Clara is incremental: it folds
+new facts into the previous reduced value, and does not reduce again. But for `acc/all` the
+reduced value *is* the list. The list thus changes on every member, and the body receives all
+of it. Retraction is worse there than here: `drop-one-of` walks the collection twice and
 rebuilds it, where `List.delete/2` walks once and shares the tail past the removal. `min` and
 `max` carry no `retract-fn` and re-reduce the group.
 
@@ -765,8 +779,8 @@ defrule order_count({:cust, id}, os = [{:order, id, _a}]), do: {:order_count, id
 ```
 
 Every other rule then matches `{:order_count, id, n}` and binds a scalar. The fold happens
-once no matter how many rules consume it, exactly as a shared accumulate node would, and the
-engine stays a rule engine rather than growing an aggregate library.
+one time, whatever number of rules consume it. A shared accumulate node does the same. The
+engine thus stays a rule engine, and does not become an aggregate library.
 
 One thing that composition does not recover, and it is not an argument for accumulators.
 Clara compares the reduced value **at the accumulate node**, upstream of any production, so
@@ -800,14 +814,14 @@ asymptotically worse for a session that does retract.
 ### Compile time
 
 Disjunctions hold to the claim `network.md` §5 makes. A rule with d disjunctions of three
-branches compiles to `3d + 1` beta nodes. That is linear in d, where flattening the left
-hand side to disjunctive normal form would give `3^d` paths — 25 nodes at d = 8, against
-6,561. `Rete.DisjunctionTest` pins the node count rather than the wall clock, since the
-claim is about work. Width is bounded instead of linear: compile time is roughly quadratic
-in one gate's branch count, and `Rete.DSL.Normalize` refuses a gate past 256, so the worst
-case is 7.3 ms once.
+branches compiles to `3d + 1` beta nodes. That is linear in d. To flatten the left hand
+side to disjunctive normal form would give `3^d` paths instead. That is 25 nodes at d = 8,
+against 6,561. `Rete.DisjunctionTest` pins the node count rather than the wall clock, since the
+claim is about work. Width is bounded, and not linear. Compile time is approximately
+quadratic in the branch count of one gate, and `Rete.DSL.Normalize` refuses a gate above
+256 branches. The worst case is thus 7.3 ms, one time.
 
-Many rules over one fact type was hiding two compile-time quadratics rather than a runtime
+Many rules over one fact type concealed two compile-time quadratics, and not a runtime
 one. Firing is linear in the rule count, and inherently so, since every fact is offered to
 every alpha its type routes to. `BetaGraph` found a shareable node by scanning every child
 of every parent, and r rules that share nothing all hang off the root. `link/3` then
@@ -817,10 +831,10 @@ over one fact type went from an extrapolated ~225 ms to 7.7 ms.
 
 ### Queries
 
-A query's **parameters** are its head, and they key its matches. `Rete.Engine.Nodes` files
-each token under `Token.join_key(token, node.params)` in the query node's own store, and
-`Rete.Engine.query/3` reads a call's parameters straight back out as that key. There is one
-store and one keying, so a read is a map fetch and costs what it returns rather than what
+The **parameters** of a query are its head, and they key its matches. `Rete.Engine.Nodes`
+stores each token under `Token.join_key(token, node.params)`, in the store of the query
+node. `Rete.Engine.query/3` then uses the parameters of a call as that key. There is one
+store and one keying. A read is thus a map fetch, and it costs what it returns, not what
 the query holds.
 
 | 200 reads, 4,000 matches, one row returned | |
@@ -828,16 +842,17 @@ the query holds.
 | no parameters, filtered in Elixir | 33.7 ms |
 | `defquery rows(cid)(...)` | **0.02 ms** |
 
-Per read that is 0.1 µs, against Clara's 0.5 µs on the same probe. Flat in the match count,
-where building every row and filtering is linear in it — the scaling scenario in
-`bench/run.exs` holds 0.02 ms across 500, 1,000, 2,000 and 4,000 matches.
+One read is thus 0.1 µs. Clara takes 0.5 µs on the same test. The time does not change with
+the match count. To build every row and then filter is linear in the match count. The
+scaling scenario in `bench/run.exs` stays at 0.02 ms for 500, 1,000, 2,000 and 4,000
+matches.
 
-A query with no parameters keys everything on `%{}`. That is one bucket, holding its tokens
-in arrival order, so a headless query costs and behaves exactly as it did before heads
-existed.
+A query with no parameters keys every token on `%{}`. This is one bucket, and it holds its
+tokens in arrival order. A query with no head thus costs and behaves exactly as it did
+before heads existed.
 
-**The cost of a head is the cardinality of what it names, not the head itself.** Over 4,000
-facts reaching a query node:
+**The cost of a head is the cardinality of the variable that it names. The head itself
+costs almost nothing.** These measurements send 4,000 facts to a query node:
 
 | head | insert | retract | memory | buckets |
 |---|---|---|---|---|
@@ -846,16 +861,17 @@ facts reaching a query node:
 | one parameter, all distinct | 2.9 ms | 6.2 ms | 1,936 KB | 4,000 |
 | three parameters, all distinct | 3.4 ms | 6.7 ms | 2,061 KB | 4,000 |
 
-A low-cardinality parameter is nearly free: the extra work is one `Map.take/2` per token,
-and the buckets are the same tokens filed differently. A parameter over a unique field costs
-about 65% more memory, because a `Rete.Bucket` has a structure of its own and there is now
-one per row. Retraction gets slightly *cheaper* there, since each bucket holds one item.
+A parameter with a low cardinality costs very little. The added work is one `Map.take/2`
+for each token, and the buckets hold the same tokens in a different arrangement. A parameter
+on a unique field uses approximately 65% more memory, because each `Rete.Bucket` has its own
+structure, and there is now one bucket for each row. Retraction there becomes a little
+*faster*, because each bucket holds one item.
 
-#### Against the `index/2` model it replaced
+#### A comparison with the `index/2` model that this replaced
 
-An `index/2` kept the unbucketed store **and** one extra store per declared key set. Both
-models measured on one machine, 4,000 facts, `best of 7`; the read is 200 calls selecting
-one row of 4,000:
+An `index/2` kept the unbucketed store **and** one more store for each declared key set.
+These measurements use one machine, 4,000 facts, and the best of 7 runs. The read is 200
+calls that select one row out of 4,000:
 
 | | insert | retract | memory | read |
 |---|---|---|---|---|
@@ -863,24 +879,28 @@ one row of 4,000:
 | **`index [:a]`** → **`rows(a)`**, unique | 3.4 → 2.9 ms | 9.5 → 6.0 ms | 1,936 → 1,874 KB | 0.044 → 0.021 ms |
 | **`index [:a]`** → **`rows(a)`**, 4 values | 2.0 → 1.8 ms | 11.2 → 7.7 ms | 1,173 → 1,111 KB | 15.4 → 4.7 ms |
 
-Nothing regressed. The headless row is the same code on both sides, and measures the same,
-which is the control. Keyed reads roughly halved and keyed retraction fell by about a third,
-because there is one store to maintain instead of two.
+No operation became slower. The first row is the control: it is the same code on both
+sides, and it measures the same. Keyed reads are approximately two times faster. Keyed
+retraction is approximately one third faster, because the engine maintains one store, and
+not two.
 
-The old shape also had a failure mode this one cannot: `usable_index/2` needed the filter to
-cover a whole key set, so a declared index no call matched was silently no faster.
-`Rete.Inspect.query_plan/3` existed only to expose that. The head is now the only way in, so
-every read hits it and there is nothing to report.
+The old model also had a failure mode that this model cannot have. `usable_index/2` needed
+the filter to cover a full key set. A declared index that no call matched thus gave no
+increase in speed, and reported nothing. `Rete.Inspect.query_plan/3` existed only to show
+this. The head is now the only way in, so every read uses it, and there is nothing to
+report.
 
-#### The capability that went
+#### The capability that was removed
 
-No engine operation got slower — the table above is the whole performance story. What went
-is a *capability*: the old query could filter on **any** binding, engine-side, with no
-declaration. That filter ran on the bindings and called the body only for survivors.
+The table above is the full performance result. This release removed a *capability*
+instead. The old query could filter on **any** binding, inside the engine, with no
+declaration. That filter ran on the bindings, and it called the body only for the rows that
+the filter kept.
 
-Its replacement for an undeclared binding is `Enum.filter/2` on the result, which is not an
-engine operation at all. It builds every row and discards most. With a body that builds a
-map and a string, 50 reads selecting 1 of 4,000:
+For a binding that you do not declare, the replacement is `Enum.filter/2` on the result.
+This is not an engine operation. It builds every row, and then discards most of them. These
+measurements use a body that builds a map and a string. Each is 50 reads that select 1 row
+out of 4,000:
 
 | | |
 |---|---|
@@ -888,15 +908,16 @@ map and a string, 50 reads selecting 1 of 4,000:
 | `rows(session) \|> Enum.filter(...)` | 20.2 ms |
 | `defquery rows(a)(...)` then `rows(session, a: 1)` | **0.011 ms** |
 
-Read that as the cost of *not* declaring a head, not as a regression. Declaring one is 570×
-faster than the filter it replaced; reaching for `Enum.filter/2` instead is 3.2× slower than
-it. Nobody lands in the middle row by accident — the old call raises, and the message names
-the head to write.
+Read this as the cost of a query with no head. It is not a decrease in the speed of the
+engine. A head is 570 times faster than the filter that it replaced. `Enum.filter/2` is 3.2
+times slower than that filter. You cannot select the second row without a warning: the old
+call raises an error, and the message names the head to write.
 
-There is one case where the middle row is forced rather than chosen: a binding that **cannot**
-be a parameter. A variable only some branches of a disjunction bind is optional, so it is
-absent from some tokens and cannot key them, and the compiler rejects it in a head. The old
-filter handled it, because `Map.get(bindings, key) == value` reads an absent key as `nil`:
+In one case you must use the middle row. This is a binding that **cannot** become a
+parameter. If only some branches of a disjunction bind a variable, that variable is
+optional. Some tokens do not carry it, so it cannot key them, and the compiler rejects it in
+a head. The old filter accepted it, because `Map.get(bindings, key) == value` reads an
+absent key as `nil`:
 
 ```elixir
 defquery who({:or, [{:user, id}, {:admin, id, level}]}), do: {id, level}
@@ -906,17 +927,18 @@ who(session, level: :root)              who(session) |> Enum.filter(&(elem(&1, 1
 #=> [{2, :root}]                        # or split the disjunction into one query per branch
 ```
 
-That is the real loss. It is narrow — it needs a disjunction *and* a read on a branch-local
-binding — but for it there is no head to declare.
+This is the true loss. It is rare, because it needs a disjunction *and* a read on a
+binding that is local to one branch. But for this case there is no head to declare.
 
-The broader cost is in the language rather than in time. A query has one parameter list, so
-two ways of reading the same conditions are two queries — which share every node above the
-terminal, so the conditions are still matched once.
+The larger cost is in the language, and not in time. A query has one parameter list. Thus
+two ways to read the same conditions are two queries. These queries share every node above
+the terminal, so the engine still matches the conditions one time.
 
-This is Clara's model. Its query params are its node's join keys, mandatory and exact, and a
-partial read is not possible there either. The difference here is that the params are the
-head of the declaration rather than a separate list of names, so the compiler checks each
-against what the left hand side binds, at the line it is written on.
+This is the Clara model. The query parameters of Clara are the join keys of its node. They
+are mandatory and exact, and a partial read is not possible there either. The difference
+here is that the parameters are the head of the declaration, and not a separate list of
+names. The compiler thus checks each parameter against the bindings of the left hand side,
+at the line where you wrote it.
 
 ### Memory
 
@@ -933,8 +955,8 @@ n was. `inserters` measures zero in both shapes, since neither ruleset re-conclu
 
 Two cautions. Per-field figures double-count, because a fact term is shared between
 `elements`, `tokens`, `insertions` and `facts`, so only the totals are honest. And cost
-grows with the **size** of a fact as well as the count, since a bucket keys its multiset on
-the whole item: 500 facts cost 1.4 ms at a 1-field payload and 4.2 ms at 512 fields.
+grows with the **size** of a fact, and not only with the count. A bucket keys its multiset on
+the full item. Thus 500 facts cost 1.4 ms at a 1-field payload, and 4.2 ms at 512 fields.
 
 ### Three wrong attributions
 
@@ -942,8 +964,9 @@ Every quadratic here was first blamed on the wrong thing. The first attempt blam
 memory's append, which was real but not dominant — the agenda was. The tell: a query
 terminal, which has no agenda, was near-linear while a production terminal was not. The
 second blamed `insert_ordered/2` for the collection, and a probe agreed: feed members in
-descending order, making that walk a prepend, and the scenario goes linear. The fixture was
-hiding the real cause, because it inserted the token last and so never read a group back.
+descending order, making that walk a prepend, and the scenario goes linear. The fixture
+concealed the true cause, because it inserted the token last and thus never read a group
+back.
 The third credited a `:gb_trees` group for a win that batching had delivered, when the tree
 had in fact made both collection scenarios slower on its own.
 

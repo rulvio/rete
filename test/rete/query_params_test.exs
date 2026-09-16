@@ -1,12 +1,12 @@
 defmodule Rete.QueryParamsTest do
   @moduledoc """
-  A query's head declares its parameters. They key its matches, and a call names exactly
-  them.
+  The head of a query declares its parameters. They key its matches, and a call names
+  exactly those parameters.
 
-  The load-bearing test here is not that a parameterised query is faster. It is that it
-  answers with the same rows, in the same order, as filtering a headless query's result in
-  Elixir would. The failure mode of a wrong keying is a missing row, which reads as an
-  empty result rather than a crash.
+  The most important test here is not that a query with a head is faster. It is that the
+  query answers with the same rows, in the same order, as a filter in Elixir on the result
+  of a query with no head. An incorrect keying gives a missing row. This looks like an
+  empty result, and not like a failure.
   """
 
   use ExUnit.Case, async: true
@@ -35,8 +35,8 @@ defmodule Rete.QueryParamsTest do
     for i <- 1..n, do: {:rec, rem(i, 4), rem(i, 3), i}
   end
 
-  # What a headless query plus an Elixir filter answers. This is the reference the keyed
-  # query has to match, row for row and in order.
+  # The answer from a query with no head, plus a filter in Elixir. The keyed query must
+  # match this answer, row for row, and in the same order.
   defp expected(session, keys) do
     session
     |> Plain.rows()
@@ -130,9 +130,9 @@ defmodule Rete.QueryParamsTest do
     end
   end
 
-  # The parameters key the store, so a partial set is not a narrower lookup — it is a
-  # different key nothing is filed under. Answering `[]` there would be silently wrong,
-  # which is why each of these raises.
+  # The parameters key the store. A partial set is thus not a more narrow lookup. It is a
+  # different key, and nothing is stored under it. An answer of `[]` would be incorrect,
+  # so each of these raises an error.
   describe "what a call may name" do
     setup do
       %{session: run(Keyed, facts_for(12))}
@@ -176,8 +176,9 @@ defmodule Rete.QueryParamsTest do
       assert error.message =~ "defquery rows(cid)(...)"
     end
 
-    # A map key compares by term, not by `==`. `Session.query/3` says so, because the old
-    # filter used `==` and this is the one call that silently changes answer.
+    # A map key compares by term, and not by `==`. `Session.query/3` records this, because
+    # the old filter used `==`. This is the one call whose answer changes without a
+    # message.
     test "a parameter matches by term, so 1.0 is not 1", %{session: session} do
       assert [] == Keyed.by_cid(session, cid: 1.0)
       refute [] == Keyed.by_cid(session, cid: 1)
@@ -199,9 +200,9 @@ defmodule Rete.QueryParamsTest do
       assert error.message =~ "It binds [:cid]"
     end
 
-    # A disjunction binds the union of its branches, so a variable only one branch binds
-    # is absent from the other's tokens. Those tokens would key on its absence, and no
-    # call could name them. Rejecting it is the only honest answer.
+    # A disjunction binds the union of its branches. A variable that only one branch binds
+    # is thus absent from the tokens of the other branch. Those tokens would key on its
+    # absence, and no call could name them. To reject it is the only correct answer.
     test "a parameter only some branches of a disjunction bind is refused" do
       error =
         assert_raise ArgumentError, fn ->
@@ -213,7 +214,7 @@ defmodule Rete.QueryParamsTest do
         end
 
       assert error.message =~ "only some branches of its disjunction bind"
-      assert error.message =~ "every match carries"
+      assert error.message =~ "every match must carry it"
     end
 
     test "a rule cannot take parameters" do
@@ -226,8 +227,24 @@ defmodule Rete.QueryParamsTest do
           end
         end
 
-      assert error.message =~ "flag(cid) declares parameters"
-      assert error.message =~ "a rule cannot take them"
+      assert error.message =~ "flag(cid) gives a rule a head"
+      assert error.message =~ "a rule cannot take parameters"
+    end
+
+    # `defrule r()(...)` declares no parameters, so the engine could accept it. But it has
+    # the shape of a query. A person who intended a query would then believe that they had
+    # written one.
+    test "a rule cannot carry an empty head either" do
+      error =
+        assert_raise ArgumentError, fn ->
+          defmodule EmptyHeadRule do
+            use Rete.Ruleset
+
+            defrule flag()({:rec, cid}), do: {:flagged, cid}
+          end
+        end
+
+      assert error.message =~ "flag() gives a rule a head"
     end
 
     test "the same parameter twice is an error" do
@@ -256,7 +273,7 @@ defmodule Rete.QueryParamsTest do
       assert error.message =~ "takes a bare variable in its head, got: 1"
     end
 
-    # `()` and no head at all are the same claim: this query takes no parameters.
+    # `()` and no head make the same statement: this query takes no parameters.
     test "an empty head is a query with no parameters" do
       defmodule EmptyHead do
         use Rete.Ruleset
@@ -294,7 +311,7 @@ defmodule Rete.QueryParamsTest do
     end
 
     # The head is part of the declaration, so it is part of the production hash. Two
-    # modules whose queries differ only in their head must not share a terminal.
+    # modules with queries that differ only in the head must not share a terminal.
     test "a changed head changes the module version" do
       defmodule VersionA do
         use Rete.Ruleset

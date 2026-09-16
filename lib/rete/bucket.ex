@@ -103,9 +103,10 @@ defmodule Rete.Bucket do
   carries a bucket too, because the miss is what builds the index. `Rete.Agenda` misses
   once per activation that has already fired, so discarding it would rebuild every time.
 
-  A miss is reported rather than silently doing nothing. A caller that propagated a
-  retraction of something the bucket never held would corrupt every count below it, and
-  `Rete.Agenda` tells a cancelled activation from an already-fired one by exactly this.
+  This reports a miss, and does not ignore it. A caller could otherwise propagate a
+  retraction of something that the bucket never held, and corrupt every count below it.
+  `Rete.Agenda` also uses this to tell a cancelled activation from one that already
+  fired.
   """
   @spec take(t(), term()) :: {:ok, t()} | {:error, t()}
   def take(%__MODULE__{} = bucket, target) do

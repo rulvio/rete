@@ -282,12 +282,12 @@ defmodule Rete.Engine do
   summary(...)` also defines `summary/2` in its own module. `MyRuleset.summary(session,
   params)` is the readable form of this call.
 
-  `params` gives a value for every parameter of the query's head, and for nothing else.
-  Those parameters are what its matches are keyed on, so this is a map lookup rather than
-  a scan. A query with no head takes no parameters and answers with every match.
+  `params` gives a value for every parameter of the head of the query, and for no other
+  name. The engine keys the matches on those parameters, so this is a map lookup and not a
+  scan. A query with no head takes no parameters, and it answers with every match.
 
-  A parameter matches a binding by **term equality**, as a map key does. So `1` and `1.0`
-  are different parameter values, though `==` calls them equal.
+  A parameter matches a binding by **term equality**, in the same way as a map key. `1` and
+  `1.0` are therefore different parameter values, but `==` reports that they are equal.
 
   Row order is **unspecified**. Rows follow the order the facts arrived in.
   """
@@ -363,9 +363,9 @@ defmodule Rete.Engine do
   defp normalize_params(params) when is_list(params), do: Map.new(params)
   defp normalize_params(params) when is_map(params), do: params
 
-  # The parameters key the store, so a call has to name every one and nothing else. A
-  # partial set is not a narrower lookup, it is a different key that nothing is filed
-  # under — which would answer `[]` rather than fail. Hence the check.
+  # The parameters key the store, so a call must name every one, and no other name. A
+  # partial set is not a more narrow lookup. It is a different key, and nothing is stored
+  # under it, so the call would answer `[]` instead of failing. This check prevents that.
   defp check_params!(%Node.Query{params: params} = node, given) do
     cond do
       Enum.sort(Map.keys(given)) == Enum.sort(params) ->
@@ -383,18 +383,19 @@ defmodule Rete.Engine do
         raise ArgumentError,
               "the query #{Network.ref_string({node.module, node.name})} takes parameters " <>
                 "#{inspect(params)}, and was given #{inspect(Enum.sort(Map.keys(given)))}. " <>
-                "Its parameters are what its matches are keyed on, so a call names every " <>
-                "one of them and nothing else."
+                "The engine keys its matches on its parameters, so a call must name every " <>
+                "one of them, and no other name."
     end
   end
 
-  # Only offers the head when every key asked for is a binding. Otherwise the suggested
-  # `defquery` would not compile, and the caller's real mistake is the name.
+  # This gives the head only when every key that the caller asked for is a binding.
+  # If it is not, the suggested `defquery` would not compile, and the true mistake of the
+  # caller is the name.
   defp head_advice(%Node.Query{bind: bind, name: name}, asked) do
     if asked != [] and asked -- bind == [] do
-      " Declare what you read by in the head — " <>
-        "`defquery #{name}(#{Enum.join(asked, ", ")})(...)` — or filter the rows this " <>
-        "returns yourself."
+      " Declare what you read by in the head: " <>
+        "`defquery #{name}(#{Enum.join(asked, ", ")})(...)`. Or filter the rows that this " <>
+        "returns."
     else
       ""
     end
@@ -419,9 +420,9 @@ defmodule Rete.Engine do
   from `new/1` is unsettled, because the root token is queued too. See
   `docs/design/engine.md` §2.
 
-  This reads the queue alone, and that is enough. On every state a caller can hold, the
-  agenda is empty whenever the queue is: `fire_loop/4` returns only on `:empty`, and every
-  other way out of a fire raises, which discards the state. So there is no state with work
+  This reads the queue alone, and that is sufficient. On every state that a caller can
+  hold, the agenda is empty whenever the queue is empty. `fire_loop/4` returns only on
+  `:empty`, and every other exit from a fire raises an error, which discards the state. So there is no state with work
   queued nowhere and an activation still waiting. Keep it that way, or this answers `true`
   about a state that has yet to fire something.
   """
