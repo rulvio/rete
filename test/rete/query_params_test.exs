@@ -341,7 +341,8 @@ defmodule Rete.QueryParamsTest do
         end
 
       assert error.message =~ "sets [:saliance]"
-      assert error.message =~ "defquery flag(cid)(...)"
+      assert error.message =~ "takes [:salience, :internal_salience, :generated, :meta]"
+      refute error.message =~ "defquery"
     end
 
     # A leading map literal is the options map unless it carries `__type__`. A map fact
@@ -361,6 +362,35 @@ defmodule Rete.QueryParamsTest do
 
       assert error.message =~ "sets [:cid]"
       assert error.message =~ "__type__"
+    end
+
+    # `:meta` is the one option the engine never reads. A ruleset author uses it to
+    # attach their own data, read back later through `Rete.get_rule_data/1`.
+    test "a meta option is not interpreted, and passes through unchanged" do
+      defmodule Meta do
+        use Rete.Ruleset
+
+        defrule flag(%{salience: 10, meta: %{owner: "team-x"}}, {:rec, cid}) do
+          {:flagged, cid}
+        end
+      end
+
+      assert [production] = Rete.get_rule_data([Meta])
+      assert %{owner: "team-x"} == Keyword.get(production.opts, :meta)
+    end
+
+    test "a meta option combines with a query's head" do
+      defmodule MetaQuery do
+        use Rete.Ruleset
+
+        defquery rows(cid)(%{meta: :internal}, {:rec, cid, amt}), do: {cid, amt}
+      end
+
+      session = run(MetaQuery, [{:rec, 1, 5}, {:rec, 2, 9}])
+
+      assert [{1, 5}] == MetaQuery.rows(session, cid: 1)
+      assert [production] = Rete.get_rule_data([MetaQuery])
+      assert :internal == Keyword.get(production.opts, :meta)
     end
   end
 end

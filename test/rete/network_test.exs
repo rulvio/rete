@@ -517,9 +517,8 @@ defmodule Rete.NetworkTest do
       refute Map.has_key?(node, :param_keys)
     end
 
-    # `params:` used to be an option. It is the head now, so silently ignoring a leftover
-    # one in the options map would be the worst outcome for something that does change
-    # behavior.
+    # `params:` used to be an option. It is the head now, so it is deliberately not a
+    # known option, and a leftover one is caught the same way any other unknown key is.
     test "params in the options map is rejected where it is written" do
       source = """
       defmodule Rete.NetworkTest.OldParams do
@@ -533,9 +532,8 @@ defmodule Rete.NetworkTest do
 
       error = assert_raise ArgumentError, fn -> Code.compile_string(source) end
 
-      assert error.message =~ "not where parameters go"
-      assert error.message =~ "defquery bad(cid)(<conditions>)"
-      assert error.message =~ "bad(session, cid: value)"
+      assert error.message =~ "sets [:params]"
+      assert error.message =~ "takes [:salience, :internal_salience, :generated, :meta]"
     end
   end
 

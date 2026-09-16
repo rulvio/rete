@@ -15,7 +15,7 @@ difficult to learn than the syntax.
 * [Negation](#negation)
 * [Collections](#collections)
 * [Taxonomy](#taxonomy)
-* [Options: salience](#options-salience)
+* [Options: salience and meta](#options-salience-and-meta)
 * [Queries](#queries)
 * [The right hand side](#the-right-hand-side)
 * [Condition order](#condition-order)
@@ -536,7 +536,7 @@ allowed, and a `%MyApp.Refund{}` then reaches a condition written as
 the shape. If the parent's pattern names a field that the child does not have, the fact
 does not match. This is not an error.
 
-## Options: salience
+## Options: salience and meta
 
 A `%{...}` literal in **first** position is the rule's options, not a condition. There is
 one exception: a `__type__` key makes it a tagged-map condition instead. A map fact
@@ -562,7 +562,27 @@ as a general control-flow mechanism.
 
 `:internal_salience` is reserved. The compiler uses it to make an extracted negation
 helper run before the rule that negates its marker. Setting `:internal_salience` yourself
-raises an error. The map ignores any other key.
+raises an error. Any other key raises an error too, except `:meta`, below.
+
+### Attaching your own data: `:meta`
+
+`:meta` is not read by the engine. It exists so you can attach your own data to a rule or
+a query, for your own tooling to read back:
+
+```elixir
+defrule urgent(%{meta: %{owner: "billing", ticket: "OPS-42"}}, {:alarm, id}) do
+  {:page, id}
+end
+```
+
+The engine never validates or interprets its value. Read it back with
+`Rete.get_rule_data/1`, which returns the escaped `Rete.IR.Production` of every rule and
+query:
+
+```elixir
+iex> Rete.get_rule_data([MyRuleset]) |> Enum.map(&{&1.name, Keyword.get(&1.opts, :meta)})
+[urgent: %{owner: "billing", ticket: "OPS-42"}]
+```
 
 ## Queries
 
@@ -1017,7 +1037,7 @@ give them different names instead. That is what a name is for.
 | `defrule r({:order, cid})` with no `do` block | an error naming the rule; the body is the point of a rule |
 | `{:order, _amt} when _amt > 0` | an error saying to rename it to `amt`; `_`-prefixed names are discarded |
 | `[f = {:order, cid}]` | an error: bind the whole collection, not an element of it |
-| `defquery q(%{params: [:cid]}, {:a, cid})` | an error: parameters are the head, `defquery q(cid)({:a, cid})` |
+| `defquery q(%{params: [:cid]}, {:a, cid})` | an error: `params` is not a known option. Write it as the head instead: `defquery q(cid)({:a, cid})` |
 | `defquery q(cid)(...)` then `q(session)` | an error: a call must name every parameter, and `q` has one |
 | `defquery q({:a, cid})` then `q(session, cid: 1)` | an error: `q` has no head, so it takes no parameters |
 | `defrule r(cid)({:a, cid})` | an error: only a query is read, so only a query takes parameters |

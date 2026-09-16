@@ -313,8 +313,8 @@ defmodule Rete.Engine do
     suggestions =
       for {module, ^name} = ref <- Network.query_refs(state.network),
           do:
-            "    #{inspect(module)}.#{name}(session, filters)\n" <>
-              "    Rete.Session.query(session, #{inspect(ref)}, filters)"
+            "    #{inspect(module)}.#{name}(session, params)\n" <>
+              "    Rete.Session.query(session, #{inspect(ref)}, params)"
 
     detail =
       case suggestions do

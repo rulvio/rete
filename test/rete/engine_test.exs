@@ -1932,7 +1932,7 @@ defmodule Rete.EngineTest do
       error = assert_raise ArgumentError, fn -> Session.query(session, :flagged_for) end
 
       assert error.message =~ "a query is named by {module, name}"
-      assert error.message =~ "Rete.EngineTest.Queries.flagged_for(session, filters)"
+      assert error.message =~ "Rete.EngineTest.Queries.flagged_for(session, params)"
       assert error.message =~ "{Rete.EngineTest.Queries, :flagged_for}"
     end
 

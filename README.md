@@ -149,7 +149,7 @@ the work.
 `salience` is firing priority. A rule declared `defrule urgent(%{salience: 10}, ...)` fires
 before one at the default value of `0`. Every activation at one salience level fires before
 any activation at a lower one. See
-[docs/dsl.md#options-salience](docs/dsl.md#options-salience) for more.
+[docs/dsl.md#options-salience-and-meta](docs/dsl.md#options-salience-and-meta) for more.
 
 ### Fire
 

@@ -30,6 +30,13 @@ To read one row out of 4,000 matches takes 0.0001 ms with a parameter. To build 
 and then filter in Elixir takes 0.063 ms. `docs/design/engine.md` §13 "Queries" gives the
 measurements.
 
+### Added
+
+* **`:meta` in the options map.** `%{meta: <term>}` attaches your own data to a rule or a
+  query, for example an owner or a ticket link. The engine never reads it, and never
+  validates its shape. `Rete.get_rule_data/1` returns it unchanged, in
+  `production.opts[:meta]`.
+
 ### Changed
 
 * **A query declares its parameters in its head.** `defquery rows(cid, tid)(<conditions>)`

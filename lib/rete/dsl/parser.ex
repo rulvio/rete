@@ -162,17 +162,17 @@ defmodule Rete.DSL.Parser do
             "variable: `defquery #{name}(cid)({:rec, cid, amt})`."
   end
 
-  # `:params` used to be an option. It is the head of a query now. The engine would thus
-  # ignore one that stays in the options map, and that is the worst result for something
-  # that does change behavior.
+  # `:params` used to be an option. It is the head of a query now, so it is deliberately
+  # absent here: an old-style `params:` is caught below like any other unknown key.
   # `:internal_salience` and `:generated` are set by `Rete.Compiler.Negation` on the
   # helper it extracts, not written by hand. They are listed because they are legal on a
   # production, not because anyone should type them.
-  @known_opts [:salience, :internal_salience, :generated]
+  # `:meta` is the one key the engine never reads or validates. It is a deliberate
+  # pass-through for the ruleset author's own data, kept in `opts` for `get_rule_data/0`
+  # to hand back unchanged.
+  @known_opts [:salience, :internal_salience, :generated, :meta]
 
   defp check_opts!(name, opts) do
-    check_params!(name, opts)
-
     case Keyword.keys(opts) -- @known_opts do
       [] ->
         :ok
@@ -180,29 +180,9 @@ defmodule Rete.DSL.Parser do
       unknown ->
         raise ArgumentError,
               "#{name} sets #{inspect(unknown)}, which is not an option. " <>
-                "The options map takes #{inspect(@known_opts)}. The parameters of a query " <>
-                "are its head, `defquery #{name}(cid)(...)`. An option that the engine " <>
-                "ignores is worse than one that it rejects, so this raises an error. " <>
-                "If you meant a map fact pattern rather than the options map, declare " <>
-                "its type: `%{__type__: :some_type, ...}`."
-    end
-  end
-
-  defp check_params!(name, opts) do
-    case Keyword.get(opts, :params) do
-      nil ->
-        :ok
-
-      params ->
-        first = params |> List.wrap() |> List.first()
-
-        raise ArgumentError,
-              "#{name} declares `params: #{inspect(params)}` in its options map. That is " <>
-                "not where parameters go. The parameters of a query are its head. Write " <>
-                "them as the variables themselves: " <>
-                "`defquery #{name}(#{Enum.join(List.wrap(params), ", ")})(<conditions>)`. " <>
-                "A query is also a function in its own module, so you run it by calling it: " <>
-                "#{name}(session, #{first}: value)"
+                "The options map takes #{inspect(@known_opts)}. If you meant a map fact " <>
+                "pattern rather than the options map, declare its type: " <>
+                "`%{__type__: :some_type, ...}`."
     end
   end
 

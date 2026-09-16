@@ -382,8 +382,8 @@ defmodule Rete.DSL.Codegen do
   @spec query_def(IR.Production.t()) :: Macro.t() | nil
   def query_def(%IR.Production{type: :query, name: name}) do
     quote do
-      Kernel.def unquote(name)(session, filters \\ []) do
-        Rete.Session.query(session, {__MODULE__, unquote(name)}, filters)
+      Kernel.def unquote(name)(session, params \\ []) do
+        Rete.Session.query(session, {__MODULE__, unquote(name)}, params)
       end
     end
   end
