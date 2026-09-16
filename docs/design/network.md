@@ -110,9 +110,9 @@ filling a collection was quadratic in its size. Prepending is O(1), and the new 
 its whole tail with the old one.
 
 The mistake was not the implementation, it was the promise. Nothing asked for it. The
-contract has always said a rule may not depend on the gathered order, so the only rules the
-sort could possibly help were the ones this page tells you not to write — and every other
-rule in the session paid for them. `mix bench` puts the bill at 31 ms against 4 ms for
+contract has always said that a rule may not depend on the gathered order. The only rules
+that the sort could help were thus the ones this page tells you not to write. And every
+other rule in the session paid for them. `mix bench` puts the bill at 31 ms against 4 ms for
 filling one collection of 1,000 members.
 
 What was never in question: the *membership* of a collection is a function of its fact set.
@@ -155,8 +155,8 @@ expression code, so a condition written in four rules is matched once per fact.
 discarded variables.
 
 **Across modules**, the same code shares the same node, so composing rulesets costs what
-writing them together costs. The one exception is an expression whose guard calls an
-unqualified function: the bare name does not say which function it means, so
+writing them together costs. There is one exception: an expression whose guard calls an
+unqualified function. The bare name does not say which function it means, so
 `Rete.Compiler.disambiguate_codes/1` gives each contributing module its own code. Every
 beta node under it separates too, because a sharing key holds the alpha code. See
 `ir.md` §5.
@@ -199,9 +199,9 @@ defrule clean({:customer, cid}, {:not, [{:"...clean__neg_1", cid}]})
 Three properties make this correct:
 
 * **The marker is scoped.** It carries the ancestor bindings the conjunction joins on, and
-  the negation matches on those bindings. Otherwise, one customer with both an order and a
-  refund would suppress the rule for *every* customer — the negation would ask "does any
-  match exist" instead of "does one exist for this `cid`". This is Clara's
+  the negation matches on those bindings. If it did not, one customer with both an order and a
+  refund would suppress the rule for *every* customer. The negation would then ask "does
+  any match exist", and not "does one exist for this `cid`". This is Clara's
   [issue 304](https://github.com/oracle-samples/clara-rules/issues/304).
 * **The helper repeats the prefix.** The prefix is what binds those bindings, so the
   marker is produced only for groups that reached the negation.

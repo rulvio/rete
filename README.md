@@ -6,10 +6,10 @@ This project is a forward-chaining rules engine for Elixir, based on the
 [Rete algorithm](https://en.wikipedia.org/wiki/Rete_algorithm). A rule reads as a function:
 its **arguments are the conditions**, and its **body is what follows**.
 
-Use it where the logic is a pile of interacting conditions: pricing, eligibility, alerting,
-policy, validation, or diagnosis. This is the code that becomes a nest of `cond` clauses
-nobody wants to touch. The question that matters here is not "what happens next" but "what
-is true now".
+Use it where the logic is many interacting conditions: pricing, eligibility, alerting,
+policy, validation, or diagnosis. This is the code that usually becomes a deep stack of
+`cond` clauses that nobody wants to change. The question that matters here is not "what
+happens next" but "what is true now".
 
 ```elixir
 defrule dormant({:customer, cid, name}, {:not, [{:order, cid, _}]}) do
@@ -28,7 +28,7 @@ becomes dormant again. You do no bookkeeping yourself.
 ```elixir
 def deps do
   [
-    {:rete, "~> 0.6.0"}
+    {:rete, "~> 0.7.0"}
   ]
 end
 ```
@@ -70,9 +70,9 @@ the engine inserts the facts it returns *logically*. It remembers which match pr
 fact.
 
 If you take away any fact behind that match, the conclusion is withdrawn. Anything
-concluded from that conclusion is withdrawn too, until the session settles. A pile of
-functions cannot give you this. It is also why a rule's right hand side can only insert
-facts: keeping a conclusion true as the world changes is the engine's job, not yours.
+concluded from that conclusion is withdrawn too, until the session settles. Plain functions
+cannot give you this. It is also why a rule's right hand side can only insert facts. To
+keep a conclusion true as the world changes is the work of the engine, and not your work.
 
 The name comes from the algorithm underneath. Rete compiles the rules into a network that
 shares work between them.
@@ -106,7 +106,7 @@ defmodule Retail do
     {:dormant, name}
   end
 
-  defquery large_orders({:large_order, cid, amt}) do
+  defquery large_orders(cid)({:large_order, cid, amt}) do
     {cid, amt}
   end
 end
@@ -138,7 +138,7 @@ session =
 Rete.Session.facts(session)
 #=> the six facts above, and nothing else
 
-Retail.large_orders(session)
+Retail.large_orders(session, cid: 1)
 #=> [] — nothing has matched yet
 ```
 
@@ -149,7 +149,7 @@ the work.
 `salience` is firing priority. A rule declared `defrule urgent(%{salience: 10}, ...)` fires
 before one at the default value of `0`. Every activation at one salience level fires before
 any activation at a lower one. See
-[docs/dsl.md#options-salience](docs/dsl.md#options-salience) for more.
+[docs/dsl.md#options-salience-and-meta](docs/dsl.md#options-salience-and-meta) for more.
 
 ### Fire
 
@@ -190,9 +190,6 @@ A query has the same left hand side as a rule, but it never fires. It holds the 
 that reached it. **It is a function in its own module**, so you read it back by calling it.
 
 ```elixir
-Retail.large_orders(session)
-#=> [{1, 250}]
-
 Retail.large_orders(session, cid: 1)
 #=> [{1, 250}]
 ```
@@ -200,9 +197,10 @@ Retail.large_orders(session, cid: 1)
 A query returns **what its body computes**, one result per match. It answers in whatever
 shape suits the caller, instead of handing back raw bindings.
 
-There is nothing to declare. You can constrain any variable the left hand side binds, at
-call time. Naming a variable the left hand side does not bind raises an error, instead of
-quietly answering `[]`.
+The `(cid)` before the conditions is the **head** of the query. It declares the parameters.
+The engine keys the matches on those parameters, so a read is a map lookup and not a scan.
+A call must name every parameter, and no other name. Write no head for a query that takes
+no parameters and answers with every match that it holds.
 
 A query is identified by `{module, name}`, never by a bare name. Because of this, two
 rulesets that each define a `:summary` compose into one session without collision.
@@ -282,7 +280,6 @@ before the fact itself goes.
 
 * `fired/2` — what has concluded something
 * `why_not/2` — how far a rule got, condition by condition
-* `query_plan/3` — which index a filter would use, or `:scan`
 * `collection/3`
 
 For history instead of a snapshot, attach `Rete.Listener.Collect` or `Rete.Listener.Trace`.
@@ -312,7 +309,7 @@ Seven modules are public. They are the ones the examples above use:
 | `Rete` | aggregating rule, expression and taxonomy data across ruleset modules |
 | `Rete.Ruleset` | `defrule`, `defquery`, `derive`, `underive` |
 | `Rete.Session` | building a session, inserting, retracting, firing, querying |
-| `Rete.Inspect` | `explain/2`, `fired/2`, `why_not/2`, `query_plan/3`, `collection/3` |
+| `Rete.Inspect` | `explain/2`, `fired/2`, `why_not/2`, `collection/3` |
 | `Rete.Listener` (+ `.Collect`, `.Trace`) | watching what a session does |
 
 **Everything else is internal**: the DSL front end, the IR, the compiler, the network, the

@@ -225,12 +225,10 @@ defmodule Rete.Network.Node do
     A terminal node for a query. Holds the tokens that reached it, to be read back by
     name.
 
-    There is no parameter list. A query is its conditions and its body.
-    `Rete.Engine.query/3` lets the caller constrain any variable in `:bind`.
-
-    `:index` is the key sets `Rete.Ruleset.index/2` declared, each sorted. A filter whose
-    keys are a superset of one of them reads a bucket instead of every match. It changes
-    speed and nothing else, so an empty list only means every filter scans.
+    `:params` is the head of the query. These are the bindings that key its tokens, and
+    they are the only way to read it. `Rete.Engine.query/3` takes exactly these, so a read
+    is one map lookup. An empty list is a query with no parameters. Its tokens all key on
+    `%{}`, and they come back in arrival order.
     """
     @type t :: %__MODULE__{
             id: non_neg_integer() | nil,
@@ -239,9 +237,9 @@ defmodule Rete.Network.Node do
             hash: integer(),
             rhs: fun(),
             bind: [atom()],
-            index: [[atom()]]
+            params: [atom()]
           }
-    defstruct [:id, :name, :module, :hash, :rhs, bind: [], index: []]
+    defstruct [:id, :name, :module, :hash, :rhs, bind: [], params: []]
   end
 
   @type t ::

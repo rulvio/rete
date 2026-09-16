@@ -280,97 +280,41 @@ defmodule Rete.Engine do
 
   A query is named by the `{module, name}` pair it was defined under. `defquery
   summary(...)` also defines `summary/2` in its own module. `MyRuleset.summary(session,
-  filters)` is the readable form of this call.
+  params)` is the readable form of this call.
 
-  `filters` narrows the matches by equality on the *bindings*, before the body runs. It
-  may name any variable the left hand side binds.
+  `params` gives a value for every parameter of the head of the query, and for no other
+  name. The engine keys the matches on those parameters, so this is a map lookup and not a
+  scan. A query with no head takes no parameters, and it answers with every match.
+
+  A parameter matches a binding by **term equality**, in the same way as a map key. `1` and
+  `1.0` are therefore different parameter values, but `==` reports that they are equal.
 
   Row order is **unspecified**. Rows follow the order the facts arrived in.
-
-  This used to sort every result, so that one fact set always answered the same way. The
-  contract never promised that, and the sort cost O(n log n) on every call. The rows are
-  the same without it. Only their sequence moves.
   """
   @spec query(State.t(), {module(), atom()}, keyword() | %{atom() => term()}) :: [term()]
-  def query(state, ref, filters \\ [])
+  def query(state, ref, params \\ [])
 
-  def query(%State{} = state, {module, name} = ref, filters)
+  def query(%State{} = state, {module, name} = ref, params)
       when is_atom(module) and is_atom(name) do
     node = query_node!(state, ref)
-    filters = normalize_filters(filters)
-    check_filters!(node, filters)
+    params = normalize_params(params)
+    check_params!(node, params)
 
     state.memory
-    |> candidates(node, filters)
-    |> Enum.filter(fn %{bindings: bindings} ->
-      Enum.all?(filters, fn {key, value} -> Map.get(bindings, key) == value end)
-    end)
+    |> Memory.tokens(node.id, params)
     |> Enum.map(&node.rhs.(node.hash, &1.bindings))
   end
 
-  def query(%State{} = state, name, _filters) when is_atom(name) do
+  def query(%State{} = state, name, _params) when is_atom(name) do
     raise ArgumentError, bare_name_message(state, name)
-  end
-
-  @doc """
-  Which index `filters` would use at a query, or `:scan`.
-
-  A declared index that no call ever uses is silently no faster, which is the one thing
-  that cannot be seen from the outside. This says so. See `Rete.Inspect.query_plan/3`.
-  """
-  @spec query_plan(State.t(), {module(), atom()}, keyword() | %{atom() => term()}) ::
-          {:index, [atom()]} | :scan
-  def query_plan(%State{} = state, ref, filters \\ []) do
-    node = query_node!(state, ref)
-    filters = normalize_filters(filters)
-    check_filters!(node, filters)
-
-    case usable_index(node, filters) do
-      nil -> :scan
-      {_position, keys} -> {:index, keys}
-    end
-  end
-
-  # The matches a filter could possibly select. With a usable index that is one bucket,
-  # and with none it is every match — which is what the filter above then narrows either
-  # way. So an index changes how many matches are considered, never which are returned.
-  #
-  # Arrival order survives. A bucket holds its tokens in arrival order, and the ones a
-  # filter selects are the same subsequence a scan of everything would have found.
-  defp candidates(memory, node, filters) do
-    case usable_index(node, filters) do
-      nil ->
-        Memory.all_tokens(memory, node.id)
-
-      {position, keys} ->
-        Memory.tokens(memory, Memory.index_id(node.id, position), Map.take(filters, keys))
-    end
-  end
-
-  # The largest declared key set the filter covers, so the bucket is as narrow as the
-  # declarations allow. Ties go to the first declared, so the choice is deterministic.
-  # A set the filter only partly covers is no use: its bucket key needs every one of them.
-  defp usable_index(%Node.Query{index: []}, _filters), do: nil
-
-  defp usable_index(%Node.Query{index: index}, filters) do
-    asked = filters |> Map.keys() |> MapSet.new()
-
-    index
-    |> Enum.with_index()
-    |> Enum.filter(fn {keys, _position} -> MapSet.subset?(MapSet.new(keys), asked) end)
-    |> Enum.max_by(fn {keys, _position} -> length(keys) end, fn -> nil end)
-    |> case do
-      nil -> nil
-      {keys, position} -> {position, keys}
-    end
   end
 
   defp bare_name_message(state, name) do
     suggestions =
       for {module, ^name} = ref <- Network.query_refs(state.network),
           do:
-            "    #{inspect(module)}.#{name}(session, filters)\n" <>
-              "    Rete.Session.query(session, #{inspect(ref)}, filters)"
+            "    #{inspect(module)}.#{name}(session, params)\n" <>
+              "    Rete.Session.query(session, #{inspect(ref)}, params)"
 
     detail =
       case suggestions do
@@ -416,18 +360,44 @@ defmodule Rete.Engine do
     end
   end
 
-  defp normalize_filters(filters) when is_list(filters), do: Map.new(filters)
-  defp normalize_filters(filters) when is_map(filters), do: filters
+  defp normalize_params(params) when is_list(params), do: Map.new(params)
+  defp normalize_params(params) when is_map(params), do: params
 
-  defp check_filters!(node, filters) do
-    case Map.keys(filters) -- node.bind do
-      [] ->
+  # The parameters key the store, so a call must name every one, and no other name. A
+  # partial set is not a more narrow lookup. It is a different key, and nothing is stored
+  # under it, so the call would answer `[]` instead of failing. This check prevents that.
+  defp check_params!(%Node.Query{params: params} = node, given) do
+    cond do
+      Enum.sort(Map.keys(given)) == Enum.sort(params) ->
         :ok
 
-      unknown ->
+      params == [] ->
+        asked = given |> Map.keys() |> Enum.sort()
+
         raise ArgumentError,
-              "the query #{Network.ref_string({node.module, node.name})} binds " <>
-                "#{inspect(node.bind)}, and was given #{inspect(Enum.sort(unknown))}"
+              "the query #{Network.ref_string({node.module, node.name})} takes no " <>
+                "parameters, and was given #{inspect(asked)}. It binds " <>
+                "#{inspect(node.bind)}." <> head_advice(node, asked)
+
+      true ->
+        raise ArgumentError,
+              "the query #{Network.ref_string({node.module, node.name})} takes parameters " <>
+                "#{inspect(params)}, and was given #{inspect(Enum.sort(Map.keys(given)))}. " <>
+                "The engine keys its matches on its parameters, so a call must name every " <>
+                "one of them, and no other name."
+    end
+  end
+
+  # This gives the head only when every key that the caller asked for is a binding.
+  # If it is not, the suggested `defquery` would not compile, and the true mistake of the
+  # caller is the name.
+  defp head_advice(%Node.Query{bind: bind, name: name}, asked) do
+    if asked != [] and asked -- bind == [] do
+      " Declare what you read by in the head: " <>
+        "`defquery #{name}(#{Enum.join(asked, ", ")})(...)`. Or filter the rows that this " <>
+        "returns."
+    else
+      ""
     end
   end
 
@@ -450,11 +420,11 @@ defmodule Rete.Engine do
   from `new/1` is unsettled, because the root token is queued too. See
   `docs/design/engine.md` §2.
 
-  This reads the queue alone, and that is enough. On every state a caller can hold, the
-  agenda is empty whenever the queue is: `fire_loop/4` returns only on `:empty`, and every
-  other way out of a fire raises, which discards the state. So there is no state with work
-  queued nowhere and an activation still waiting. Keep it that way, or this answers `true`
-  about a state that has yet to fire something.
+  This reads the queue alone, and that is sufficient. On every state that a caller can
+  hold, the agenda is empty whenever the queue is empty. `fire_loop/4` returns only on
+  `:empty`, and every other exit from a fire raises an error, which discards the state.
+  So there is no state with work queued nowhere and an activation still waiting. Keep it
+  that way, or this answers `true` about a state that has yet to fire something.
   """
   @spec settled?(State.t()) :: boolean()
   def settled?(%State{queue: queue}), do: :queue.is_empty(queue)

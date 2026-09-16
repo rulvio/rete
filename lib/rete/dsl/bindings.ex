@@ -6,10 +6,10 @@ defmodule Rete.DSL.Bindings do
 
   **Internal.** This runs between gate normalization and code generation. It walks the
   LHS **in order**, carrying the variables bound so far. For every fact or collection
-  condition, it computes three things: `:join_bind` (bound upstream already — the hash
-  join keys), `:new_bind` (introduced here, which for a collection decides the
-  empty-collection semantics), and `:join_filter` (the part of the guard a single fact
-  cannot decide). `join_bind ++ new_bind == bind` always holds.
+  condition, it computes three things. `:join_bind` is bound upstream already, and holds
+  the hash join keys. `:new_bind` is introduced here, and for a collection it decides the
+  empty-collection semantics. `:join_filter` is the part of the guard that a single fact
+  cannot decide. `join_bind ++ new_bind == bind` always holds.
 
   The compiler splits a per-condition guard conjunct by conjunct, over the top-level
   `and`/`&&` chain. So `{:order, id, amt} when amt > 0 and amt > limit` puts `amt > 0` in
@@ -23,9 +23,10 @@ defmodule Rete.DSL.Bindings do
   When the branches classify the tail differently, the tail is **absorbed** into them,
   bounded at #{@max_elements} LHS elements.
 
-  Raises at compile time for a guard variable no condition binds on a path, a collection
-  guard reading its own collection binding, and a right hand side reading a
-  collection-local variable. See `docs/design/ir.md` §7.
+  This raises an error at compile time in three cases. The first is a guard variable that
+  no condition binds on a path. The second is a collection guard that reads its own
+  collection binding. The third is a right hand side that reads a collection-local
+  variable. See `docs/design/ir.md` §7.
   """
 
   alias Rete.DSL.Codegen
@@ -394,11 +395,11 @@ defmodule Rete.DSL.Bindings do
   @doc """
   Raises unless every variable a condition's guard reads is available to it.
 
-  A guard may read the variables its own pattern binds (`own` — which includes the fact
-  binding, since the alpha's argument is the fact), and the variables bound by an
-  earlier condition (`bound`). Anything else would compile into a join filter that reads
-  the token side for a variable that is never there. The production could then never
-  fire.
+  A guard may read the variables that its own pattern binds (`own`). These include the
+  fact binding, because the argument of the alpha is the fact. A guard may also read the
+  variables that an earlier condition bound (`bound`). Any other variable would compile
+  into a join filter that reads the token side for a variable that is never there. The
+  production could then never fire.
 
   A **forward reference** is no longer one of those cases. `Rete.Compiler.Sort` reorders
   the LHS before this phase runs. So a condition whose guard reads a variable another

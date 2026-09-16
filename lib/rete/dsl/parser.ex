@@ -24,6 +24,10 @@ defmodule Rete.DSL.Parser do
   A leading `%{...}` literal is the options map, not a fact pattern. A rule level guard
   becomes a trailing `Rete.IR.Test`.
 
+  A query can carry a **head**, `rows(cid, tid)(<conditions>)`. The head names the bindings
+  that key its matches. Elixir parses this as a call applied to a second argument list, so
+  it arrives here around the declaration. It becomes `:params`.
+
   A type is any term except `nil`. A pattern must write it as a literal. `__type__` always
   declares a type. It is never a field to match on, so the parser drops it from every
   pattern that names it.
@@ -51,8 +55,9 @@ defmodule Rete.DSL.Parser do
   @doc """
   Parses a production declaration and body into a `Rete.IR.Production`.
 
-  `decl` is the quoted call, e.g. `r(%{salience: 1}, {:foo, id}) when id > 0`. `body` is
-  the quoted `do` block, or `nil`. `type` is `:rule` or `:query`.
+  `decl` is the quoted call, e.g. `r(%{salience: 1}, {:foo, id}) when id > 0`, or a query
+  with a head, `q(cid)({:foo, cid})`. `body` is the quoted `do` block, or `nil`. `type` is
+  `:rule` or `:query`.
 
   `:rhs` is `nil` on the result. It is captured when the production is escaped.
   """
@@ -76,6 +81,18 @@ defmodule Rete.DSL.Parser do
     }
 
     %IR.Production{production | lhs: production.lhs ++ [test]}
+  end
+
+  # The head of a query: `rows(cid, tid)(<conditions>)`. Elixir parses a call applied to a
+  # second argument list as a nested call, so the head arrives around the declaration. The
+  # head names the bindings that key the matches of the query, and a call supplies exactly
+  # those. `Rete.Ruleset.build/4` checks them against the classified bindings, which are
+  # not known until the full pipeline has run.
+  defp parse_rule(env, hash, type, {{name, _, head}, _, args}, body)
+       when is_atom(name) and is_list(head) do
+    %IR.Production{} = production = parse_rule(env, hash, type, {name, [], args}, body)
+
+    %IR.Production{production | params: parse_params!(name, type, head)}
   end
 
   defp parse_rule(env, hash, type, {name, _, args}, body) when is_atom(name) do
@@ -102,18 +119,60 @@ defmodule Rete.DSL.Parser do
             Macro.to_string(decl)
   end
 
-  # `:params` used to declare which bindings a query's caller could supply. There is no
-  # such declaration any more. `Rete.Session.query/3` accepts any variable the left hand
-  # side binds. So a leftover `:params` would be silently ignored — the worst outcome for
-  # something that used to change behavior.
+  # This reads the parameter names from a head. It checks only the shape. To know whether
+  # each name is a binding, and one that every match carries, needs the classified LHS.
+  # `Rete.Ruleset.build/4` does that after the pipeline has run.
+  #
+  # This keeps declaration order. It is the order in which every message about this query
+  # names the parameters.
+  #
+  # This also rejects an empty head on a rule. `defrule r()(<conditions>)` declares nothing,
+  # but it has the shape of a query. To accept it without a message would let a person who
+  # intended a query believe that they had written one.
+  defp parse_params!(name, :rule, head) do
+    raise ArgumentError,
+          "#{name}(#{Enum.map_join(head, ", ", &Macro.to_string/1)}) gives a rule a head, " <>
+            "and a rule cannot take parameters. Only a query is read by parameters, because " <>
+            "only a query is read. A rule fires on every match that its left hand side has. " <>
+            "Write the conditions as the one argument list: `defrule #{name}(...)`."
+  end
+
+  defp parse_params!(name, _type, head) do
+    params = Enum.map(head, &param_name!(name, &1))
+
+    case params -- Enum.uniq(params) do
+      [] ->
+        params
+
+      [repeat | _] ->
+        raise ArgumentError,
+              "#{name}(#{Enum.join(params, ", ")}) repeats #{repeat}. Parameters are a " <>
+                "set. They key a match, so a second use of one name adds no key."
+    end
+  end
+
+  defp param_name!(_name, {param, _meta, context}) when is_atom(param) and is_atom(context) do
+    param
+  end
+
+  defp param_name!(name, other) do
+    raise ArgumentError,
+          "#{name} takes a bare variable in its head, got: #{Macro.to_string(other)}. " <>
+            "A parameter names a variable that the left hand side binds. Write it as that " <>
+            "variable: `defquery #{name}(cid)({:rec, cid, amt})`."
+  end
+
+  # `:params` used to be an option. It is the head of a query now, so it is deliberately
+  # absent here: an old-style `params:` is caught below like any other unknown key.
   # `:internal_salience` and `:generated` are set by `Rete.Compiler.Negation` on the
   # helper it extracts, not written by hand. They are listed because they are legal on a
   # production, not because anyone should type them.
-  @known_opts [:salience, :internal_salience, :generated]
+  # `:meta` is the one key the engine never reads or validates. It is a deliberate
+  # pass-through for the ruleset author's own data, kept in `opts` for `get_rule_data/0`
+  # to hand back unchanged.
+  @known_opts [:salience, :internal_salience, :generated, :meta]
 
   defp check_opts!(name, opts) do
-    check_params!(name, opts)
-
     case Keyword.keys(opts) -- @known_opts do
       [] ->
         :ok
@@ -121,28 +180,9 @@ defmodule Rete.DSL.Parser do
       unknown ->
         raise ArgumentError,
               "#{name} sets #{inspect(unknown)}, which is not an option. " <>
-                "The options map takes #{inspect(@known_opts)}. An index is declared " <>
-                "separately, with `index :#{name}, [...]`. A silently ignored option is " <>
-                "worse than a rejected one, so this is an error rather than a no-op. " <>
-                "If you meant a map fact pattern rather than the options map, declare " <>
-                "its type: `%{__type__: :some_type, ...}`."
-    end
-  end
-
-  defp check_params!(name, opts) do
-    case Keyword.get(opts, :params) do
-      nil ->
-        :ok
-
-      params ->
-        first = params |> List.wrap() |> List.first()
-
-        raise ArgumentError,
-              "#{name} declares `params: #{inspect(params)}`, which is no longer a thing. " <>
-                "A query is its conditions and its body, and the caller may constrain any " <>
-                "variable the left hand side binds, with no declaration. A query is also a " <>
-                "function in its own module, so it is run by calling it: " <>
-                "#{name}(session, #{first}: value)"
+                "The options map takes #{inspect(@known_opts)}. If you meant a map fact " <>
+                "pattern rather than the options map, declare its type: " <>
+                "`%{__type__: :some_type, ...}`."
     end
   end
 

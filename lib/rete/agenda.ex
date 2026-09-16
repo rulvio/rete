@@ -9,12 +9,12 @@ defmodule Rete.Agenda do
   Ordering is `{salience, internal_salience}` descending, then compile order ascending.
   Two matches of the same rule fire in the order they arrived.
 
-  Every activation of one production node shares a sort key. So the agenda is a small
-  number of ordered buckets, not one sorted list, and each bucket is a `Rete.Bucket` — the
-  same tombstoned ordered multiset working memory keys per join key. `add/2`, `pop/1` and
-  `remove/2` are all O(1) amortized. `remove/2` used to be linear in one bucket, which is
-  one rule's pending matches, so retracting the support of a rule with many of them was
-  quadratic. See `docs/design/engine.md` §7.
+  Every activation of one production node shares a sort key. The agenda is thus a small
+  number of ordered buckets, and not one sorted list. Each bucket is a `Rete.Bucket`,
+  which is the same tombstoned ordered multiset that working memory keys per join key.
+  `add/2`, `pop/1` and `remove/2` are all O(1) amortized. `remove/2` used to be linear in
+  one bucket, which is one rule's pending matches, so retracting the support of a rule
+  with many of them was quadratic. See `docs/design/engine.md` §7.
 
   What makes `remove/2` O(1) is the bucket's index, and a bucket builds that only when
   something is first taken from it. An agenda that is only ever added to and drained —

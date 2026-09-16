@@ -45,9 +45,9 @@ env |> Rete.Ruleset.build(decl, body, type) |> Rete.DSL.Codegen.compile()
 ```
 
 A production written without a `do` block matches `defrule/1` instead, and this raises an
-error naming the rule. There is nothing sensible to generate here. The RHS would become a
-bodiless function head, and the module would fail to compile with "implementation not
-provided for predefined def" — an error pointing at the generated function, not at the
+error naming the rule. There is nothing correct to generate here. The RHS would become a
+bodiless function head, and the module would then fail to compile with "implementation not
+provided for predefined def". That error points at the generated function, and not at the
 rule.
 
 `Codegen.compile/1` expands to
@@ -91,9 +91,10 @@ alpha expressions, join filters, and tests alike, deduplicated by code.
 |---|---|---|---|
 | `:name` | `atom` | W1 | rule name; also the name of the generated RHS function |
 | `:type` | `:rule \| :query` | W1 | |
-| `:hash` | `integer` | W1 | `:erlang.phash2([decl_ast, body_ast])` after module-attribute qualification |
+| `:hash` | `integer` | W1 | `:erlang.phash2([decl_ast, body_ast])` after module-attribute qualification. `decl_ast` includes the head |
 | `:opts` | `keyword` | W1 | from the leading options map, e.g. `[salience: 100]`; `[]` if absent |
 | `:bind` | `[atom]`, **sorted** | W2c | every variable the LHS can make visible to the RHS, including fact/collection bindings; see below |
+| `:params` | `[atom]`, **declaration order** | W1, checked by W2c | the head of a query: the bindings that key its matches. `[]` on a rule; see below |
 | `:lhs` | `t:Rete.IR.lhs/0` | W1, rewritten by W2 | ordered condition list |
 | `:rhs` | `(hash, bindings_map -> facts) \| nil` | `escape/1` | `nil` before escaping |
 | `:module` | `module` | W1 | defining module |
@@ -135,8 +136,8 @@ defrule either({:or, [{:user, id}, {:admin, level}]}) do {:seen, id, level} end
 
 A guaranteed binding is destructured in the function head, `%{cid: cid}`. A token missing
 it raises a `FunctionClauseError`, instead of firing the rule with a hole in it. An
-optional binding is read with `Map.get/2` instead, and it is `nil` on the branches that do
-not bind it — the same answer Clara's `compile-action` gives, since it `let`s every
+optional binding is read with `Map.get/2` instead. It is `nil` on the branches that do not
+bind it. The `compile-action` of Clara gives the same answer, because it `let`s every
 binding key out of the token map.
 
 Either way, the compiler binds only the variables the body actually reads. So a rule that
@@ -146,6 +147,23 @@ A variable in *neither* half — one that only exists inside a negation, or is o
 a rule-level guard — is not in `:bind` at all. A body that mentions it fails to compile,
 with `undefined variable`. That is the intended answer: a negation binds nothing
 downstream, so there is nothing to hand the RHS.
+
+#### `:params` is checked against the same two halves
+
+The parser reads `:params` from the head as you wrote it. It checks only the shape: bare
+variables, no repeated name, and not on a rule. For the reason above, the parser cannot
+know yet whether each name is a binding. `Rete.Ruleset.build/4` therefore checks this where
+it recomputes `:bind`.
+
+A parameter must be **guaranteed**. It is not sufficient for it to be in `:bind`. A
+parameter keys every match that the query holds. If a token does not carry one parameter,
+`Token.join_key(token, params)` gives a shorter map. No call could name that bucket,
+because a call always supplies every parameter. The engine therefore rejects an optional
+binding as a parameter, and the message names the disjunction.
+
+`:params` keeps declaration order. It is not sorted, because this is the order in which
+each message about the query names the parameters. The order does not change the key:
+`Token.join_key/2` returns a map, and two maps with the same pairs are the same key.
 
 ### `Rete.IR.Fact`
 
@@ -261,11 +279,11 @@ test reads never enters the production's `:bind` on account of the test.
 
 Everything a test reads has to come out of the token. So W2b
 (`Rete.DSL.Bindings.check_test_vars!/2`) **rejects at compile time** a guard that reads a
-variable no condition binds on its path — a typo, a variable that only exists inside a
-negation, or one that only some branches of a disjunction bind. Left alone, such a guard
-would compile into a function whose argument pattern demands a key no token carries. It
-would fall through to `false`, and the rule would silently never fire. Because this check
-runs per path, it catches this case:
+variable which no condition binds on its path. That variable is a spelling error, or one
+that exists only inside a negation, or one that only some branches of a disjunction bind.
+Left alone, such a guard would compile into a function whose argument pattern demands a
+key no token carries. It would fall through to `false`, and the rule would silently never
+fire. Because this check runs per path, it catches this case:
 
 ```elixir
 defrule r({:or, [{:gold, id, tier}, {:silver, id}]}) when tier > 1
@@ -343,9 +361,9 @@ defrule clean({:nand, [{:order, x}, {:refund, x}]}) do {:clean} end
 ```
 
 This reads "no `x` has both an order and a refund". Applying De Morgan's law would make it
-read "there are no orders at all, or there are no refunds at all" instead. With one order
-for `x = 1` and one refund for `x = 2`, the intended reading is true, and the De Morgan
-reading is false — the rule would do the opposite of what it says. So normalization
+read "there are no orders at all, or there are no refunds at all" instead. Take one order for
+`x = 1` and one refund for `x = 2`. The intended reading is then true, and the De Morgan
+reading is false. The rule would thus do the opposite of what it says. So normalization
 **never** applies De Morgan's law across a conjunction.
 
 Like a `Negation`, it binds nothing downstream — `bound_vars/1` returns `[]`. But its inner
@@ -402,10 +420,10 @@ re-converges before the next element.
 
 The element type is **recursive**. A branch is itself a list of elements, and it may hold
 a further `{:or, ...}`. Normalization never produces that nesting, but binding
-classification does — when it absorbs the elements that follow a disjunction into branches
-that classify them differently (see §2, `Rete.IR.Production`, and the `Rete.DSL.Bindings`
-moduledoc). `Rete.IR.exprs/1`, `Rete.IR.escape/1`, and `Rete.IR.lhs_bindings/1` all recurse
-through this structure.
+classification does. It occurs when classification absorbs the elements after a
+disjunction into branches that classify them differently (see §2, `Rete.IR.Production`,
+and the `Rete.DSL.Bindings` moduledoc). `Rete.IR.exprs/1`, `Rete.IR.escape/1`, and
+`Rete.IR.lhs_bindings/1` all recurse through this structure.
 
 Two edge values the network builder has to handle, both produced by degenerate gates:
 
@@ -597,10 +615,10 @@ that the hash is a function of what the code *means*:
   byte-identical once compiled, since a `_`-prefixed name is never a binding — share one
   expression.
 * **the bindings map is sorted**, wherever it is spliced into a hashed AST.
-  `Map.to_list/1` on an atom-keyed map iterates in atom-table *interning* order. So the
-  hash used to depend on what the VM happened to intern first: the same source produced
-  different codes on a full build and on an incremental one, silently duplicating every
-  alpha node on rebuild. Never reintroduce an unsorted map into a hashed AST.
+  `Map.to_list/1` on an atom-keyed map iterates in atom-table *interning* order. The hash
+  thus used to depend on which atom the VM interned first. The same source then produced
+  different codes on a full build and on an incremental one, and it duplicated every alpha
+  node on a rebuild, with no message. Never reintroduce an unsorted map into a hashed AST.
 
 ### Module attribute values
 
@@ -612,9 +630,9 @@ still reports the default value at expansion time.
 Hashing the name alone is what keeps two conditions that read the same attribute sharing
 one node — the ordinary case. `Codegen.check_attr_values!/3` catches the dangerous case
 instead: the same pattern on either side of a reassignment. The compiler emits this check
-into the module body, where the values *are* readable. It records what each code saw, and
-it raises when that code is reached again with a different value — instead of letting the
-second rule silently reuse the first rule's compiled function.
+into the module body, where the values *are* readable. It records what each code saw. It
+then raises an error when that code is reached again with a different value, and does not
+let the second rule silently reuse the first rule's compiled function.
 
 ### Sharing
 
@@ -628,10 +646,10 @@ iteration order of a rebuilt map.
 
 #### Across modules
 
-A code is equal exactly when two expressions behave the same. Three of the four ways an
-expression could depend on the module that wrote it are closed above: an alias resolves to
-the module it names, `@x` carries its defining module, and a pin is unwrapped. All three
-happen before the hash is taken.
+A code is equal exactly when two expressions behave the same. An expression could depend
+on the module that wrote it in four ways. The text above closes three of them: an alias
+resolves to the module it names, `@x` carries its defining module, and a pin is unwrapped.
+All three happen before the hash is taken.
 
 The fourth is the unqualified call. `ok?(amt)` hashes as the bare name, whether it resolves
 to an import or to a function of the calling module. So two modules produce one code for
@@ -754,9 +772,9 @@ same rule written that way round. What remains is:
 
 * a **`_`-prefixed variable**, as in `{:order, _amt} when _amt > 0`. The pattern discards
   it, so it is in no bindings map, and in no token. The error tells you to rename it to
-  `amt`. Inlining it into the alpha instead, where the argument pattern does bind it,
-  would only trade this error for Elixir's own "the underscored variable is used after
-  being set" warning — which is fatal under `--warnings-as-errors`.
+  `amt`. The argument pattern in the alpha does bind it. But to inline it
+  there would only replace this error with the Elixir warning "the underscored variable is
+  used after being set". That warning is fatal under `--warnings-as-errors`.
 
 That is why `Codegen.join_filter_expr/4` may keep deriving the guard's variables with
 `Parser.parse_bind/1`, which drops `_`-prefixed names. A join filter can never contain

@@ -195,10 +195,10 @@ defmodule Rete.Inspect do
   @doc """
   How far a rule got, condition by condition.
 
-  This answers "why did this not fire?". Each entry reports what one node on the rule's
-  chain holds: `:elements` are facts that matched this condition alone, `:tokens` are
-  partial matches from the left, and `:activations` (terminals only) is how many matches
-  it concluded from.
+  This answers "why did this not fire?". Each entry reports what one node on the chain of
+  the rule holds. `:elements` are the facts that matched this condition alone. `:tokens`
+  are partial matches from the left. `:activations`, on terminals only, is the number of
+  matches that it concluded from.
 
   ```
   [%{node: 1, kind: "root_join", type: :customer, elements: 3, tokens: 0},
@@ -284,28 +284,6 @@ defmodule Rete.Inspect do
               "network before your facts reached it. Call `Rete.Session.fire_rules/2` " <>
               "first."
     end
-  end
-
-  @doc """
-  Which index a query would use for a set of filters, or `:scan`.
-
-  `Rete.Ruleset.index/2` changes speed and nothing else, so an index that no call matches
-  is invisible: the query answers correctly and stays as slow as it was. This is how to
-  check that a declared index is the one a call reaches for.
-
-  A filter naming a superset of an index still uses it, and then narrows the bucket. A
-  filter naming less than any declared index scans.
-
-      Rete.Inspect.query_plan(session, {MyApp.Orders, :flagged_for}, cid: 1)
-      #=> {:index, [:cid]}
-
-      Rete.Inspect.query_plan(session, {MyApp.Orders, :flagged_for}, amt: 250)
-      #=> :scan
-  """
-  @spec query_plan(Session.t(), {module(), atom()}, keyword() | %{atom() => term()}) ::
-          {:index, [atom()]} | :scan
-  def query_plan(%Session{state: state}, ref, filters \\ []) do
-    Engine.query_plan(state, ref, filters)
   end
 
   defp describe_node(state, id) do

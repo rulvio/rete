@@ -394,14 +394,11 @@ defmodule Rete.FactShapesTest do
       defquery struct_rows(%Order{cid: cid, amount: amt}), do: {cid, amt}
     end
 
-    defmodule Indexed do
+    defmodule Keyed do
       use Rete.Ruleset
 
-      defquery map_rows(%{__type__: :rec, cid: cid, tid: tid}), do: {cid, tid}
-      defquery struct_rows(%Order{cid: cid, amount: amt}), do: {cid, amt}
-
-      index :map_rows, [:cid]
-      index :struct_rows, [:cid]
+      defquery map_rows(cid)(%{__type__: :rec, cid: cid, tid: tid}), do: {cid, tid}
+      defquery struct_rows(cid)(%Order{cid: cid, amount: amt}), do: {cid, amt}
     end
 
     defp rec_facts do
@@ -412,28 +409,28 @@ defmodule Rete.FactShapesTest do
       for i <- 1..20, do: %Order{id: i, cid: rem(i, 4), amount: i}
     end
 
-    test "a filter answers the same rows indexed and unindexed" do
+    # A parameter keys on the binding, and not on the shape that supplied it. A field of a
+    # tagged map and a field of a struct must key in the same way as a tuple element.
+    test "a parameter answers the same rows as filtering the headless query" do
       facts = rec_facts() ++ order_facts()
       plain = run(Plain, facts)
-      indexed = run(Indexed, facts)
+      keyed = run(Keyed, facts)
 
-      for filters <- [[], [cid: 2], [tid: 1], [cid: 2, tid: 1], [cid: 99]] do
-        assert Plain.map_rows(plain, filters) == Indexed.map_rows(indexed, filters),
-               "map_rows disagreed on #{inspect(filters)}"
-      end
+      for cid <- [0, 1, 2, 3, 99] do
+        assert Enum.filter(Plain.map_rows(plain), &(elem(&1, 0) == cid)) ==
+                 Keyed.map_rows(keyed, cid: cid),
+               "map_rows disagreed on cid: #{cid}"
 
-      for filters <- [[], [cid: 2], [amt: 6], [cid: 2, amt: 6], [cid: 99]] do
-        assert Plain.struct_rows(plain, filters) == Indexed.struct_rows(indexed, filters),
-               "struct_rows disagreed on #{inspect(filters)}"
+        assert Enum.filter(Plain.struct_rows(plain), &(elem(&1, 0) == cid)) ==
+                 Keyed.struct_rows(keyed, cid: cid),
+               "struct_rows disagreed on cid: #{cid}"
       end
     end
 
-    test "the declared index is the one a matching filter uses" do
-      indexed = run(Indexed, rec_facts() ++ order_facts())
+    test "a binding the head does not name cannot be read by" do
+      keyed = run(Keyed, rec_facts() ++ order_facts())
 
-      assert {:index, [:cid]} == Inspect.query_plan(indexed, {Indexed, :map_rows}, cid: 2)
-      assert {:index, [:cid]} == Inspect.query_plan(indexed, {Indexed, :struct_rows}, cid: 2)
-      assert :scan == Inspect.query_plan(indexed, {Indexed, :map_rows}, tid: 1)
+      assert_raise ArgumentError, fn -> Keyed.map_rows(keyed, tid: 1) end
     end
   end
 

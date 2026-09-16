@@ -8,9 +8,9 @@ defmodule Rete.Compiler.BetaGraph do
 
   **Parents are a list.** A disjunction adds each branch as its own chain, and hands the
   union of the branch terminals to the next condition. So the branches re-converge on it.
-  That is why the compiler never flattens the LHS to disjunctive normal form: whole-LHS
-  DNF costs work exponential in the number of disjunctions, while fanning out per
-  condition costs only linear work.
+  That is why the compiler never flattens the LHS to disjunctive normal form. DNF over the
+  whole LHS costs work that is exponential in the number of disjunctions. To fan out for
+  each condition costs only linear work.
 
   **Sharing** requires equality *and* the same parent set. Equality alone is a correctness
   bug. In `a({:customer, cid}, {:order, cid, amt})` and `b({:vendor, cid}, {:order, cid,
@@ -353,7 +353,7 @@ defmodule Rete.Compiler.BetaGraph do
       hash: production.hash,
       rhs: production.rhs,
       bind: production.bind || [],
-      index: production.opts |> List.wrap() |> Keyword.get(:index, [])
+      params: production.params || []
     }
   end
 

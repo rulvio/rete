@@ -219,8 +219,8 @@ defmodule Rete.IR do
     Never rewritten with De Morgan's law, because the conjuncts share existentially
     quantified variables. `{:nand, [{:order, x}, {:refund, x}]}` means "there is no `x`
     with both". The De Morgan form would mean "there are no orders at all, or no refunds
-    at all" instead — false whenever one `x` has an order and a different `x` has a
-    refund.
+    at all" instead. That is false whenever one `x` has an order and a different `x` has
+    a refund.
 
     `Rete.Compiler.Negation` extracts this into a helper production whose RHS inserts a
     marker fact. Nothing else in the pipeline can evaluate one. It binds nothing
@@ -245,6 +245,10 @@ defmodule Rete.IR do
         negation's variables, and it is the *union* over a disjunction's branches. A
         variable only some branches bind is not in every token, so the RHS reads it
         defensively.
+      * `:params` is the head of a query: the bindings that key its matches. It is always
+        `[]` on a rule. Unlike `:bind`, it holds only *guaranteed* bindings, which are the
+        keys that every match carries. It keeps declaration order, because that is the
+        order in which an error message about a call names the parameters.
       * `:rhs` is `nil` until the production is escaped. The engine logically inserts
         and truth-maintains its return value. `nil` or `[]` inserts nothing.
     """
@@ -255,13 +259,14 @@ defmodule Rete.IR do
             hash: integer(),
             opts: keyword(),
             bind: [atom()],
+            params: [atom()],
             lhs: Rete.IR.lhs(),
             rhs: (integer(), map() -> any()) | nil,
             module: module(),
             __ast__: map() | nil
           }
 
-    defstruct [:name, :type, :hash, :opts, :bind, :lhs, :rhs, :module, :__ast__]
+    defstruct [:name, :type, :hash, :opts, :bind, :lhs, :rhs, :module, :__ast__, params: []]
   end
 
   @doc """
@@ -418,6 +423,7 @@ defmodule Rete.IR do
       hash: Macro.escape(hash),
       opts: opts,
       bind: Macro.escape(bind),
+      params: Macro.escape(production.params),
       lhs: Enum.map(lhs, &escape_condition/1),
       rhs: quote(do: Function.capture(__MODULE__, unquote(rhs_name(name)), 2)),
       module: quote(do: __MODULE__)

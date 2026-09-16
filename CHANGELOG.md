@@ -4,6 +4,131 @@ All notable changes to `rete` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.7.0
+
+**This release changes how you read a query.** A query now declares its parameters in a
+**head**. Those parameters are the only way to read the query. **This release has breaking
+changes.** One of them is silent: a parameter matches by term equality, where a filter
+used `==`.
+
+This release removes `index/2`. Before, a query scanned every match that it held, and kept
+the matches that the filter accepted. An index stored those matches a second time, in
+buckets, to prevent that scan. The engine now keys the query store on the declared
+parameters. This does the same work with one store, not two. It also removes a failure
+mode of an index: an index that no call matched gave no increase in speed, and reported
+nothing.
+
+```elixir
+defquery orders_for(cid)({:large_order, cid, amt}) do
+  {cid, amt}
+end
+
+MyRuleset.orders_for(session, cid: 1)  #=> [{1, 250}, {1, 900}]
+```
+
+To read one row out of 4,000 matches takes 0.0001 ms with a parameter. To build every row
+and then filter in Elixir takes 0.089 ms. `mix bench` runs both, and
+`docs/design/engine.md` §13 "Queries" reads the result.
+
+### Added
+
+* **`:meta` in the options map.** `%{meta: <term>}` attaches your own data to a rule or a
+  query, for example an owner or a ticket link. The engine never reads it, and never
+  validates its shape. `Rete.get_rule_data/1` returns it unchanged, in
+  `production.opts[:meta]`.
+
+### Changed
+
+* **A query declares its parameters in its head.** `defquery rows(cid, tid)(<conditions>)`
+  tells the engine to key the matches of the query on `cid` and `tid`. A read is then a map
+  lookup, not a scan.
+
+  **A call must name every parameter, and no other name.** A partial set is not a more
+  narrow lookup. It is a different key, and the engine stores no match under it. A partial
+  key, an extra key and an unknown key each raise an error.
+
+  A query without a head takes no parameters. It answers with every match that it holds, in
+  arrival order. This behavior does not change, and the cost does not change. The engine
+  keys all of these tokens on `%{}`, which is the one bucket that the query always had.
+
+  A parameter must be a variable that the left hand side binds. Each match must also carry
+  that variable. Thus you cannot use a variable that only some branches of a disjunction
+  bind. A rule cannot take parameters.
+
+  **Migration.** A query that you always read without filters does not change. A query that
+  you filtered needs a head. The head must name exactly the values that you supply. A query
+  that you read in two ways is now two queries. These two queries share every node above
+  the terminal, so the engine matches the conditions one time. To select on a value that
+  you do not want to key on, filter the rows that the query returns.
+
+  One filter has no head to replace it. This is a filter on a variable that cannot become a
+  parameter: a variable that only some branches of a disjunction bind. The old filter read
+  an absent binding as `nil`. A parameter cannot do this, because those tokens have no such
+  key. Filter the result, or write one query for each branch.
+
+  For a query that selects one row out of 4,000, a read by parameter is approximately 860
+  times faster than building every row and filtering in Elixir. With a body that builds a
+  map and a string, it is approximately 1,600 times faster, because a head runs the body
+  only for the row that it returns. `mix bench` runs both comparisons, and
+  `docs/design/engine.md` §13 "Queries" reads them.
+
+  These compare the two ways to select a row **in this release**. The filter that this
+  release removed sat between them: it scanned every match like the first, but ran the
+  body only for the rows it kept, like the second. That code is deleted, so no benchmark
+  measures it.
+
+* **A parameter matches by term equality, not by `==`.** The old filter compared with
+  `Map.get(bindings, key) == value`. Thus `cid: 1.0` matched a binding of `1`. A map key
+  lookup uses `=:=`, so this no longer occurs. This change is silent: nothing raises an
+  error, and the row stops coming back.
+
+* **The third argument of `Rete.Session.query/3` is parameters, not filters.** The shape is
+  the same: a keyword list or a map. The call is also the same, if the head of the query
+  names the values that you supply.
+
+### Removed
+
+* **`index/2`.** A query now has one keying, which is its head. There is no second index to
+  declare. A call to `index/2` raises an `ArgumentError` that names the head to write. It
+  raises an error because an "undefined function" error does not tell you what to write.
+
+  ```elixir
+  # before
+  defquery flagged_for({:flagged, cid, tid, amt}), do: {cid, tid, amt}
+  index :flagged_for, [:cid]
+
+  # after
+  defquery flagged_for(cid)({:flagged, cid, tid, amt}), do: {cid, tid, amt}
+  ```
+
+  `index :flagged_for, [:cid]` and `index :flagged_for, [:cid, :tid]` were two indexes on
+  one query. They are now two queries.
+
+* **`Rete.Inspect.query_plan/3`.** It reported which index a filter would use, or `:scan`.
+  Every read is now a lookup on the head. Thus there is nothing to report, and a declared
+  key cannot stay unused.
+
+* `index: 2` from the exported `locals_without_parens`. A project that inherits the
+  formatter configuration of this project with `import_deps: [:rete]` gets this change
+  automatically.
+
+### Internal
+
+* `Rete.IR.Production` has a new `:params` field. The `:index` field of
+  `Rete.Network.Node.Query` becomes `:params`. It holds one key list, not a list of key
+  sets.
+* The query terminal writes one token store. Before, it wrote an unbucketed store, and one
+  store for each declared index. This release also removes `Rete.Memory.index_id/2`, and
+  `usable_index/2` and `candidates/2` in `Rete.Engine`.
+* The engine checks a head where it computes `:bind`. Thus an incorrect parameter raises an
+  error at the line of the query, and not at `@before_compile`. This removed
+  `record_index!/5`, `resolve_indexes!/1`, `record_query_bind!/3`, `with_indexes/2`, and
+  the `@rete_index_data` and `@rete_query_binds` attributes. Together they were
+  approximately 150 lines of `Rete.Ruleset`.
+* A head is part of the declaration of a query, so it is part of the production hash. A
+  changed head thus changes `get_version/0`. `get_rule_data/0` no longer adds the indexes
+  after the fact.
+
 ## 0.6.0
 
 **This release changes how facts are typed.** Two rules replace one. **It has breaking

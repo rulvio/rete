@@ -1,7 +1,7 @@
 defmodule Rete.MixProject do
   use Mix.Project
 
-  @version "0.6.0"
+  @version "0.7.0"
   @source_url "https://github.com/rulvio/rete"
 
   def project do
@@ -84,16 +84,18 @@ defmodule Rete.MixProject do
         LICENSE: [title: "License"]
       ],
       # Names with no page to link to. The first three are private. The fourth is hidden
-      # in OTP. The last two no longer exist, and only a changelog entry names them, to
-      # record the removal or the rename. ExDoc renders all of them as plain code, instead
-      # of trying to link them and warning that it cannot.
+      # in OTP. The rest no longer exist, and only a changelog entry or a design note names
+      # them, to record the removal or the rename. ExDoc renders all of them as plain code,
+      # instead of trying to link them and warning that it cannot.
       skip_code_autolink_to: [
         "Rete.Engine.coalesce/1",
         "Rete.Engine.well_founded/3",
         "Rete.Inspect.derivations/2",
         ":erts_debug.size_shared/1",
         "Rete.Session.pending/1",
-        "Rete.DSL.Codegen.type_code/1"
+        "Rete.DSL.Codegen.type_code/1",
+        "Rete.Inspect.query_plan/3",
+        "Rete.Memory.index_id/2"
       ],
       groups_for_extras: [
         Guides: ["README.md", "docs/dsl.md"],

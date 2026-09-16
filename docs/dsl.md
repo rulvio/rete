@@ -1,8 +1,8 @@
 # Writing rules
 
 This is the reference for the DSL. If you have not used a rules engine before, read the
-"How a Rete engine thinks" section of the [README](../README.md) first. The mental model
-is the barrier, not the syntax.
+"How a Rete engine thinks" section of the [README](../README.md) first. The model is more
+difficult to learn than the syntax.
 
 ## Contents
 
@@ -15,7 +15,7 @@ is the barrier, not the syntax.
 * [Negation](#negation)
 * [Collections](#collections)
 * [Taxonomy](#taxonomy)
-* [Options: salience](#options-salience)
+* [Options: salience and meta](#options-salience-and-meta)
 * [Queries](#queries)
 * [The right hand side](#the-right-hand-side)
 * [Condition order](#condition-order)
@@ -188,9 +188,9 @@ MyRuleset.constant(Rete.Session.new([MyRuleset]))   #=> []
 MyRuleset.constant(session)                         #=> [:constant]
 ```
 
-Fire first, like any other query. After that the row never varies. The root token is the
-whole match, and no fact can add to it or take from it. The query binds nothing, so any
-filter raises an error. Read it as a `SELECT` with no `FROM`.
+Fire first, as for any other query. The row then never changes. The root token is the full
+match, and no fact can add to it or remove from it. The query binds nothing, so it can take
+no parameters. A call that gives one raises an error. Read it as a `SELECT` with no `FROM`.
 
 ## Bindings and joins
 
@@ -420,8 +420,8 @@ first row was the only thing that shape could reach. `mix bench` contrasts the t
 "1,000 collection members, one per call, fired every call and fired once".
 
 Where you cannot defer the fire, **conclude what you computed, not what you gathered.**
-`{:spend, name, orders}` concludes a fact that grows with the group, and the engine hashes
-that whole fact on every change. That is the 408 ms against 27 ms above.
+`{:spend, name, orders}` concludes a fact that grows with the group. The engine hashes all
+of that fact on every change. That is the 408 ms against 27 ms above.
 
 ### The empty-collection rule
 
@@ -482,9 +482,9 @@ right hand side. This yields one fact holding a map, instead of one activation p
 **A rule may not depend on the order of the list it receives.** Sort the list in the right
 hand side, if order matters to you.
 
-This is a real warning, not a formality. A collection gathers in **reverse arrival order**,
-so the same facts fed in a different order produce a different list, and a member retracted
-and re-inserted comes back at the front. A rule that reduces its collection to something
+This is a real warning, not a formality. A collection gathers in **reverse arrival order**.
+The same facts in a different order thus produce a different list. A member that you retract
+and insert again comes back at the front. A rule that reduces its collection to something
 order-insensitive — `length`, a sum, a set — is unaffected. A rule that puts the list itself
 into a fact, or reads `hd/1`, is not:
 
@@ -499,10 +499,11 @@ end
 ```
 
 The engine used to sort collections internally, so that `biggest` above happened to be
-stable. Do not rely on that returning: it cost a pass over the group every time a member
-changed, quadratic over the group's lifetime, to prop up the one kind of rule this section
-tells you not to write. Sorting in the right hand side costs a pass each time the rule
-*fires* instead — paid by the rules that need it, when they need it.
+stable. Do not expect it to return. It cost a pass over the group on every member
+change, which is quadratic over the lifetime of the group. It paid that cost to support the
+one kind of rule that this section tells you not to write. A sort in the right hand side
+costs a pass each time the rule *fires*. Only the rules that need it pay, and only when they
+need it.
 
 ## Taxonomy
 
@@ -535,7 +536,7 @@ allowed, and a `%MyApp.Refund{}` then reaches a condition written as
 the shape. If the parent's pattern names a field that the child does not have, the fact
 does not match. This is not an error.
 
-## Options: salience
+## Options: salience and meta
 
 A `%{...}` literal in **first** position is the rule's options, not a condition. There is
 one exception: a `__type__` key makes it a tagged-map condition instead. A map fact
@@ -561,7 +562,27 @@ as a general control-flow mechanism.
 
 `:internal_salience` is reserved. The compiler uses it to make an extracted negation
 helper run before the rule that negates its marker. Setting `:internal_salience` yourself
-raises an error. The map ignores any other key.
+raises an error. Any other key raises an error too, except `:meta`, below.
+
+### Attaching your own data: `:meta`
+
+`:meta` is not read by the engine. It exists so you can attach your own data to a rule or
+a query, for your own tooling to read back:
+
+```elixir
+defrule urgent(%{meta: %{owner: "billing", ticket: "OPS-42"}}, {:alarm, id}) do
+  {:page, id}
+end
+```
+
+The engine never validates or interprets its value. Read it back with
+`Rete.get_rule_data/1`, which returns the escaped `Rete.IR.Production` of every rule and
+query:
+
+```elixir
+iex> Rete.get_rule_data([MyRuleset]) |> Enum.map(&{&1.name, Keyword.get(&1.opts, :meta)})
+[urgent: %{owner: "billing", ticket: "OPS-42"}]
+```
 
 ## Queries
 
@@ -582,22 +603,76 @@ end
 `large_orders/1` and `large_orders/2`, so you run it by calling it:
 
 ```elixir
-MyRuleset.large_orders(session)                    #=> [{1, 250}, {1, 900}, {2, 30}]
-MyRuleset.large_orders(session, cid: 1)            #=> [{1, 250}, {1, 900}]
-MyRuleset.large_orders(session, cid: 1, amt: 250)  #=> [{1, 250}]
-MyRuleset.large_orders(session, %{cid: 2})         #=> [{2, 30}]
-MyRuleset.summary(session)                         #=> [%{customer: "Ada", count: 2}]
+MyRuleset.large_orders(session)  #=> [{1, 250}, {1, 900}, {2, 30}]
+MyRuleset.summary(session)       #=> [%{customer: "Ada", count: 2}]
 
-session |> MyRuleset.large_orders(cid: 1)          # a plain function, so it pipes
+session |> MyRuleset.large_orders()  # a plain function, so it pipes
 ```
 
-There is nothing to declare. You can constrain any variable the left hand side binds, at
-call time, as a keyword list or a map. Naming something the query does not bind raises an
-error instead of quietly answering `[]`. The error lists what the query does bind:
+A query written in this way takes no parameters. It answers with every match that it
+holds.
+
+### Parameters
+
+To read a query *by* a value, give the query a **head**. A head is a second argument list,
+before the conditions. It names bindings of the left hand side.
 
 ```elixir
-MyRuleset.large_orders(session, nope: 1)
-#=> ** (ArgumentError) the query MyRuleset.large_orders binds [:amt, :cid], and was given [:nope]
+defquery orders_for(cid)({:large_order, cid, amt}) do
+  {cid, amt}
+end
+
+defquery one_order(cid, amt)({:large_order, cid, amt}) do
+  {cid, amt}
+end
+```
+
+```elixir
+MyRuleset.orders_for(session, cid: 1)          #=> [{1, 250}, {1, 900}]
+MyRuleset.orders_for(session, %{cid: 2})       #=> [{2, 30}]
+MyRuleset.one_order(session, cid: 1, amt: 250) #=> [{1, 250}]
+```
+
+The engine **keys** the matches of the query on its parameters. A read is thus a map
+lookup, and not a scan. It costs what it returns, and not what the query holds.
+
+The order of the head does not change the key. The order of the call does not change it
+either, because the key is a map. The engine keeps the order of the head for one purpose:
+each message about the query then names the parameters in the order that you wrote them.
+
+A call must name **every** parameter, and no other name. A partial set is not a more narrow
+lookup. It is a different key, and the engine stores no match under it. An answer of `[]`
+would thus be incorrect. Each of these calls raises an error:
+
+```elixir
+MyRuleset.one_order(session, cid: 1)
+#=> ** (ArgumentError) the query MyRuleset.one_order takes parameters [:cid, :amt],
+#     and was given [:cid]. The engine keys its matches on its parameters, so a call
+#     must name every one of them, and no other name.
+
+MyRuleset.large_orders(session, cid: 1)
+#=> ** (ArgumentError) the query MyRuleset.large_orders takes no parameters, and was
+#     given [:cid]. It binds [:amt, :cid]. Declare what you read by in the head:
+#     `defquery large_orders(cid)(...)`. Or filter the rows that this returns.
+```
+
+A query has one parameter list. Thus two ways to read the same conditions are two queries.
+Together they cost one network: the engine matches the conditions above them one time,
+whether you write one query or four.
+
+A parameter must be a variable that the left hand side binds. **Every** match must also
+carry that variable. The engine rejects a variable that only some branches of a disjunction
+bind, because you could never name the matches from the other branches. A rule cannot take
+parameters.
+
+A parameter matches by **term equality**, in the same way as a map key. `cid: 1` and
+`cid: 1.0` are different parameter values, but `==` reports that they are equal.
+
+The engine also checks every other name:
+
+```elixir
+MyRuleset.orders_for(session, nope: 1)
+#=> ** (ArgumentError) the query MyRuleset.orders_for takes parameters [:cid], and was given [:nope]
 ```
 
 ### Two rulesets may use the same query name
@@ -610,7 +685,7 @@ ordinary function call. A typo here is a compile error, not an empty result at r
 When the query is not known until it runs, name it with the pair:
 
 ```elixir
-Rete.Session.query(session, {MyRuleset, :large_orders}, cid: 1)
+Rete.Session.query(session, {MyRuleset, :orders_for}, cid: 1)
 
 for q <- [:large_orders, :summary], do: Rete.Session.query(session, {MyRuleset, q})
 ```
@@ -619,20 +694,21 @@ That is the whole addressing scheme: **call the query, or name it with `{module,
 name}`.** A bare `:large_orders` is rejected. The error points at both forms. The same
 `{module, name}` pair also names a rule for `Rete.Inspect.why_not/2`.
 
-This engine differs from Clara here, deliberately, in two ways:
+This engine uses the Clara model of query parameters. You declare the parameters first,
+and they key the memory of the query node. A read is thus a hash lookup. This engine
+differs in two ways: where you write the parameters, and how you address a query.
 
-1. Clara declares a query's parameters up front, and uses them to key the query node's
-   memory, so a lookup is a hash lookup. Here, a filter runs on the matches at the
-   terminal instead. This means you are not restricted to a fixed set of keys, and you can
-   slice a query however you like, without redeclaring it.
-2. Clara's `defquery` binds a variable that you pass to `query`. Elixir's module system
-   already gives every query a home and a name, so here the query *is* the function.
+1. The parameters are the head of the declaration, `orders_for(cid)(...)`. They are thus
+   the variables themselves, and not a separate list of names. The compiler checks each
+   parameter against the bindings of the left hand side. It reports an error at the line
+   that you wrote.
+2. The `defquery` of Clara binds a variable that you give to `query`. The module system of
+   Elixir already gives each query a module and a name. Here the query *is* the function.
 
-Two things to know:
+Two more points:
 
-* filtering happens on the **bindings**, before the body runs. So a filter names a
-  variable, not a shape of the result. You can filter on something the body never
-  returns.
+* a parameter keys on the **bindings**, before the body runs. It thus names a variable, and
+  not a part of the result. You can read by a value that the body never returns.
 * a query reads propagated state, so it answers **as of the most recent fire**. On a
   session you never fired that is `[]`. On one you fired and then inserted into, it is the
   answer from before that insert. See "Expecting anything to happen before `fire_rules/2`"
@@ -644,79 +720,64 @@ order matters to you.**
 
 The *set* of rows never varies, and one feed always answers the same way.
 
-### Indexes
+### What a parameter costs
 
-A query answers by looking at every match it holds and keeping the ones the filter accepts.
-`index/2` buckets those matches by the bindings it names, so a filter over exactly those
-bindings reads one bucket instead of all of them:
+A parameter keys the matches of a query. A keyed store holds one bucket for each distinct
+value. The cost of a head is thus the **cardinality** of the variable that it names. The
+head itself costs almost nothing.
 
-```elixir
-defquery flagged_for({:flagged, cid, tid, amt}) do
-  {cid, tid, amt}
-end
+These measurements insert 4,000 matches. `mix bench` runs them.
 
-index :flagged_for, [:cid]
-index :flagged_for, [:cid, :tid]
-```
+| head | insert | memory | buckets |
+|---|---|---|---|
+| no parameters | 2.3 ms | 1,108 KB | 1 |
+| one parameter, 4 distinct values | 2.6 ms | 1,109 KB | 4 |
+| one parameter, all distinct | 4.2 ms | 1,872 KB | 4,000 |
+| three parameters, all distinct | 4.6 ms | 2,060 KB | 4,000 |
 
-`[:cid, :tid]` is **one** index over both bindings. Write two lines for two indexes. Order
-within the list does not matter, and a declaration may come before or after its query.
+A parameter with a low cardinality costs very little. The added work is one `Map.take/2`
+for each token, and the buckets hold the same tokens in a different arrangement. A
+parameter on a unique field uses approximately 69% more memory, because each bucket has its
+own structure, and there is now one bucket for each row. Retraction does not vary with the
+head by more than the noise of the measurement.
 
-**An index changes speed, not results.** Every filter still works, indexed or not, and gives
-the same rows in the same order. This declares no parameters and permits nothing: the caller
-may still filter on any variable the left hand side binds. Declaring none is the default, and
-a query without one behaves exactly as it always has.
+### How much a parameter saves
 
-A filter naming *more* than an index uses it and then narrows the bucket, so `[:cid]` above
-serves `cid: 1` and `cid: 1, amt: 250` alike. A filter naming *less* than every declared
-index — `amt: 250` on its own here — reads them all, as before.
+A read still builds every row that it returns. The parameter saves only the scan. The
+increase in speed thus follows the number of distinct values that the parameter takes.
+These measurements read one value out of 4,000 matches. They compare a query with a head
+against a query without a head, which Elixir code then filters:
 
-That last case is the trap: a declared index no call ever matches is silently no faster.
-`Rete.Inspect.query_plan/3` says which index a filter would use, or `:scan`:
-
-```elixir
-Rete.Inspect.query_plan(session, {MyApp.Orders, :flagged_for}, cid: 1)   #=> {:index, [:cid]}
-Rete.Inspect.query_plan(session, {MyApp.Orders, :flagged_for}, amt: 250) #=> :scan
-```
-
-An index costs one bucket entry per match per declared set, and nothing at all when none is
-declared. Measured at 4,000 matches with one returned: 200 calls take 97 ms unindexed and
-0.07 ms indexed.
-
-The cost falls on writes. Inserting those 4,000 facts takes 2.4 ms with no index, 3.0 ms
-with one and 4.6 ms with three. Retracting them takes 10.0 ms, 16.5 ms and 28.4 ms.
-
-Put the other way, an index costs about **three to five unindexed reads** to carry through a
-load, and it saves nearly the whole of every read after that. Retraction is where it gets
-expensive: a session loaded and then fully drained pays more like **twenty-five to thirty-five
-reads** for the same index, because taking from a bucket is what builds the machinery that
-makes removal O(1).
-
-So an index is worth declaring when a query is filtered more than a handful of times, and
-worth thinking twice about on facts that churn. Declare the ones your calls actually use, and
-check with `query_plan/3` that they do.
-
-### How much an index buys
-
-An indexed read still builds every row it returns, so the win is the scanning it skips. That
-makes the speedup track how many distinct values the indexed binding takes. Over 4,000
-matches, filtering on one value:
-
-| distinct values | rows returned | no index | indexed | |
+| distinct values | rows returned | headless + filter | parameter | |
 |---|---|---|---|---|
-| 1 | 4,000 | 0.55 ms | 0.46 ms | 1.2× |
-| 4 | 1,000 | 0.23 ms | 0.10 ms | 2.3× |
-| 20 | 200 | 0.19 ms | 0.019 ms | 10× |
-| 200 | 20 | 0.19 ms | 0.001 ms | 139× |
-| 4,000 | 1 | 0.19 ms | 0.000 ms | 427× |
+| 1 | 4,000 | 0.17 ms | 0.11 ms | 1.5× |
+| 4 | 1,000 | 0.11 ms | 0.019 ms | 6× |
+| 20 | 200 | 0.10 ms | 0.0022 ms | 45× |
+| 200 | 20 | 0.090 ms | 0.00025 ms | 375× |
+| 4,000 | 1 | 0.089 ms | 0.0001 ms | 860× |
 
-The rule of thumb is that the speedup is about the number of distinct values, until it
-flattens near 400× where the fixed cost of a call takes over. Below about four values an
-index is not worth its write cost. This assumes the values are evenly spread: where one
-value holds most of the rows, that key gets the 1× and the rare ones get the rest.
+Read the ratio, and not the two durations. Both of them move with the work that the body
+does, and this body returns a value that it already holds. The table below shows what a
+body that builds something does to the same comparison.
 
-That is the one thing `query_plan/3` cannot tell you. It reports that an index *is used*,
-not that it is worth using.
+As a general rule, the increase in speed is approximately the number of distinct values.
+The fixed cost of a call then becomes the limit. This rule applies if the values are
+distributed equally. If one value holds most of the rows, that key gets the increase of
+1×, and the other keys get more.
+
+Therefore, name in the head the values that you read by. A parameter on a field with few
+distinct values saves little and costs little. A parameter on a field with many distinct
+values saves almost the full cost of the read. Do not add a parameter that you never
+supply.
+
+**A filter on the rows is the slow method.** It becomes slower as the body does more work.
+A parameter keys on the bindings, so the body runs only for the rows that you asked for.
+`Enum.filter/2` on the result runs the body for every match, and then discards most of the
+rows. For a body that builds a map and a string, 50 reads select 1 row out of 4,000
+matches. A filter on the result takes 18 ms. A parameter takes 0.01 ms. This is a factor of
+approximately 1,600, against the 860× that the same selection gives with a body that builds
+nothing. Declare the head if you know what you read by. Use a filter on the result only for
+an occasional selection that the query does not support.
 
 ## The right hand side
 
@@ -981,5 +1042,8 @@ give them different names instead. That is what a name is for.
 | `defrule r({:order, cid})` with no `do` block | an error naming the rule; the body is the point of a rule |
 | `{:order, _amt} when _amt > 0` | an error saying to rename it to `amt`; `_`-prefixed names are discarded |
 | `[f = {:order, cid}]` | an error: bind the whole collection, not an element of it |
-| `defquery q(%{params: [:cid]}, {:a, cid})` | an error: `params` no longer exists, any binding can be filtered on |
+| `defquery q(%{params: [:cid]}, {:a, cid})` | an error: `params` is not a known option. Write it as the head instead: `defquery q(cid)({:a, cid})` |
+| `defquery q(cid)(...)` then `q(session)` | an error: a call must name every parameter, and `q` has one |
+| `defquery q({:a, cid})` then `q(session, cid: 1)` | an error: `q` has no head, so it takes no parameters |
+| `defrule r(cid)({:a, cid})` | an error: only a query is read, so only a query takes parameters |
 | `@limit 5` … rule … `@limit 100` … same condition | an error: two conditions that read the same attribute at different values cannot share one compiled function |
