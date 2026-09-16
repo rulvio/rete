@@ -27,8 +27,8 @@ MyRuleset.orders_for(session, cid: 1)  #=> [{1, 250}, {1, 900}]
 ```
 
 To read one row out of 4,000 matches takes 0.0001 ms with a parameter. To build every row
-and then filter in Elixir takes 0.063 ms. `docs/design/engine.md` §13 "Queries" gives the
-measurements.
+and then filter in Elixir takes 0.089 ms. `mix bench` runs both, and
+`docs/design/engine.md` §13 "Queries" reads the result.
 
 ### Added
 
@@ -66,11 +66,16 @@ measurements.
   an absent binding as `nil`. A parameter cannot do this, because those tokens have no such
   key. Filter the result, or write one query for each branch.
 
-  A read by parameter is approximately 570 times faster than the filter that it replaces.
-  This is for a query with a large body, which selects one row out of 4,000. A filter on
-  the result is approximately 3.2 times slower than that filter was.
-  `docs/design/engine.md` §13 "Queries" gives both measurements. They compare this release
-  with the previous release, on one machine.
+  For a query that selects one row out of 4,000, a read by parameter is approximately 860
+  times faster than building every row and filtering in Elixir. With a body that builds a
+  map and a string, it is approximately 1,600 times faster, because a head runs the body
+  only for the row that it returns. `mix bench` runs both comparisons, and
+  `docs/design/engine.md` §13 "Queries" reads them.
+
+  These compare the two ways to select a row **in this release**. The filter that this
+  release removed sat between them: it scanned every match like the first, but ran the
+  body only for the rows it kept, like the second. That code is deleted, so no benchmark
+  measures it.
 
 * **A parameter matches by term equality, not by `==`.** The old filter compared with
   `Map.get(bindings, key) == value`. Thus `cid: 1.0` matched a binding of `1`. A map key

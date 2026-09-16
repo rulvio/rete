@@ -726,20 +726,20 @@ A parameter keys the matches of a query. A keyed store holds one bucket for each
 value. The cost of a head is thus the **cardinality** of the variable that it names. The
 head itself costs almost nothing.
 
-These measurements insert 4,000 matches, and then retract all of them:
+These measurements insert 4,000 matches. `mix bench` runs them.
 
-| head | insert | retract | memory | buckets |
-|---|---|---|---|---|
-| no parameters | 1.3 ms | 7.8 ms | 1,172 KB | 1 |
-| one parameter, 4 distinct values | 1.8 ms | 7.9 ms | 1,172 KB | 4 |
-| one parameter, all distinct | 2.9 ms | 6.2 ms | 1,936 KB | 4,000 |
-| three parameters, all distinct | 3.4 ms | 6.7 ms | 2,061 KB | 4,000 |
+| head | insert | memory | buckets |
+|---|---|---|---|
+| no parameters | 2.3 ms | 1,108 KB | 1 |
+| one parameter, 4 distinct values | 2.6 ms | 1,109 KB | 4 |
+| one parameter, all distinct | 4.2 ms | 1,872 KB | 4,000 |
+| three parameters, all distinct | 4.6 ms | 2,060 KB | 4,000 |
 
 A parameter with a low cardinality costs very little. The added work is one `Map.take/2`
 for each token, and the buckets hold the same tokens in a different arrangement. A
-parameter on a unique field uses approximately 65% more memory, because each bucket has its
-own structure, and there is now one bucket for each row. Retraction there becomes a little
-*faster*, because each bucket holds one item.
+parameter on a unique field uses approximately 69% more memory, because each bucket has its
+own structure, and there is now one bucket for each row. Retraction does not vary with the
+head by more than the noise of the measurement.
 
 ### How much a parameter saves
 
@@ -750,11 +750,15 @@ against a query without a head, which Elixir code then filters:
 
 | distinct values | rows returned | headless + filter | parameter | |
 |---|---|---|---|---|
-| 1 | 4,000 | 0.20 ms | 0.17 ms | 1.2× |
-| 4 | 1,000 | 0.10 ms | 0.020 ms | 5× |
-| 20 | 200 | 0.069 ms | 0.0022 ms | 32× |
-| 200 | 20 | 0.063 ms | 0.0002 ms | 276× |
-| 4,000 | 1 | 0.063 ms | 0.0001 ms | 627× |
+| 1 | 4,000 | 0.17 ms | 0.11 ms | 1.5× |
+| 4 | 1,000 | 0.11 ms | 0.019 ms | 6× |
+| 20 | 200 | 0.10 ms | 0.0022 ms | 45× |
+| 200 | 20 | 0.090 ms | 0.00025 ms | 375× |
+| 4,000 | 1 | 0.089 ms | 0.0001 ms | 860× |
+
+Read the ratio, and not the two durations. Both of them move with the work that the body
+does, and this body returns a value that it already holds. The table below shows what a
+body that builds something does to the same comparison.
 
 As a general rule, the increase in speed is approximately the number of distinct values.
 The fixed cost of a call then becomes the limit. This rule applies if the values are
@@ -770,9 +774,10 @@ supply.
 A parameter keys on the bindings, so the body runs only for the rows that you asked for.
 `Enum.filter/2` on the result runs the body for every match, and then discards most of the
 rows. For a body that builds a map and a string, 50 reads select 1 row out of 4,000
-matches. A filter on the result takes 20.2 ms. A parameter takes 0.011 ms. This is a factor
-of approximately 1,800. Declare the head if you know what you read by. Use a filter on the
-result only for an occasional selection that the query does not support.
+matches. A filter on the result takes 18 ms. A parameter takes 0.01 ms. This is a factor of
+approximately 1,600, against the 860× that the same selection gives with a body that builds
+nothing. Declare the head if you know what you read by. Use a filter on the result only for
+an occasional selection that the query does not support.
 
 ## The right hand side
 

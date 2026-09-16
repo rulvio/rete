@@ -54,9 +54,39 @@ defmodule Bench do
     end)
   end
 
+  # Rows a scenario measured for itself, printed as a table. `scenario/4` and `compare/4`
+  # both own their measurement; this owns none of it. A scenario reaches for this when its
+  # columns are not one timing — a cost by cardinality, or a count next to a duration.
+  #
+  # `rows` is `{label, [value]}`, already formatted. Values are right-aligned under their
+  # header, so a column of numbers reads down the page.
+  def table(label, headers, rows, opts \\ []) do
+    IO.puts("\n\e[1m#{label}\e[0m")
+    for note <- List.wrap(opts[:note]), do: IO.puts("  #{note}")
+
+    name_width =
+      rows |> Enum.map(&(&1 |> elem(0) |> to_string() |> String.length())) |> Enum.max()
+
+    widths = Enum.map(headers, &String.length/1)
+
+    IO.puts("  #{pad_trailing("", name_width)}  #{cells(headers, widths)}")
+
+    Enum.each(rows, fn {name, values} ->
+      IO.puts("  #{pad_trailing(name, name_width)}  #{cells(values, widths)}")
+    end)
+  end
+
+  defp cells(values, widths) do
+    values
+    |> Enum.zip(widths)
+    |> Enum.map_join("  ", fn {value, width} -> pad(value, width) end)
+  end
+
+  defp pad_trailing(value, width), do: String.pad_trailing(to_string(value), width)
+
   # A run is timed after a warm-up pass, because the first call through a fresh
   # network pays for JIT and for the first allocation of every memory it touches.
-  defp time(fun) do
+  def time(fun) do
     fun.()
 
     1..@repeats
@@ -109,6 +139,22 @@ defmodule Bench do
   end
 
   defp fmt(float), do: :erlang.float_to_binary(float * 1.0, decimals: 2)
+
+  # Small durations and large ratios both lose their meaning at two decimals. A read that
+  # costs 0.0001 ms prints as 0.00, and a 1,500× ratio needs no decimals at all.
+  def sig(float) when float >= 100, do: :erlang.float_to_binary(float * 1.0, decimals: 0)
+  def sig(float) when float >= 1, do: :erlang.float_to_binary(float * 1.0, decimals: 2)
+
+  def sig(float) do
+    decimals = max(2, 2 - trunc(:math.log10(max(float, 1.0e-9))))
+
+    float
+    |> Kernel.*(1.0)
+    |> :erlang.float_to_binary(decimals: min(decimals, 6))
+    |> String.replace(~r/(\.\d*?)0+$/, "\\1")
+    |> String.replace(~r/\.$/, "")
+  end
+
   defp pad(value, width), do: String.pad_leading(to_string(value), width)
 
   # The network is compiled once and each run gets an empty session over it.
@@ -116,6 +162,24 @@ defmodule Bench do
   # constant work that has nothing to do with the thing being measured.
   def network(module), do: Rete.Compiler.build([module])
   def session(network), do: Rete.Session.from_network(network)
+
+  # How many buckets the token store of a query holds. This is the cardinality of its head
+  # over the facts it was given, which is what a parameter costs. `Rete.Network` keys
+  # `:queries` on `{module, name}` and gives the node id.
+  def query_buckets(session, ref) do
+    state = session.state
+    id = Map.fetch!(state.network.queries, ref)
+
+    state.memory.tokens |> Map.get(id, %{}) |> map_size()
+  end
+
+  # `:erts_debug.size_shared/1` counts a shared subterm once, which is the honest measure
+  # for a structure that shares as heavily as this one. `docs/design/engine.md` §13
+  # "Memory" reports the same way. Working memory only: the network is the same value for
+  # every variant being compared, so including it would add a constant to each row.
+  def memory_kb(session) do
+    :erts_debug.size_shared(session.state.memory) * :erlang.system_info(:wordsize) / 1024
+  end
 end
 
 # --- the rulesets ---------------------------------------------------------------
@@ -299,6 +363,51 @@ defmodule Bench.KeyedQuery do
   use Rete.Ruleset
 
   defquery rows(cid)({:rec, cid, amt}), do: {cid, amt}
+end
+
+# The four head shapes, over one fact type. What separates them is the cardinality of what
+# they key on, which is the thing a head costs. The facts decide that, not the ruleset:
+# `Bench.WideQuery` keys on a field the caller fills with 4 values or with 4,000.
+defmodule Bench.WideQuery do
+  @moduledoc false
+  use Rete.Ruleset
+
+  defquery rows(a)({:rec, a, _b, _c}), do: a
+end
+
+defmodule Bench.WideHeadlessQuery do
+  @moduledoc false
+  use Rete.Ruleset
+
+  defquery rows({:rec, a, _b, _c}), do: a
+end
+
+defmodule Bench.ThreeKeyQuery do
+  @moduledoc false
+  use Rete.Ruleset
+
+  defquery rows(a, b, c)({:rec, a, b, c}), do: {a, b, c}
+end
+
+# A body that does enough work to be worth skipping. The point of a head is that the body
+# runs for the rows it returns and not for the rows it passes over, and a body returning a
+# tuple of what it already has is too cheap to show that.
+defmodule Bench.FatQuery do
+  @moduledoc false
+  use Rete.Ruleset
+
+  defquery rows({:rec, a, b, c}) do
+    %{id: a, label: "record #{a}/#{b}", b: b, c: c, tags: Enum.map(1..4, &{&1, a + &1})}
+  end
+end
+
+defmodule Bench.FatKeyedQuery do
+  @moduledoc false
+  use Rete.Ruleset
+
+  defquery rows(a)({:rec, a, b, c}) do
+    %{id: a, label: "record #{a}/#{b}", b: b, c: c, tags: Enum.map(1..4, &{&1, a + &1})}
+  end
 end
 
 defmodule Bench.Blocking do
@@ -724,6 +833,165 @@ IO.puts("")
          for _ <- 1..200, do: Bench.KeyedQuery.rows(session, cid: 1)
      end,
      note: "one row returned in each case. A head decreases this number."
+   )
+
+   :ok
+ end).()
+
+# What a head costs to maintain, by the cardinality of what it keys on. Scoped for the
+# reason above: each variant loads 4,000 matches, and the memory column reads the live
+# structure rather than timing it.
+#
+# The four rows are the four head shapes. A head keys the token store, so the store holds
+# one bucket per distinct value of what the head names. That count is the cost, and the
+# ruleset cannot decide it — the facts do. So `Bench.WideQuery` appears twice, once fed a
+# field with 4 values and once fed a unique one.
+(fn ->
+   n = 4_000
+
+   networks = %{
+     headless: Bench.network(Bench.WideHeadlessQuery),
+     wide: Bench.network(Bench.WideQuery),
+     three: Bench.network(Bench.ThreeKeyQuery)
+   }
+
+   # `a` is what the one-parameter shapes key on, so it carries the cardinality. `b` and
+   # `c` are unique throughout, so the three-parameter row keys on a unique tuple.
+   facts = fn cardinality ->
+     for i <- 1..n, do: {:rec, rem(i, cardinality), i, i}
+   end
+
+   load = fn network, facts ->
+     network |> Bench.session() |> Rete.Session.insert(facts) |> Rete.Session.fire_rules()
+   end
+
+   shapes = [
+     {"no parameters", :headless, Bench.WideHeadlessQuery, n},
+     {"one parameter, 4 distinct values", :wide, Bench.WideQuery, 4},
+     {"one parameter, all distinct", :wide, Bench.WideQuery, n},
+     {"three parameters, all distinct", :three, Bench.ThreeKeyQuery, n}
+   ]
+
+   rows =
+     Enum.map(shapes, fn {label, key, module, cardinality} ->
+       network = networks[key]
+       facts = facts.(cardinality)
+
+       insert = Bench.time(fn -> load.(network, facts) end)
+
+       loaded = load.(network, facts)
+
+       retract =
+         Bench.time(fn ->
+           loaded |> Rete.Session.retract(facts) |> Rete.Session.fire_rules()
+         end)
+
+       {label,
+        [
+          Bench.sig(insert) <> " ms",
+          Bench.sig(retract) <> " ms",
+          "#{round(Bench.memory_kb(loaded))} KB",
+          to_string(Bench.query_buckets(loaded, {module, :rows}))
+        ]}
+     end)
+
+   Bench.table(
+     "what a head costs: 4,000 matches inserted, then all of them retracted",
+     ["insert", "retract", "memory", "buckets"],
+     rows,
+     note: "the cost of a head is the cardinality of what it names, not the head itself"
+   )
+
+   :ok
+ end).()
+
+# What a head saves, by the same cardinality. The read returns 4,000 / cardinality rows,
+# so the two ends of the sweep are the two degenerate cases: a head that returns everything
+# saves nothing, and a head that returns one row saves nearly the whole read.
+#
+# One cardinality at a time. Both sessions for a row become garbage before the next row
+# builds its own, which is what keeps this out of the heap trap the scenarios above avoid
+# by being scoped.
+(fn ->
+   n = 4_000
+   headless = Bench.network(Bench.WideHeadlessQuery)
+   keyed = Bench.network(Bench.WideQuery)
+
+   rows =
+     Enum.map([1, 4, 20, 200, 4_000], fn cardinality ->
+       facts = for i <- 1..n, do: {:rec, rem(i, cardinality), i, i}
+
+       load = fn network ->
+         network |> Bench.session() |> Rete.Session.insert(facts) |> Rete.Session.fire_rules()
+       end
+
+       plain = load.(headless)
+       keyed_session = load.(keyed)
+
+       filtered =
+         Bench.time(fn ->
+           for _ <- 1..200 do
+             plain |> Bench.WideHeadlessQuery.rows() |> Enum.filter(&(&1 == 0))
+           end
+         end)
+
+       parameter =
+         Bench.time(fn ->
+           for _ <- 1..200, do: Bench.WideQuery.rows(keyed_session, a: 0)
+         end)
+
+       {to_string(cardinality),
+        [
+          to_string(div(n, cardinality)),
+          Bench.sig(filtered / 200) <> " ms",
+          Bench.sig(parameter / 200) <> " ms",
+          "×" <> Bench.sig(filtered / parameter)
+        ]}
+     end)
+
+   Bench.table(
+     "what a head saves: one read of 4,000 matches, by distinct values",
+     ["rows", "headless + filter", "parameter", "ratio"],
+     rows,
+     note: "per read, of 200. The left column is how many distinct values the head keys on"
+   )
+
+   :ok
+ end).()
+
+# The same comparison with a body that does work. The sweep above uses a body that returns
+# what it already holds, which understates the difference: a filter on the result runs the
+# body for every match and then discards most of the rows, and a head never runs it for a
+# row it does not return. So the gap widens with the cost of the body, and this is the
+# shape that shows it.
+(fn ->
+   n = 4_000
+   facts = for i <- 1..n, do: {:rec, i, i, i}
+
+   load = fn module ->
+     module
+     |> Bench.network()
+     |> Bench.session()
+     |> Rete.Session.insert(facts)
+     |> Rete.Session.fire_rules()
+   end
+
+   plain = load.(Bench.FatQuery)
+   keyed = load.(Bench.FatKeyedQuery)
+
+   Bench.compare(
+     "one row out of 4,000, with a body that builds a map and a string",
+     [{"filter after", :plain}, {"parameter a", :keyed}],
+     fn
+       :plain ->
+         for _ <- 1..50 do
+           plain |> Bench.FatQuery.rows() |> Enum.filter(&(&1.id == 1))
+         end
+
+       :keyed ->
+         for _ <- 1..50, do: Bench.FatKeyedQuery.rows(keyed, a: 1)
+     end,
+     note: "50 reads. The filter runs the body 4,000 times per read, and the head runs it once"
    )
 
    :ok

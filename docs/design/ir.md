@@ -280,10 +280,10 @@ test reads never enters the production's `:bind` on account of the test.
 Everything a test reads has to come out of the token. So W2b
 (`Rete.DSL.Bindings.check_test_vars!/2`) **rejects at compile time** a guard that reads a
 variable which no condition binds on its path. That variable is a spelling error, or one
-that exists only inside a negation, or one that only some branches of a disjunction bind. Left alone, such a guard
-would compile into a function whose argument pattern demands a key no token carries. It
-would fall through to `false`, and the rule would silently never fire. Because this check
-runs per path, it catches this case:
+that exists only inside a negation, or one that only some branches of a disjunction bind.
+Left alone, such a guard would compile into a function whose argument pattern demands a
+key no token carries. It would fall through to `false`, and the rule would silently never
+fire. Because this check runs per path, it catches this case:
 
 ```elixir
 defrule r({:or, [{:gold, id, tier}, {:silver, id}]}) when tier > 1
@@ -420,10 +420,10 @@ re-converges before the next element.
 
 The element type is **recursive**. A branch is itself a list of elements, and it may hold
 a further `{:or, ...}`. Normalization never produces that nesting, but binding
-classification does. It occurs when classification absorbs the elements after a disjunction
-into branches that classify them differently (see §2, `Rete.IR.Production`, and the `Rete.DSL.Bindings`
-moduledoc). `Rete.IR.exprs/1`, `Rete.IR.escape/1`, and `Rete.IR.lhs_bindings/1` all recurse
-through this structure.
+classification does. It occurs when classification absorbs the elements after a
+disjunction into branches that classify them differently (see §2, `Rete.IR.Production`,
+and the `Rete.DSL.Bindings` moduledoc). `Rete.IR.exprs/1`, `Rete.IR.escape/1`, and
+`Rete.IR.lhs_bindings/1` all recurse through this structure.
 
 Two edge values the network builder has to handle, both produced by degenerate gates:
 
@@ -615,10 +615,10 @@ that the hash is a function of what the code *means*:
   byte-identical once compiled, since a `_`-prefixed name is never a binding — share one
   expression.
 * **the bindings map is sorted**, wherever it is spliced into a hashed AST.
-  `Map.to_list/1` on an atom-keyed map iterates in atom-table *interning* order. The hash thus used to
-  depend on which atom the VM interned first. The same source then produced different codes
-  on a full build and on an incremental one, and it duplicated every alpha node on a
-  rebuild, with no message. Never reintroduce an unsorted map into a hashed AST.
+  `Map.to_list/1` on an atom-keyed map iterates in atom-table *interning* order. The hash
+  thus used to depend on which atom the VM interned first. The same source then produced
+  different codes on a full build and on an incremental one, and it duplicated every alpha
+  node on a rebuild, with no message. Never reintroduce an unsorted map into a hashed AST.
 
 ### Module attribute values
 
@@ -630,9 +630,9 @@ still reports the default value at expansion time.
 Hashing the name alone is what keeps two conditions that read the same attribute sharing
 one node — the ordinary case. `Codegen.check_attr_values!/3` catches the dangerous case
 instead: the same pattern on either side of a reassignment. The compiler emits this check
-into the module body, where the values *are* readable. It records what each code saw. It then raises an
-error when that code is reached again with a different value, and does not let the
-second rule silently reuse the first rule's compiled function.
+into the module body, where the values *are* readable. It records what each code saw. It
+then raises an error when that code is reached again with a different value, and does not
+let the second rule silently reuse the first rule's compiled function.
 
 ### Sharing
 
@@ -646,10 +646,10 @@ iteration order of a rebuilt map.
 
 #### Across modules
 
-A code is equal exactly when two expressions behave the same. An expression could depend on the module that
-wrote it in four ways. The text above closes three of them: an alias resolves to the module
-it names, `@x` carries its defining module, and a pin is unwrapped. All three
-happen before the hash is taken.
+A code is equal exactly when two expressions behave the same. An expression could depend
+on the module that wrote it in four ways. The text above closes three of them: an alias
+resolves to the module it names, `@x` carries its defining module, and a pin is unwrapped.
+All three happen before the hash is taken.
 
 The fourth is the unqualified call. `ok?(amt)` hashes as the bare name, whether it resolves
 to an import or to a function of the calling module. So two modules produce one code for

@@ -422,9 +422,9 @@ defmodule Rete.Engine do
 
   This reads the queue alone, and that is sufficient. On every state that a caller can
   hold, the agenda is empty whenever the queue is empty. `fire_loop/4` returns only on
-  `:empty`, and every other exit from a fire raises an error, which discards the state. So there is no state with work
-  queued nowhere and an activation still waiting. Keep it that way, or this answers `true`
-  about a state that has yet to fire something.
+  `:empty`, and every other exit from a fire raises an error, which discards the state.
+  So there is no state with work queued nowhere and an activation still waiting. Keep it
+  that way, or this answers `true` about a state that has yet to fire something.
   """
   @spec settled?(State.t()) :: boolean()
   def settled?(%State{queue: queue}), do: :queue.is_empty(queue)

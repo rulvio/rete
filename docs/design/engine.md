@@ -427,8 +427,8 @@ Two more invariants need a direct test, since no end-to-end property over the fa
 either. **A memory reports the occurrences it actually held, not the ones it was asked to
 remove.** And **`settled?/1` answers for the agenda as well as the queue**. It reads the
 queue alone. Every session that a caller can hold must thus have an empty agenda whenever
-its queue is empty. Nothing in the engine enforces the second. The property suite asserts it at every
-intermediate session it builds, fired or not.
+its queue is empty. Nothing in the engine enforces the second. The property suite asserts
+it at every intermediate session it builds, fired or not.
 
 ---
 
@@ -757,12 +757,13 @@ so `acc/count` re-fires as often as gathering does. What changes is what the tok
 scalar the engine maintained once per member at O(1), rather than a list the body folds at
 O(k) per firing. That is the body's share above, and nothing else.
 
-For collect-all it buys nothing at all, in either engine. The add path of Clara is incremental: it folds
-new facts into the previous reduced value, and does not reduce again. But for `acc/all` the
-reduced value *is* the list. The list thus changes on every member, and the body receives all
-of it. Retraction is worse there than here: `drop-one-of` walks the collection twice and
-rebuilds it, where `List.delete/2` walks once and shares the tail past the removal. `min` and
-`max` carry no `retract-fn` and re-reduce the group.
+For collect-all it buys nothing at all, in either engine. The add path of Clara is
+incremental: it folds new facts into the previous reduced value, and does not reduce
+again. But for `acc/all` the reduced value *is* the list. The list thus changes on every
+member, and the body receives all of it. Retraction is worse there than here:
+`drop-one-of` walks the collection twice and rebuilds it, where `List.delete/2` walks
+once and shares the tail past the removal. `min` and `max` carry no `retract-fn` and
+re-reduce the group.
 
 `min` and `max` are the one case that would also cut firings, because a new member usually does
 not move the answer and the differs-from-previous check suppresses the propagation.
@@ -839,7 +840,7 @@ the query holds.
 
 | 200 reads, 4,000 matches, one row returned | |
 |---|---|
-| no parameters, filtered in Elixir | 33.7 ms |
+| no parameters, filtered in Elixir | 33 ms |
 | `defquery rows(cid)(...)` | **0.02 ms** |
 
 One read is thus 0.1 µs. Clara takes 0.5 µs on the same test. The time does not change with
@@ -854,35 +855,32 @@ before heads existed.
 **The cost of a head is the cardinality of the variable that it names. The head itself
 costs almost nothing.** These measurements send 4,000 facts to a query node:
 
-| head | insert | retract | memory | buckets |
-|---|---|---|---|---|
-| no parameters | 1.3 ms | 7.8 ms | 1,172 KB | 1 |
-| one parameter, 4 distinct values | 1.8 ms | 7.9 ms | 1,172 KB | 4 |
-| one parameter, all distinct | 2.9 ms | 6.2 ms | 1,936 KB | 4,000 |
-| three parameters, all distinct | 3.4 ms | 6.7 ms | 2,061 KB | 4,000 |
+| head | insert | memory | buckets |
+|---|---|---|---|
+| no parameters | 2.3 ms | 1,108 KB | 1 |
+| one parameter, 4 distinct values | 2.6 ms | 1,109 KB | 4 |
+| one parameter, all distinct | 4.2 ms | 1,872 KB | 4,000 |
+| three parameters, all distinct | 4.6 ms | 2,060 KB | 4,000 |
 
 A parameter with a low cardinality costs very little. The added work is one `Map.take/2`
-for each token, and the buckets hold the same tokens in a different arrangement. A parameter
-on a unique field uses approximately 65% more memory, because each `Rete.Bucket` has its own
-structure, and there is now one bucket for each row. Retraction there becomes a little
-*faster*, because each bucket holds one item.
+for each token, and the buckets hold the same tokens in a different arrangement. A
+parameter on a unique field uses approximately 69% more memory, because each `Rete.Bucket`
+has its own structure, and there is now one bucket for each row.
+
+Retraction is not in the table. `mix bench` measures it, and it moves by more between two
+runs of one shape than it does between the four shapes. A head thus does not change what
+retraction costs, and the bench gives no figure precise enough to print.
 
 #### A comparison with the `index/2` model that this replaced
 
 An `index/2` kept the unbucketed store **and** one more store for each declared key set.
-These measurements use one machine, 4,000 facts, and the best of 7 runs. The read is 200
-calls that select one row out of 4,000:
+A head keys the one store the query already had. So the old model did the same work
+against two structures, and it charged every insert and every retraction for the second
+one. The engine now writes one bucket per match, where an indexed query wrote two.
 
-| | insert | retract | memory | read |
-|---|---|---|---|---|
-| **unindexed** → **no parameters** | 1.5 → 1.4 ms | 7.8 → 7.6 ms | 1,110 → 1,110 KB | 24.3 → 13.4 ms |
-| **`index [:a]`** → **`rows(a)`**, unique | 3.4 → 2.9 ms | 9.5 → 6.0 ms | 1,936 → 1,874 KB | 0.044 → 0.021 ms |
-| **`index [:a]`** → **`rows(a)`**, 4 values | 2.0 → 1.8 ms | 11.2 → 7.7 ms | 1,173 → 1,111 KB | 15.4 → 4.7 ms |
-
-No operation became slower. The first row is the control: it is the same code on both
-sides, and it measures the same. Keyed reads are approximately two times faster. Keyed
-retraction is approximately one third faster, because the engine maintains one store, and
-not two.
+There is no table here. The old side is deleted code, so `mix bench` cannot measure it,
+and a figure that nobody can reproduce is worth less than the mechanism it came from. The
+table above is the current cost, measured by `mix bench`, and it is the one to read.
 
 The old model also had a failure mode that this model cannot have. `usable_index/2` needed
 the filter to cover a full key set. A declared index that no call matched thus gave no
@@ -892,10 +890,9 @@ report.
 
 #### The capability that was removed
 
-The table above is the full performance result. This release removed a *capability*
-instead. The old query could filter on **any** binding, inside the engine, with no
-declaration. That filter ran on the bindings, and it called the body only for the rows that
-the filter kept.
+No operation became slower. This release removed a *capability* instead. The old query
+could filter on **any** binding, inside the engine, with no declaration. That filter ran on
+the bindings, and it called the body only for the rows that the filter kept.
 
 For a binding that you do not declare, the replacement is `Enum.filter/2` on the result.
 This is not an engine operation. It builds every row, and then discards most of them. These
@@ -904,16 +901,22 @@ out of 4,000:
 
 | | |
 |---|---|
-| the filter that went, `rows(session, a: 1)` | 6.2 ms |
-| `rows(session) \|> Enum.filter(...)` | 20.2 ms |
-| `defquery rows(a)(...)` then `rows(session, a: 1)` | **0.011 ms** |
+| `rows(session) \|> Enum.filter(...)` | 18 ms |
+| `defquery rows(a)(...)` then `rows(session, a: 1)` | **0.01 ms** |
 
-Read this as the cost of a query with no head. It is not a decrease in the speed of the
-engine. A head is 570 times faster than the filter that it replaced. `Enum.filter/2` is 3.2
-times slower than that filter. You cannot select the second row without a warning: the old
-call raises an error, and the message names the head to write.
+That is a factor of approximately 1,600, and the body is what makes it so large. A head
+keys on the bindings, so the body runs for the one row that comes back. A filter on the
+result runs the body 4,000 times per read, and then discards 3,999 of the rows.
 
-In one case you must use the middle row. This is a binding that **cannot** become a
+The filter that this release removed sat between these two. It also scanned every match,
+so it did not read like a head. But it ran on the bindings, and called the body only for
+the rows it kept, so it did not pay the body cost that `Enum.filter/2` pays. That filter is
+deleted, so `mix bench` cannot measure it and no row here stands for it.
+
+You cannot reach for it by accident. The old call raises an error, and the message names
+the head to write.
+
+In one case you must use the first row. This is a binding that **cannot** become a
 parameter. If only some branches of a disjunction bind a variable, that variable is
 optional. Some tokens do not carry it, so it cannot key them, and the compiler rejects it in
 a head. The old filter accepted it, because `Map.get(bindings, key) == value` reads an

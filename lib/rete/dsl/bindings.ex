@@ -398,8 +398,8 @@ defmodule Rete.DSL.Bindings do
   A guard may read the variables that its own pattern binds (`own`). These include the
   fact binding, because the argument of the alpha is the fact. A guard may also read the
   variables that an earlier condition bound (`bound`). Any other variable would compile
-  into a join filter that reads the token side for a variable that is never there. The production could then never
-  fire.
+  into a join filter that reads the token side for a variable that is never there. The
+  production could then never fire.
 
   A **forward reference** is no longer one of those cases. `Rete.Compiler.Sort` reorders
   the LHS before this phase runs. So a condition whose guard reads a variable another
