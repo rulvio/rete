@@ -294,13 +294,11 @@ defmodule Bench.Query do
   defquery rows({:rec, cid, amt}), do: {cid, amt}
 end
 
-defmodule Bench.IndexedQuery do
+defmodule Bench.KeyedQuery do
   @moduledoc false
   use Rete.Ruleset
 
-  defquery rows({:rec, cid, amt}), do: {cid, amt}
-
-  index :rows, [:cid]
+  defquery rows(cid)({:rec, cid, amt}), do: {cid, amt}
 end
 
 defmodule Bench.Blocking do
@@ -677,7 +675,7 @@ IO.puts("")
 # harness collects before it times anything.
 (fn ->
    query = Bench.network(Bench.Query)
-   indexed_query = Bench.network(Bench.IndexedQuery)
+   keyed_query = Bench.network(Bench.KeyedQuery)
 
    query_sessions =
      for n <- [500, 1_000, 2_000, 4_000], into: %{} do
@@ -687,34 +685,44 @@ IO.puts("")
         %{
           plain:
             query |> Bench.session() |> Rete.Session.insert(facts) |> Rete.Session.fire_rules(),
-          indexed:
-            indexed_query
+          keyed:
+            keyed_query
             |> Bench.session()
             |> Rete.Session.insert(facts)
             |> Rete.Session.fire_rules()
         }}
      end
 
-   # Only the indexed shape gets a scaling scenario. A scan's shape is linear in the match
-   # count, measured one session at a time in `docs/design/engine.md` §13. Measured here it
-   # would read as a step and then a plateau, which is the heap talking, not the engine.
+   # Only the keyed shape gets a scaling scenario. Reading a headless query is linear in
+   # the match count, measured one session at a time in `docs/design/engine.md` §13.
+   # Measured here it would read as a step and then a plateau, which is the heap talking,
+   # not the engine.
    Bench.scenario(
-     "a filtered query with an index, selecting 1 of n",
+     "a query read by a parameter, selecting 1 of n",
      [500, 1_000, 2_000, 4_000],
-     fn n -> for _ <- 1..200, do: Bench.IndexedQuery.rows(query_sessions[n].indexed, cid: 1) end,
-     note: "`index :rows, [:cid]`, so the filter reads one bucket and n stops mattering"
+     fn n -> for _ <- 1..200, do: Bench.KeyedQuery.rows(query_sessions[n].keyed, cid: 1) end,
+     note: "`defquery rows(cid)(...)`, so the read is one bucket and n stops mattering"
    )
 
+   # The choice a ruleset author now faces. A headless query cannot be read by `cid` at
+   # all, so the honest comparison is against building every row and filtering them here.
    Bench.compare(
-     "one filtered query over 4,000 matches, indexed and not",
-     [{"no index", :plain}, {"index [:cid]", :indexed}],
-     fn kind ->
-       session = query_sessions[4_000][kind]
-       module = if kind == :plain, do: Bench.Query, else: Bench.IndexedQuery
+     "one row out of 4,000 matches, by parameter and by filtering in Elixir",
+     [{"headless, filter after", :plain}, {"parameter cid", :keyed}],
+     fn
+       :plain ->
+         session = query_sessions[4_000].plain
 
-       for _ <- 1..200, do: module.rows(session, cid: 1)
+         for _ <- 1..200 do
+           session |> Bench.Query.rows() |> Enum.filter(&(elem(&1, 0) == 1))
+         end
+
+       :keyed ->
+         session = query_sessions[4_000].keyed
+
+         for _ <- 1..200, do: Bench.KeyedQuery.rows(session, cid: 1)
      end,
-     note: "one row returned either way — the number `index/2` exists to move"
+     note: "one row returned either way — the number a head exists to move"
    )
 
    :ok

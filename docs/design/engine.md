@@ -817,67 +817,106 @@ over one fact type went from an extrapolated ~225 ms to 7.7 ms.
 
 ### Queries
 
-A query stores its matches under one key and filters them on the way out, so a filter that
-returns one row costs what returning every row costs. `Rete.Ruleset.index/2` declares key
-sets to bucket them by, and `Rete.Engine.Nodes` keeps one store per declared set under
-`Rete.Memory.index_id/2`. `Rete.Engine.query/3` then reads the largest declared set the
-filter covers.
+A query's **parameters** are its head, and they key its matches. `Rete.Engine.Nodes` files
+each token under `Token.join_key(token, node.params)` in the query node's own store, and
+`Rete.Engine.query/3` reads a call's parameters straight back out as that key. There is one
+store and one keying, so a read is a map fetch and costs what it returns rather than what
+the query holds.
 
-| 200 calls, 4,000 matches, one row returned | |
+| 200 reads, 4,000 matches, one row returned | |
 |---|---|
-| no index | 97 ms |
-| `index :rows, [:cid]` | **0.07 ms** |
+| no parameters, filtered in Elixir | 33.7 ms |
+| `defquery rows(cid)(...)` | **0.02 ms** |
 
-Per call that is 0.3 µs, against Clara's 0.5 µs on the same probe. Flat in the match count,
-where the scan is linear in it.
+Per read that is 0.1 µs, against Clara's 0.5 µs on the same probe. Flat in the match count,
+where building every row and filtering is linear in it — the scaling scenario in
+`bench/run.exs` holds 0.02 ms across 500, 1,000, 2,000 and 4,000 matches.
 
-An index buys that with write cost, one bucket entry per match per declared set. Over 4,000
+A query with no parameters keys everything on `%{}`. That is one bucket, holding its tokens
+in arrival order, so a headless query costs and behaves exactly as it did before heads
+existed.
+
+**The cost of a head is the cardinality of what it names, not the head itself.** Over 4,000
 facts reaching a query node:
 
-| | insert | retract |
-|---|---|---|
-| no index | 2.4 ms | 10.0 ms |
-| one index | 3.0 ms | 16.5 ms |
-| three indexes | 4.6 ms | 28.4 ms |
-
-Retraction pays more than insertion, because taking from a bucket is what builds its
-`Rete.Bucket` index. Both stay linear in the fact count.
-
-In reads, an index costs about three to five unindexed calls to carry through a load, and
-about twenty-five to thirty-five if the session is also fully drained. It saves nearly the
-whole of each read it serves, so it pays for itself quickly on a session that accumulates
-and is queried, and slowly on one that churns. Declaring three indexes to serve a query
-nobody filters selectively is a straight loss.
-
-The unbucketed store stays whether or not an index exists. `Memory.all_tokens/2` unions a
-node's buckets in map order, so an unfiltered query read out of an index would order its
-rows by binding value rather than by arrival. `Rete.Inspect` also counts a node's tokens by
-its own id.
-
-**Indexing by default was measured and rejected**, so that it is rejected on evidence rather
-than reproposed on intuition. Over 4,000 matches at a query binding a 50-value field, a
-20-value field and a unique id — which is what a real query looks like:
-
-| | insert | retract | memory | buckets |
+| head | insert | retract | memory | buckets |
 |---|---|---|---|---|
-| no index | 2.3 ms | 11.1 ms | 1,169 KB | 1 |
-| one composite over all three | 4.9 ms | 13.5 ms | 2,121 KB | 4,001 |
-| one index per binding | 5.9 ms | 26.4 ms | 2,133 KB | 4,071 |
+| no parameters | 1.3 ms | 7.8 ms | 1,172 KB | 1 |
+| one parameter, 4 distinct values | 1.8 ms | 7.9 ms | 1,172 KB | 4 |
+| one parameter, all distinct | 2.9 ms | 6.2 ms | 1,936 KB | 4,000 |
+| three parameters, all distinct | 3.4 ms | 6.7 ms | 2,061 KB | 4,000 |
 
-Both double the writes and the memory. The composite earns almost none of it back, because
-`usable_index/2` needs the filter to cover the whole key set, so it serves only a filter
-naming every binding — which returns one row and is the rarest call anyone makes.
+A low-cardinality parameter is nearly free: the extra work is one `Map.take/2` per token,
+and the buckets are the same tokens filed differently. A parameter over a unique field costs
+about 65% more memory, because a `Rete.Bucket` has a structure of its own and there is now
+one per row. Retraction gets slightly *cheaper* there, since each bucket holds one item.
 
-The cost is cardinality, not indexing. An index over a unique field is one bucket per row,
-and most queries bind at least one unique field. A default cannot know which bindings
-partition usefully, and the ones that do not are exactly where an index costs most and
-returns least. That knowledge only exists in the ruleset author's head, which is why
-`index/2` asks for it.
+#### Against the `index/2` model it replaced
 
-Clara reaches the same place from the opposite direction. Its query params *are* its node's
-join keys, so its lookup is a map fetch — but the params are mandatory and exact, and it
-cannot filter partially at all. Declaring an index here constrains nothing: every filter
-still works, indexed or not.
+An `index/2` kept the unbucketed store **and** one extra store per declared key set. Both
+models measured on one machine, 4,000 facts, `best of 7`; the read is 200 calls selecting
+one row of 4,000:
+
+| | insert | retract | memory | read |
+|---|---|---|---|---|
+| **unindexed** → **no parameters** | 1.5 → 1.4 ms | 7.8 → 7.6 ms | 1,110 → 1,110 KB | 24.3 → 13.4 ms |
+| **`index [:a]`** → **`rows(a)`**, unique | 3.4 → 2.9 ms | 9.5 → 6.0 ms | 1,936 → 1,874 KB | 0.044 → 0.021 ms |
+| **`index [:a]`** → **`rows(a)`**, 4 values | 2.0 → 1.8 ms | 11.2 → 7.7 ms | 1,173 → 1,111 KB | 15.4 → 4.7 ms |
+
+Nothing regressed. The headless row is the same code on both sides, and measures the same,
+which is the control. Keyed reads roughly halved and keyed retraction fell by about a third,
+because there is one store to maintain instead of two.
+
+The old shape also had a failure mode this one cannot: `usable_index/2` needed the filter to
+cover a whole key set, so a declared index no call matched was silently no faster.
+`Rete.Inspect.query_plan/3` existed only to expose that. The head is now the only way in, so
+every read hits it and there is nothing to report.
+
+#### The capability that went
+
+No engine operation got slower — the table above is the whole performance story. What went
+is a *capability*: the old query could filter on **any** binding, engine-side, with no
+declaration. That filter ran on the bindings and called the body only for survivors.
+
+Its replacement for an undeclared binding is `Enum.filter/2` on the result, which is not an
+engine operation at all. It builds every row and discards most. With a body that builds a
+map and a string, 50 reads selecting 1 of 4,000:
+
+| | |
+|---|---|
+| the filter that went, `rows(session, a: 1)` | 6.2 ms |
+| `rows(session) \|> Enum.filter(...)` | 20.2 ms |
+| `defquery rows(a)(...)` then `rows(session, a: 1)` | **0.011 ms** |
+
+Read that as the cost of *not* declaring a head, not as a regression. Declaring one is 570×
+faster than the filter it replaced; reaching for `Enum.filter/2` instead is 3.2× slower than
+it. Nobody lands in the middle row by accident — the old call raises, and the message names
+the head to write.
+
+There is one case where the middle row is forced rather than chosen: a binding that **cannot**
+be a parameter. A variable only some branches of a disjunction bind is optional, so it is
+absent from some tokens and cannot key them, and the compiler rejects it in a head. The old
+filter handled it, because `Map.get(bindings, key) == value` reads an absent key as `nil`:
+
+```elixir
+defquery who({:or, [{:user, id}, {:admin, id, level}]}), do: {id, level}
+
+# then                                  now
+who(session, level: :root)              who(session) |> Enum.filter(&(elem(&1, 1) == :root))
+#=> [{2, :root}]                        # or split the disjunction into one query per branch
+```
+
+That is the real loss. It is narrow — it needs a disjunction *and* a read on a branch-local
+binding — but for it there is no head to declare.
+
+The broader cost is in the language rather than in time. A query has one parameter list, so
+two ways of reading the same conditions are two queries — which share every node above the
+terminal, so the conditions are still matched once.
+
+This is Clara's model. Its query params are its node's join keys, mandatory and exact, and a
+partial read is not possible there either. The difference here is that the params are the
+head of the declaration rather than a separate list of names, so the compiler checks each
+against what the left hand side binds, at the line it is written on.
 
 ### Memory
 

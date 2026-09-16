@@ -4,6 +4,111 @@ All notable changes to `rete` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.7.0
+
+**This release changes how a query is read.** A query's parameters are now its **head**,
+and they are the only way to read it. **It has breaking changes**, and one of them is
+silent: a parameter matches by term equality where a filter used `==`.
+
+`index/2` is gone. It existed because a query scanned every match it held and kept the ones
+a filter accepted, and an index bucketed those matches a second time to avoid the scan.
+Keying a query's store on its declared parameters does the same job with one store instead
+of two, and removes the failure mode an index had — a declared index no call matched was
+silently no faster.
+
+```elixir
+defquery orders_for(cid)({:large_order, cid, amt}) do
+  {cid, amt}
+end
+
+MyRuleset.orders_for(session, cid: 1)  #=> [{1, 250}, {1, 900}]
+```
+
+Reading one row out of 4,000 matches takes 0.0001 ms by parameter, against 0.063 ms for
+building every row and filtering in Elixir. `docs/design/engine.md` §"Queries" carries the
+measurements and the trade.
+
+### Changed
+
+* **A query's parameters are its head.** `defquery rows(cid, tid)(<conditions>)` declares
+  that the query's matches are keyed on `cid` and `tid`. A read is then a map lookup rather
+  than a scan.
+
+  A **call must name every parameter and nothing else.** A partial set is not a narrower
+  lookup — it is a different key nothing is filed under, so answering `[]` for it would be
+  silently wrong. Partial, extra and unknown keys all raise.
+
+  A query written **without** a head takes no parameters and answers with every match it
+  holds, in arrival order. That is unchanged behaviour, and unchanged cost: its tokens all
+  key on `%{}`, which is the one bucket it always had.
+
+  A parameter must be a variable the left hand side binds, and one every match carries — so
+  not a variable only some branches of a disjunction bind. A rule cannot take parameters.
+
+  **Migration.** A query you only ever read unfiltered needs no change. A query you filtered
+  needs a head naming exactly what you pass. A query read two ways is now two queries; they
+  share every node above the terminal, so the conditions are still matched once. To filter
+  on something you would rather not key on, filter the rows the query returns.
+
+  The one filter with no head to replace it is on a binding that **cannot** be a parameter:
+  a variable only some branches of a disjunction bind. The old filter read an absent binding
+  as `nil` and handled it; a parameter cannot, because those tokens have no such key to be
+  filed under. Filter the result, or split the disjunction into one query per branch.
+
+  Reading by a parameter is about 570× faster than the filter it replaces, on a query with a
+  substantial body selecting one row of 4,000. Filtering the result instead is about 3.2×
+  slower than that filter was. `docs/design/engine.md` §"Queries" has both, measured against
+  this release's predecessor on one machine.
+
+* **A parameter matches by term equality, not `==`.** The old filter compared with
+  `Map.get(bindings, key) == value`, so `cid: 1.0` matched a binding of `1`. A map key
+  lookup uses `=:=`, so it no longer does. This is the silent one: nothing raises, the row
+  just stops coming back.
+
+* **`Rete.Session.query/3`'s third argument is parameters, not filters.** Same shape, a
+  keyword list or a map, and the same call for a query whose head names what you pass.
+
+### Removed
+
+* **`index/2`.** A query has one keying now, its head, so there is no second index to
+  declare. A leftover call raises an `ArgumentError` naming the head to write instead,
+  rather than failing as an undefined function.
+
+  ```elixir
+  # before
+  defquery flagged_for({:flagged, cid, tid, amt}), do: {cid, tid, amt}
+  index :flagged_for, [:cid]
+
+  # after
+  defquery flagged_for(cid)({:flagged, cid, tid, amt}), do: {cid, tid, amt}
+  ```
+
+  `index :flagged_for, [:cid]` and `index :flagged_for, [:cid, :tid]` were two indexes on
+  one query. They are two queries now.
+
+* **`Rete.Inspect.query_plan/3`.** It reported which index a filter would reach for, or
+  `:scan`. Every read is a lookup on the head, so there is nothing left to report and no
+  way for a declared key to go unused.
+
+* `index: 2` from the exported `locals_without_parens`. A project that inherits this
+  project's formatter config through `import_deps: [:rete]` picks that up automatically.
+
+### Internal
+
+* `Rete.IR.Production` gains `:params`. `Rete.Network.Node.Query`'s `:index` becomes
+  `:params`, a single key list rather than a list of key sets.
+* The query terminal writes one token store instead of an unbucketed one plus one per
+  declared index. `Rete.Memory.index_id/2` is gone with it, as are `Rete.Engine`'s
+  `usable_index/2` and `candidates/2`.
+* A head is checked where `:bind` is computed, so a bad parameter is an error at the
+  query's own line rather than at `@before_compile`. That removed `record_index!/5`,
+  `resolve_indexes!/1`, `record_query_bind!/3`, `with_indexes/2` and the
+  `@rete_index_data` / `@rete_query_binds` attributes — about 150 lines of
+  `Rete.Ruleset`.
+* A query's head is part of its declaration, so it is part of the production hash. A
+  changed head changes `get_version/0` without `get_rule_data/0` having to fold indexes in
+  after the fact.
+
 ## 0.6.0
 
 **This release changes how facts are typed.** Two rules replace one. **It has breaking

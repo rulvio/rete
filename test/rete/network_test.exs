@@ -517,10 +517,10 @@ defmodule Rete.NetworkTest do
       refute Map.has_key?(node, :param_keys)
     end
 
-    # `params:` used to declare which bindings a caller could supply. Silently
-    # ignoring a leftover one would be the worst outcome for something that used
-    # to change behavior.
-    test "the obsolete params option is rejected where it is written" do
+    # `params:` used to be an option. It is the head now, so silently ignoring a leftover
+    # one in the options map would be the worst outcome for something that does change
+    # behavior.
+    test "params in the options map is rejected where it is written" do
       source = """
       defmodule Rete.NetworkTest.OldParams do
         use Rete.Ruleset
@@ -533,7 +533,8 @@ defmodule Rete.NetworkTest do
 
       error = assert_raise ArgumentError, fn -> Code.compile_string(source) end
 
-      assert error.message =~ "no longer a thing"
+      assert error.message =~ "not where parameters go"
+      assert error.message =~ "defquery bad(cid)(<conditions>)"
       assert error.message =~ "bad(session, cid: value)"
     end
   end

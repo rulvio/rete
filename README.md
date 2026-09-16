@@ -28,7 +28,7 @@ becomes dormant again. You do no bookkeeping yourself.
 ```elixir
 def deps do
   [
-    {:rete, "~> 0.6.0"}
+    {:rete, "~> 0.7.0"}
   ]
 end
 ```
@@ -106,7 +106,7 @@ defmodule Retail do
     {:dormant, name}
   end
 
-  defquery large_orders({:large_order, cid, amt}) do
+  defquery large_orders(cid)({:large_order, cid, amt}) do
     {cid, amt}
   end
 end
@@ -138,7 +138,7 @@ session =
 Rete.Session.facts(session)
 #=> the six facts above, and nothing else
 
-Retail.large_orders(session)
+Retail.large_orders(session, cid: 1)
 #=> [] — nothing has matched yet
 ```
 
@@ -190,9 +190,6 @@ A query has the same left hand side as a rule, but it never fires. It holds the 
 that reached it. **It is a function in its own module**, so you read it back by calling it.
 
 ```elixir
-Retail.large_orders(session)
-#=> [{1, 250}]
-
 Retail.large_orders(session, cid: 1)
 #=> [{1, 250}]
 ```
@@ -200,9 +197,10 @@ Retail.large_orders(session, cid: 1)
 A query returns **what its body computes**, one result per match. It answers in whatever
 shape suits the caller, instead of handing back raw bindings.
 
-There is nothing to declare. You can constrain any variable the left hand side binds, at
-call time. Naming a variable the left hand side does not bind raises an error, instead of
-quietly answering `[]`.
+The `(cid)` before the conditions is the query's **head**: its parameters. They are what
+its matches are keyed on, so a read is a map lookup rather than a scan, and a call names
+every one of them and nothing else. Omit the head for a query that takes no parameters and
+answers with every match it holds.
 
 A query is identified by `{module, name}`, never by a bare name. Because of this, two
 rulesets that each define a `:summary` compose into one session without collision.
@@ -282,7 +280,6 @@ before the fact itself goes.
 
 * `fired/2` — what has concluded something
 * `why_not/2` — how far a rule got, condition by condition
-* `query_plan/3` — which index a filter would use, or `:scan`
 * `collection/3`
 
 For history instead of a snapshot, attach `Rete.Listener.Collect` or `Rete.Listener.Trace`.
@@ -312,7 +309,7 @@ Seven modules are public. They are the ones the examples above use:
 | `Rete` | aggregating rule, expression and taxonomy data across ruleset modules |
 | `Rete.Ruleset` | `defrule`, `defquery`, `derive`, `underive` |
 | `Rete.Session` | building a session, inserting, retracting, firing, querying |
-| `Rete.Inspect` | `explain/2`, `fired/2`, `why_not/2`, `query_plan/3`, `collection/3` |
+| `Rete.Inspect` | `explain/2`, `fired/2`, `why_not/2`, `collection/3` |
 | `Rete.Listener` (+ `.Collect`, `.Trace`) | watching what a session does |
 
 **Everything else is internal**: the DSL front end, the IR, the compiler, the network, the

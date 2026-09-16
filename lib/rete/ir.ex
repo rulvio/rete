@@ -245,6 +245,10 @@ defmodule Rete.IR do
         negation's variables, and it is the *union* over a disjunction's branches. A
         variable only some branches bind is not in every token, so the RHS reads it
         defensively.
+      * `:params` is a query's head, the bindings its matches are keyed on. Always `[]`
+        on a rule. Unlike `:bind`, it holds only *guaranteed* bindings: a key every match
+        carries. It is written in declaration order and kept that way, because that is the
+        order a call's error message names.
       * `:rhs` is `nil` until the production is escaped. The engine logically inserts
         and truth-maintains its return value. `nil` or `[]` inserts nothing.
     """
@@ -255,13 +259,14 @@ defmodule Rete.IR do
             hash: integer(),
             opts: keyword(),
             bind: [atom()],
+            params: [atom()],
             lhs: Rete.IR.lhs(),
             rhs: (integer(), map() -> any()) | nil,
             module: module(),
             __ast__: map() | nil
           }
 
-    defstruct [:name, :type, :hash, :opts, :bind, :lhs, :rhs, :module, :__ast__]
+    defstruct [:name, :type, :hash, :opts, :bind, :lhs, :rhs, :module, :__ast__, params: []]
   end
 
   @doc """
@@ -418,6 +423,7 @@ defmodule Rete.IR do
       hash: Macro.escape(hash),
       opts: opts,
       bind: Macro.escape(bind),
+      params: Macro.escape(production.params),
       lhs: Enum.map(lhs, &escape_condition/1),
       rhs: quote(do: Function.capture(__MODULE__, unquote(rhs_name(name)), 2)),
       module: quote(do: __MODULE__)

@@ -91,9 +91,10 @@ alpha expressions, join filters, and tests alike, deduplicated by code.
 |---|---|---|---|
 | `:name` | `atom` | W1 | rule name; also the name of the generated RHS function |
 | `:type` | `:rule \| :query` | W1 | |
-| `:hash` | `integer` | W1 | `:erlang.phash2([decl_ast, body_ast])` after module-attribute qualification |
+| `:hash` | `integer` | W1 | `:erlang.phash2([decl_ast, body_ast])` after module-attribute qualification; the head is part of `decl_ast` |
 | `:opts` | `keyword` | W1 | from the leading options map, e.g. `[salience: 100]`; `[]` if absent |
 | `:bind` | `[atom]`, **sorted** | W2c | every variable the LHS can make visible to the RHS, including fact/collection bindings; see below |
+| `:params` | `[atom]`, **declaration order** | W1, checked by W2c | a query's head: the bindings its matches are keyed on. `[]` on a rule; see below |
 | `:lhs` | `t:Rete.IR.lhs/0` | W1, rewritten by W2 | ordered condition list |
 | `:rhs` | `(hash, bindings_map -> facts) \| nil` | `escape/1` | `nil` before escaping |
 | `:module` | `module` | W1 | defining module |
@@ -146,6 +147,22 @@ A variable in *neither* half — one that only exists inside a negation, or is o
 a rule-level guard — is not in `:bind` at all. A body that mentions it fails to compile,
 with `undefined variable`. That is the intended answer: a negation binds nothing
 downstream, so there is nothing to hand the RHS.
+
+#### `:params` is checked against the same two halves
+
+The parser reads `:params` off the head as written, and checks only its shape: bare
+variables, no repeats, not on a rule. Whether each names a binding is not knowable then,
+for the reason above, so `Rete.Ruleset.build/4` checks it in the same place it recomputes
+`:bind`.
+
+A parameter must be **guaranteed**, not merely in `:bind`. It keys every match the query
+holds, and `Token.join_key(token, params)` on a token missing one produces a shorter map —
+a bucket no call could name, since a call always supplies every parameter. An optional
+binding as a parameter is therefore rejected, and the message names the disjunction.
+
+`:params` keeps declaration order rather than being sorted, because it is the order every
+message about the query names. Order does not affect the key: `Token.join_key/2` returns a
+map, and two maps with the same pairs are the same key.
 
 ### `Rete.IR.Fact`
 

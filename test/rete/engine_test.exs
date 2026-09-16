@@ -1280,14 +1280,19 @@ defmodule Rete.EngineTest do
       assert [:constant] == NoLhs.constant(emptied)
     end
 
-    test "a query with no conditions binds nothing, so any filter is rejected" do
+    test "a query with no conditions binds nothing, so any parameter is rejected" do
       session = [NoLhs] |> Session.new() |> Session.fire_rules()
 
       assert [:constant] == NoLhs.constant(session, [])
 
-      assert_raise ArgumentError, ~r/binds \[\], and was given \[:id\]/, fn ->
-        NoLhs.constant(session, id: 1)
-      end
+      error = assert_raise ArgumentError, fn -> NoLhs.constant(session, id: 1) end
+
+      assert error.message =~ "takes no parameters, and was given [:id]"
+      assert error.message =~ "It binds []"
+
+      # Nothing is bound, so there is no head that would make `id` a parameter. The
+      # message must not suggest one that would not compile.
+      refute error.message =~ "defquery constant"
     end
   end
 
@@ -1815,9 +1820,19 @@ defmodule Rete.EngineTest do
         {cid, amt}
       end
 
+      # The same conditions, read by a parameter. A head and no head are two queries,
+      # because the head is what the matches are keyed on.
+      defquery flagged_by(cid)({:flagged, cid, amt}) do
+        {cid, amt}
+      end
+
       # The body decides the shape, so a query can return something that is in
       # no binding at all.
       defquery summary({:flagged, cid, amt}) do
+        %{customer: cid, doubled: amt * 2}
+      end
+
+      defquery summary_by(amt)({:flagged, cid, amt}) do
         %{customer: cid, doubled: amt * 2}
       end
     end
@@ -1837,22 +1852,35 @@ defmodule Rete.EngineTest do
       assert [{1, 250}, {1, 900}, {2, 300}] == Queries.flagged_for(session)
     end
 
-    # No declaration: anything the left hand side binds can be constrained.
-    test "any binding can be filtered on, as a keyword list or a map" do
+    # The head declares them, and a call gives a value for each, as a keyword list or a
+    # map. A value nothing matches answers `[]`, because that is a real answer.
+    test "a query is read by its parameters, as a keyword list or a map" do
       session = run([Queries], [{:order, 1, 250}, {:order, 1, 900}, {:order, 2, 300}])
 
-      assert [{1, 250}, {1, 900}] == Queries.flagged_for(session, cid: 1)
-      assert [{1, 250}] == Queries.flagged_for(session, cid: 1, amt: 250)
-      assert [{2, 300}] == Queries.flagged_for(session, %{cid: 2})
-      assert [] == Queries.flagged_for(session, cid: 99)
+      assert [{1, 250}, {1, 900}] == Queries.flagged_by(session, cid: 1)
+      assert [{2, 300}] == Queries.flagged_by(session, %{cid: 2})
+      assert [] == Queries.flagged_by(session, cid: 99)
     end
 
-    # Filtering happens on the bindings, before the body runs, which is what
-    # makes a filter name a variable rather than a shape of the result.
-    test "a filter names a binding even when the body hides it" do
+    # A parameter keys on the bindings, before the body runs, which is what makes it name
+    # a variable rather than a shape of the result.
+    test "a parameter names a binding even when the body hides it" do
       session = run([Queries], [{:order, 1, 250}, {:order, 2, 300}])
 
-      assert [%{customer: 1, doubled: 500}] == Queries.summary(session, amt: 250)
+      assert [%{customer: 1, doubled: 500}] == Queries.summary_by(session, amt: 250)
+    end
+
+    # A head and no head are two queries. Neither can answer the other's call.
+    test "a headless query takes no parameters, and a parameterised one takes all of them" do
+      session = run([Queries], [{:order, 1, 250}])
+
+      assert_raise ArgumentError, ~r/takes no parameters/, fn ->
+        Queries.flagged_for(session, cid: 1)
+      end
+
+      assert_raise ArgumentError, ~r/takes parameters \[:cid\]/, fn ->
+        Queries.flagged_by(session)
+      end
     end
 
     test "a query reflects retraction" do
@@ -1869,7 +1897,7 @@ defmodule Rete.EngineTest do
       session = run([Queries], [{:order, 1, 250}])
 
       assert [{1, 250}] == Session.query(session, {Queries, :flagged_for})
-      assert [{1, 250}] == Session.query(session, {Queries, :flagged_for}, cid: 1)
+      assert [{1, 250}] == Session.query(session, {Queries, :flagged_by}, cid: 1)
     end
 
     test "an unknown query is an error naming what is available" do

@@ -25,7 +25,7 @@ defmodule Rete.Session do
           {:flagged, cid, amt}
         end
 
-        defquery flagged_for({:flagged, cid, amt}), do: {cid, amt}
+        defquery flagged_for(cid)({:flagged, cid, amt}), do: {cid, amt}
       end
 
       iex> alias Rete.Session
@@ -142,9 +142,9 @@ defmodule Rete.Session do
       iex> queued =
       ...>   Session.new([Rete.Doc.Orders])
       ...>   |> Session.insert([{:customer, 1}, {:order, 1, 250}])
-      iex> Rete.Doc.Orders.flagged_for(queued)
+      iex> Rete.Doc.Orders.flagged_for(queued, cid: 1)
       []
-      iex> Rete.Doc.Orders.flagged_for(Session.fire_rules(queued))
+      iex> Rete.Doc.Orders.flagged_for(Session.fire_rules(queued), cid: 1)
       [{1, 250}]
   """
   @spec fire_rules(t(), keyword()) :: t()
@@ -181,10 +181,9 @@ defmodule Rete.Session do
   A query is addressed by module and name together because two rulesets composed into one
   session may each define a `:summary`.
 
-  `filters` narrows the matches by equality on the *bindings*, before the body runs. It
-  may name any variable the left hand side binds, as a keyword list or a map. There is no
-  separate parameter declaration. Naming something the query does not bind raises an
-  error, instead of answering `[]`.
+  `params` gives a value for every parameter the query's head declares, and for nothing
+  else, as a keyword list or a map. A query with no head takes none. A partial, extra or
+  unknown key raises, instead of answering `[]`.
 
   **A query answers as of the most recent fire.** On a session you never fired that is
   `[]`. On one you fired and then inserted into, it is the answer from before that insert,
@@ -199,9 +198,10 @@ defmodule Rete.Session do
 
   The *set* of rows never varies, and one feed always answers the same way.
 
-  A query looks at every match it holds unless `Rete.Ruleset.index/2` declared an index the
-  filter covers. An index changes speed and nothing else: the rows and their order are the
-  same either way. `Rete.Inspect.query_plan/3` reports which index a filter would use.
+  A query's parameters are what its matches are keyed on, so reading one is a map lookup
+  rather than a scan of every match. A parameter matches a binding by **term equality**, as
+  a map key does: `1` and `1.0` are different parameter values, though `==` calls them
+  equal.
 
       iex> alias Rete.Session
       iex> session =
@@ -229,8 +229,8 @@ defmodule Rete.Session do
       [{1, 250}, {1, 900}]
   """
   @spec query(t(), {module(), atom()}, keyword() | %{atom() => term()}) :: [term()]
-  def query(%__MODULE__{state: state}, ref, filters \\ []),
-    do: Engine.query(state, ref, filters)
+  def query(%__MODULE__{state: state}, ref, params \\ []),
+    do: Engine.query(state, ref, params)
 
   @doc """
   Every fact the session holds, inserted or concluded.

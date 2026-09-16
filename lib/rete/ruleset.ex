@@ -28,7 +28,7 @@ defmodule Rete.Ruleset do
       Rete.DSL.Normalize   rewrite gates into conditions, negations and :or
       Rete.Compiler.Sort   order the conditions so every join has its keys
       Rete.DSL.Bindings    classify join/new bindings, split guards
-      build/4              recompute the production's :bind from the result
+      build/4              recompute :bind from the result, and check the head against it
       Rete.DSL.Codegen     emit the expression functions and the RHS
 
   See `docs/design/ir.md` §1 for the contract between the phases.
@@ -59,12 +59,6 @@ defmodule Rete.Ruleset do
       # compiled function. See `Rete.DSL.Codegen.check_attr_values!/3`.
       @rete_expr_attrs %{}
 
-      # `index/2` declarations, and the bindings of each query to check them against.
-      # Both plain data, so `@before_compile` can resolve them without touching the
-      # escaped IR in `@rule_data`.
-      @rete_index_data []
-      @rete_query_binds %{}
-
       @before_compile Rete.Ruleset
     end
   end
@@ -93,11 +87,46 @@ defmodule Rete.Ruleset do
   # every element looks like a binding. Only the classified LHS knows that a negation
   # binds nothing downstream, that a rule-level guard only reads, and that a disjunction
   # binds the union of its branches. See `docs/design/ir.md` §2.
+  #
+  # The head is checked here for the same reason: a parameter has to be a binding, and
+  # what the production binds is only known now.
   defp resolve_bindings(%IR.Production{lhs: lhs, __ast__: ast} = production) do
     {guaranteed, optional} = IR.lhs_bindings(lhs)
     bind = Enum.sort(guaranteed ++ optional)
 
+    check_params!(production, guaranteed, optional)
+
     %IR.Production{production | bind: bind, __ast__: %{ast | bind: bind_ast(ast.bind, bind)}}
+  end
+
+  # A parameter keys every match a query holds, so it has to be a binding every match
+  # carries. That rules out a variable only some branches of a disjunction bind: the
+  # matches from the other branches would key on its absence, and no call could name them.
+  defp check_params!(%IR.Production{params: []}, _guaranteed, _optional), do: :ok
+
+  defp check_params!(%IR.Production{params: params} = production, guaranteed, optional) do
+    cond do
+      (unknown = params -- (guaranteed ++ optional)) != [] ->
+        raise ArgumentError,
+              "#{signature(production)} names #{inspect(unknown)}, which " <>
+                "#{inspect(production.module)}.#{production.name} does not bind. " <>
+                "It binds #{inspect(Enum.sort(guaranteed ++ optional))}."
+
+      (partial = Enum.filter(params, &(&1 in optional))) != [] ->
+        raise ArgumentError,
+              "#{signature(production)} names #{inspect(partial)}, which only some " <>
+                "branches of its disjunction bind. A parameter keys every match, so it " <>
+                "has to be one every match carries. This query guarantees " <>
+                "#{inspect(guaranteed)}. Filter on #{inspect(partial)} in your own code, " <>
+                "or split the disjunction into one query per branch."
+
+      true ->
+        :ok
+    end
+  end
+
+  defp signature(%IR.Production{name: name, params: params}) do
+    "defquery #{name}(#{Enum.join(params, ", ")})"
   end
 
   # Keeps the variable AST the parser collected, so the RHS pattern carries the source
@@ -114,22 +143,7 @@ defmodule Rete.Ruleset do
 
     quote do
       unquote(name_check(env, production.name, type))
-      unquote(bind_record(production, type))
       unquote(Codegen.compile(production))
-    end
-  end
-
-  # Only a query can be indexed, so only a query's bindings are worth recording.
-  defp bind_record(_production, :rule), do: nil
-
-  defp bind_record(production, :query) do
-    quote do
-      # credo:disable-for-next-line Credo.Check.Design.AliasUsage
-      Rete.Ruleset.record_query_bind!(
-        __MODULE__,
-        unquote(production.name),
-        unquote(production.bind)
-      )
     end
   end
 
@@ -198,6 +212,7 @@ defmodule Rete.Ruleset do
   end
 
   defp decl_name({:when, _, [decl, _guard]}), do: decl_name(decl)
+  defp decl_name({{name, _, _head}, _, _args}) when is_atom(name), do: name
   defp decl_name({name, _, _args}) when is_atom(name), do: name
   defp decl_name(decl), do: Macro.to_string(decl)
 
@@ -242,16 +257,29 @@ defmodule Rete.Ruleset do
   and why two rulesets may each define one of the same name. Use `Rete.Session.query/3`,
   with `{MyRuleset, :find_user}`, when the query is decided at runtime.
 
-  There is nothing to declare about parameters. The caller may constrain any variable the
-  left hand side binds. Filtering happens on the bindings, before the body runs. A filter
-  that names something the query does not bind raises an error, instead of answering
-  `[]`.
+  A **head** before the conditions declares the query's parameters: the bindings its
+  matches are keyed on, and the only way it is read.
 
-      defquery find_user({:user, id, name}) do
+      defquery find_user(id)({:user, id, name}) do
         {id, name}
       end
-      #=> MyRuleset.find_user(session)         [{1, "Ada"}]
       #=> MyRuleset.find_user(session, id: 1)  [{1, "Ada"}]
+
+  A call names **every** parameter and nothing else, so reading a query is one map
+  lookup rather than a scan. A partial, extra or unknown key raises, instead of answering
+  `[]`.
+
+  A query written **without** a head takes no parameters, and answers with every match it
+  holds, in arrival order. That is the default, and it costs nothing extra.
+
+      defquery all_users({:user, id, name}) do
+        {id, name}
+      end
+      #=> MyRuleset.all_users(session)  [{1, "Ada"}, {2, "Grace"}]
+
+  A parameter must be a variable the left hand side binds, and one **every** match
+  carries — so not a variable only some branches of a disjunction bind. A rule cannot take
+  parameters, because a rule is never read. See `docs/dsl.md`.
   """
   defmacro defquery(decl, body) do
     defproduction(__CALLER__, decl, body, :query)
@@ -260,46 +288,18 @@ defmodule Rete.Ruleset do
   @doc false
   defmacro defquery(decl), do: no_body!(decl, :query)
 
-  @doc """
-  Declares an index over a query's bindings.
-
-  A query answers from a scan of every match it holds. An index buckets those matches by
-  the bindings named here, so a call that filters on exactly those bindings, or on a
-  superset of them, reads one bucket instead of all of them.
-
-      defquery flagged_for({:flagged, cid, tid, amt}) do
-        {cid, tid, amt}
-      end
-
-      index :flagged_for, [:cid]
-      index :flagged_for, [:cid, :tid]
-
-  `[:cid, :tid]` is **one** index over both bindings, not two. Write two lines for two
-  indexes. Order within the list does not matter.
-
-  **An index changes speed, not results.** Every filter still works, indexed or not, and
-  returns the same rows in the same order. Declaring none is the default, and costs
-  nothing. This declares no parameters and permits nothing: the caller may still filter on
-  any variable the left hand side binds.
-
-  A declaration may come before or after the query it names. Both are resolved when the
-  module finishes compiling.
-  """
-  @spec index(atom(), [atom()]) :: Macro.t()
+  @doc false
+  # A query's bindings are keyed by its head now, and that keying is the only one, so an
+  # `index` line has nothing left to declare. It raises rather than being undefined,
+  # because "undefined function index/2" does not say what to write instead.
+  @spec index(atom(), [atom()]) :: no_return()
   defmacro index(name, keys) do
-    file = Path.relative_to_cwd(__CALLER__.file)
-    line = __CALLER__.line
-
-    quote do
-      # credo:disable-for-next-line Credo.Check.Design.AliasUsage
-      Rete.Ruleset.record_index!(
-        __MODULE__,
-        unquote(name),
-        unquote(keys),
-        unquote(file),
-        unquote(line)
-      )
-    end
+    raise ArgumentError,
+          "index #{inspect(name)}, #{inspect(keys)} is no longer a declaration. A query's " <>
+            "matches are keyed on its parameters, which are its head: " <>
+            "`defquery #{name}(#{keys |> List.wrap() |> Enum.join(", ")})(<conditions>)`. " <>
+            "That keying is the only one, so there is no second index to declare, and a " <>
+            "call names every parameter and nothing else."
   end
 
   @doc """
@@ -335,167 +335,8 @@ defmodule Rete.Ruleset do
     end
   end
 
-  @doc """
-  Records one `index/2` declaration, checking its shape.
-
-  Called from the module body rather than at macro expansion, for the reason
-  `check_name!/5` gives: a module body is expanded in full before any of it runs, so at
-  expansion time the attribute holding earlier declarations is still empty.
-
-  Only the shape is checked here. Whether the name is a query, and whether the keys are
-  bindings of it, cannot be known until every declaration has been seen — an `index` may
-  come before its `defquery`. `resolve_indexes!/1` does that at `@before_compile`.
-  """
-  @spec record_index!(module(), atom(), [atom()], String.t(), pos_integer()) :: :ok
-  def record_index!(module, name, keys, file, line) do
-    unless is_atom(name) and not is_nil(name) do
-      raise ArgumentError,
-            "#{file}:#{line}: index expects a query name as an atom, got: #{inspect(name)}. " <>
-              "Write `index :#{inspect(name)}, [...]`."
-    end
-
-    check_index_keys!(name, keys, file, line)
-
-    recorded = Module.get_attribute(module, :rete_index_data) || []
-    entry = {name, keys |> Enum.uniq() |> Enum.sort(), file, line}
-
-    Module.put_attribute(module, :rete_index_data, [entry | recorded])
-    :ok
-  end
-
-  defp check_index_keys!(name, keys, file, line) do
-    cond do
-      not is_list(keys) or not Enum.all?(keys, &is_atom/1) ->
-        raise ArgumentError,
-              "#{file}:#{line}: index :#{name} expects a list of binding names, got: " <>
-                "#{inspect(keys)}. One index over two bindings is `[:a, :b]`. Two indexes " <>
-                "are two `index` lines."
-
-      keys == [] ->
-        raise ArgumentError,
-              "#{file}:#{line}: index :#{name} names no bindings. An index over nothing " <>
-                "would bucket every match under one key, which is what a query without " <>
-                "one already does."
-
-      keys != Enum.uniq(keys) ->
-        raise ArgumentError,
-              "#{file}:#{line}: index :#{name}, #{inspect(keys)} repeats a binding. " <>
-                "An index is a set of bindings."
-
-      true ->
-        :ok
-    end
-  end
-
-  @doc """
-  Resolves every recorded `index/2` against the queries of a module.
-
-  Returns `query name => [key set]`, in declaration order. Raises when a declaration names
-  something that is not a query of this module, or a binding that query does not have.
-  """
-  @spec resolve_indexes!(module()) :: %{atom() => [[atom()]]}
-  def resolve_indexes!(module) do
-    productions = Module.get_attribute(module, :rete_productions) || %{}
-    binds = Module.get_attribute(module, :rete_query_binds) || %{}
-
-    module
-    |> Module.get_attribute(:rete_index_data)
-    |> List.wrap()
-    |> Enum.reverse()
-    |> Enum.reduce(%{}, fn {name, keys, file, line}, acc ->
-      check_index_target!(module, productions, binds, name, keys, file, line)
-      check_index_repeat!(module, Map.get(acc, name, []), name, keys, file, line)
-
-      Map.update(acc, name, [keys], &(&1 ++ [keys]))
-    end)
-  end
-
-  defp check_index_target!(module, productions, binds, name, keys, file, line) do
-    case Map.fetch(productions, name) do
-      {:ok, {:query, _line}} ->
-        check_index_bindings!(module, Map.get(binds, name, []), name, keys, file, line)
-
-      {:ok, {:rule, rule_line}} ->
-        raise ArgumentError,
-              "#{file}:#{line}: index :#{name} names a rule, defined at #{file}:#{rule_line}. " <>
-                "Only a query can be indexed, because only a query is filtered. A rule " <>
-                "fires on every match its left hand side has."
-
-      :error ->
-        raise ArgumentError,
-              "#{file}:#{line}: index :#{name} names nothing #{inspect(module)} defines. " <>
-                queries_defined(productions)
-    end
-  end
-
-  defp check_index_bindings!(module, bind, name, keys, file, line) do
-    case keys -- bind do
-      [] ->
-        :ok
-
-      unknown ->
-        raise ArgumentError,
-              "#{file}:#{line}: index :#{name}, #{inspect(keys)} names " <>
-                "#{inspect(unknown)}, which #{inspect(module)}.#{name} does not bind. " <>
-                "It binds #{inspect(bind)}."
-    end
-  end
-
-  defp check_index_repeat!(module, sets, name, keys, file, line) do
-    if keys in sets do
-      raise ArgumentError,
-            "#{file}:#{line}: index :#{name}, #{inspect(keys)} is already declared for " <>
-              "#{inspect(module)}.#{name}. Order within the list does not matter, so " <>
-              "`[:a, :b]` and `[:b, :a]` are the same index."
-    end
-  end
-
-  defp queries_defined(productions) do
-    case for {name, {:query, _line}} <- productions, do: name do
-      [] -> "It defines no queries at all."
-      names -> "Defined: #{names |> Enum.sort() |> Enum.map_join(", ", &":#{&1}")}."
-    end
-  end
-
-  @doc """
-  Records the bindings of a query, so `resolve_indexes!/1` can check an index against them.
-
-  Plain atoms, kept apart from `@rule_data`, which holds escaped IR.
-  """
-  @spec record_query_bind!(module(), atom(), [atom()]) :: :ok
-  def record_query_bind!(module, name, bind) do
-    recorded = Module.get_attribute(module, :rete_query_binds) || %{}
-
-    Module.put_attribute(module, :rete_query_binds, Map.put(recorded, name, bind))
-    :ok
-  end
-
-  @doc """
-  Puts each query's declared indexes into its `:opts`.
-
-  Runs when `get_rule_data/0` is called, rather than at `@before_compile`, because
-  `@rule_data` holds escaped IR and only becomes structs when the generated function runs.
-  """
-  @spec with_indexes([IR.Production.t()], %{atom() => [[atom()]]}) :: [IR.Production.t()]
-  def with_indexes(productions, indexes) when map_size(indexes) == 0, do: productions
-  def with_indexes(productions, indexes), do: Enum.map(productions, &apply_index(&1, indexes))
-
-  defp apply_index(%IR.Production{type: :query, name: name} = production, indexes) do
-    case Map.fetch(indexes, name) do
-      {:ok, sets} ->
-        %IR.Production{production | opts: Keyword.put(production.opts || [], :index, sets)}
-
-      :error ->
-        production
-    end
-  end
-
-  defp apply_index(%IR.Production{} = production, _indexes), do: production
-
   @doc false
-  defmacro __before_compile__(env) do
-    indexes = Macro.escape(resolve_indexes!(env.module))
-
+  defmacro __before_compile__(_env) do
     quote do
       def get_expr_data do
         @rule_data
@@ -504,23 +345,16 @@ defmodule Rete.Ruleset do
       end
 
       def get_rule_data do
-        # credo:disable-for-next-line Credo.Check.Design.AliasUsage
-        Rete.Ruleset.with_indexes(@rule_data, unquote(indexes))
+        @rule_data
       end
 
       def get_taxo_data do
         @taxo_data
       end
 
-      # Hashes what the module exposes, not the attribute behind it, so a changed index
-      # changes the version and `get_version/0` stays a hash of `get_rule_data/0` and
-      # `get_taxo_data/0`.
-      # credo:disable-for-next-line Credo.Check.Design.AliasUsage
-      @version :erlang.phash2([
-                 __MODULE__,
-                 Rete.Ruleset.with_indexes(@rule_data, unquote(indexes)),
-                 @taxo_data
-               ])
+      # A query's parameters are part of its declaration, so they are already in
+      # `@rule_data` and a changed head changes the version.
+      @version :erlang.phash2([__MODULE__, @rule_data, @taxo_data])
       def get_version do
         @version
       end

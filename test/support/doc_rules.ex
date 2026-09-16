@@ -14,7 +14,7 @@ defmodule Rete.Doc.Orders do
     {:flagged, cid, amt}
   end
 
-  defquery flagged_for({:flagged, cid, amt}) do
+  defquery flagged_for(cid)({:flagged, cid, amt}) do
     {cid, amt}
   end
 end

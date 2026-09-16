@@ -353,7 +353,7 @@ defmodule Rete.Compiler.BetaGraph do
       hash: production.hash,
       rhs: production.rhs,
       bind: production.bind || [],
-      index: production.opts |> List.wrap() |> Keyword.get(:index, [])
+      params: production.params || []
     }
   end
 
