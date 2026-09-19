@@ -99,7 +99,7 @@ alpha expressions, join filters, and tests alike, deduplicated by code.
 | `:lhs` | `t:Rete.IR.lhs/0` | W1, rewritten by W2 | ordered condition list |
 | `:rhs` | `(hash, bindings_map -> facts) \| nil` | `escape/1` | `nil` before escaping |
 | `:module` | `module` | W1 | defining module |
-| `:__ast__` | `%{bind: %{atom => quoted}, decl: quoted, body: quoted}` | W1, narrowed by W2c | compile-time only, dropped by `escape/1`. A query with a head adds `head` (the patterns), `head_bind` (`%{atom => quoted}`) and `head_guard` |
+| `:__ast__` | `%{bind: %{atom => quoted}, decl: quoted, body: quoted}` | W1, narrowed by W2c | compile-time only, dropped by `escape/1`. A query with a head adds `head` (the patterns) and `head_bind` (`%{atom => quoted}`). A head guard is not here — it is on the `Rete.IR.Test` it became |
 
 #### `:bind` is a product of the pipeline
 
@@ -173,8 +173,9 @@ A pattern of the head may carry a guard, `rows(amt when amt > 10)(...)`. The par
 every `when` out of the head, combines the guards with `and`, and checks with
 `Rete.DSL.Vars.read_var_names/1` that the result reads nothing the head does not bind. It
 then appends a `Rete.IR.Test` to `:lhs`, by the same path the trailing `when` takes. That
-prunes the store, and it is everything the guard does. `:__ast__.head_guard` keeps the
-combined guard as the record of what was parsed.
+prunes the store, and it is everything the guard does. The test carries the guard AST in
+its own `:__ast__`, in the shape every other guard uses, so `:__ast__` on the production
+keeps only the patterns and what they bind.
 
 This is sound because a query is read by term equality. The guard holds of an argument
 exactly when it holds of the binding that the argument matches, so the test removes exactly
@@ -185,9 +186,17 @@ The guard is deliberately **not** put on the generated clause. It would reject t
 calls, because the test already emptied their keys, so it would add no answer that the test
 gets wrong. What it would cost is the guard's language. A `Rete.IR.Test` compiles to a
 function and may call anything a rule body may call. A guard on a clause may not, so
-`name when String.length(name) > 3` would not compile. The check above stays for a
-different reason: a head guard constrains the call, and one that read the rest of the LHS
-would be the trailing `when` under a second spelling.
+`name when String.length(name) > 3` would not compile.
+
+A clause guard also could not hold for both ways of reading a query. `Rete.Engine.query/3`
+is dispatched by `{module, name}` while the program runs, so it never sees the head. Only
+the generated function could carry a call-time guard, and a query answered two ways has to
+answer once. The store is the one place both paths meet, so the store is where the guard
+has to act. Everything in a production is evaluated as a match propagates, and a head guard
+is no exception to that.
+
+The check above stays for a different reason: a head guard constrains the call, and one
+that read the rest of the LHS would be the trailing `when` under a second spelling.
 
 ### `Rete.IR.Fact`
 

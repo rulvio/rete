@@ -108,12 +108,9 @@ defmodule Rete.DSL.Parser do
       production
       | params: bind_vars(head_bind),
         lhs: production.lhs ++ head_test(env, guard),
-        __ast__:
-          Map.merge(production.__ast__, %{
-            head: patterns,
-            head_bind: head_bind,
-            head_guard: guard
-          })
+        # The guard is not kept here. It goes into the `Rete.IR.Test` that `head_test/2`
+        # appends, which records it in the same shape every other guard uses.
+        __ast__: Map.merge(production.__ast__, %{head: patterns, head_bind: head_bind})
     }
   end
 
@@ -156,9 +153,9 @@ defmodule Rete.DSL.Parser do
 
   # Separates the patterns of a head from its guards. Elixir attaches a `when` to the one
   # argument it follows, so `rows(cid, tid when cid < tid)` guards the last pattern alone.
-  # Every head variable is in scope for the whole generated clause, though, in the way that
-  # every parameter of a `def` is. So the guards combine into one, and where an author
-  # wrote it does not change what it reads.
+  # The guards all become one test over the head bindings, though, and every head binding
+  # is in scope for it. So they combine into one, and where an author wrote a guard does
+  # not change what it reads.
   defp split_head(head) do
     {patterns, guards} =
       Enum.map_reduce(head, [], fn
@@ -215,7 +212,12 @@ defmodule Rete.DSL.Parser do
   #
   # A guard on the generated clause would reject those same calls, so it would add no answer
   # that this one gets wrong. It would cost the guard its language. A test is a compiled
-  # function and may call anything, where a guard on a clause may not. See `docs/dsl.md`.
+  # function and may call anything, where a guard on a clause may not.
+  #
+  # It also could not hold for both ways of reading a query. `Rete.Engine.query/3` is
+  # dispatched by `{module, name}` while the program runs, so it never sees the head. The
+  # store is the one place the two paths meet, so the store is where the guard has to act.
+  # See `docs/dsl.md`.
   defp head_test(_env, nil), do: []
 
   defp head_test(env, guard) do

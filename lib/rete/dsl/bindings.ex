@@ -492,8 +492,9 @@ defmodule Rete.DSL.Bindings do
   defp guard_noun(_rule), do: "rule level guard"
 
   # A `_`-prefixed name is the same mistake wherever the guard was written. The rest of the
-  # advice is not: a head guard cannot move onto a condition, because it also has to be a
-  # guard on the generated query function. So it names the two ways out that a head has.
+  # advice is not: a head guard cannot move onto a condition, because it may read only what
+  # the head binds, and the head binds only keys. So it names the two ways out that a head
+  # has.
   defp test_hint(source, var) do
     case Atom.to_string(var) do
       "_" <> rest ->

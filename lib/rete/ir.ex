@@ -165,9 +165,10 @@ defmodule Rete.IR do
     `:bind` is what the guard **reads**, not what it introduces.
 
     `:source` records which of the two the author wrote, so that a message about the guard
-    names the construct they can find in their file. A head guard is also a guard on the
-    generated query function, and the advice for it differs. It is compile-time only, in
-    the way `:__ast__` is, and `Rete.IR.escape/1` drops it.
+    names the construct they can find in their file. The advice differs as well. A head
+    guard reads only what the head binds, so it cannot move onto a condition the way a rule
+    level guard can. It is compile-time only, in the way `:__ast__` is, and
+    `Rete.IR.escape/1` drops it.
     """
 
     @type t :: %__MODULE__{

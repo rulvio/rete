@@ -727,6 +727,19 @@ defquery named(name when String.length(name) > 3)({:user, name, id}), do: {name,
 `String.length/1` is not allowed in an Elixir guard. It is allowed here, in the way that it
 is allowed in a condition guard.
 
+**A head guard runs when a match propagates, and not when you call.** It uses the syntax of
+an Elixir clause guard, so this is worth saying. The guard runs one time for each match,
+during `fire_rules/2`, and the store records the answer. A call reads that store.
+
+This is not a choice. `Rete.Session.query/3` reads the same query and never sees the head,
+so it could not run a guard at call time. A guard that ran on one path and not the other
+would give two answers to one question. Evaluating it once, into the store, is what keeps
+the two paths equal.
+
+So write a head guard as a function of its arguments, in the way that every other guard
+here is one. One that reads the clock fixes its answer at the time of the match, and not at
+the time of the call.
+
 A head guard reads only what the head binds. Every head variable is in scope for it,
 whichever pattern you wrote it after. So `(cid, tid when cid < tid)` compares the two, and
 two guards both apply:
