@@ -918,7 +918,7 @@ out of 4,000:
 | | |
 |---|---|
 | `rows(session) \|> Enum.filter(...)` | 18 ms |
-| `defquery rows(a)(...)` then `rows(session, a: 1)` | **0.01 ms** |
+| `defquery rows(a)(...)` then `rows(session, 1)` | **0.01 ms** |
 
 That is a factor of approximately 1,600, and the body is what makes it so large. A head
 keys on the bindings, so the body runs for the one row that comes back. A filter on the
@@ -929,8 +929,9 @@ so it did not read like a head. But it ran on the bindings, and called the body 
 the rows it kept, so it did not pay the body cost that `Enum.filter/2` pays. That filter is
 deleted, so `mix bench` cannot measure it and no row here stands for it.
 
-You cannot reach for it by accident. The old call raises an error, and the message names
-the head to write.
+You cannot reach for it by accident. A query with no head is `name/1`, so the old call
+does not compile. `Rete.Session.query/3` reaches the same query at run time, and it
+raises an error whose message names the head to write.
 
 In one case you must use the first row. This is a binding that **cannot** become a
 parameter. If only some branches of a disjunction bind a variable, that variable is

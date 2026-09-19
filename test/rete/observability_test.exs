@@ -525,9 +525,6 @@ defmodule Rete.ObservabilityTest do
     # The stored group is only a candidate set here. Reporting it whole would name a fact
     # that the filter kept out, so the diagnostic would describe a larger collection than
     # the rule received.
-    # The stored group is only a candidate set here. Reporting it whole would name a fact
-    # that the filter kept out, so the diagnostic would describe a larger collection than
-    # the rule received.
     test "a filtered collection answers with what passed its filter" do
       session = filtered_collection()
 
@@ -535,6 +532,41 @@ defmodule Rete.ObservabilityTest do
                Inspect.collection(session, accumulate_node(session, :big), %{cid: 1})
 
       assert {:big, 1, 1} in Session.facts(session)
+    end
+
+    # The filter decides membership for each token, so two thresholds over one customer
+    # give two tokens under one join key, each seeing a different set. A join key is all
+    # this call takes, so it cannot answer for one of them. It answers with the union, and
+    # `why_not/2` reports the token count that explains why.
+    test "two tokens under one join key answer with the union of what each sees" do
+      session =
+        [Collections]
+        |> Session.new()
+        |> Session.insert([
+          {:threshold, 100},
+          {:threshold, 200},
+          {:vip, 1, "Ada"},
+          {:sale, 1, 250},
+          {:sale, 1, 150},
+          {:sale, 1, 40}
+        ])
+        |> Session.fire_rules()
+
+      node = accumulate_node(session, :big)
+
+      # The token for 100 sees 250 and 150. The token for 200 sees 250 alone. Neither sees
+      # 40, so the union leaves it out.
+      assert [{:sale, 1, 150}, {:sale, 1, 250}] ==
+               session |> Inspect.collection(node, %{cid: 1}) |> Enum.sort()
+
+      assert {:big, 1, 2} in Session.facts(session)
+      assert {:big, 1, 1} in Session.facts(session)
+
+      assert 2 ==
+               session
+               |> Inspect.why_not({Collections, :big})
+               |> Enum.find(&(&1.node == node))
+               |> Map.fetch!(:tokens)
     end
 
     test "an unknown join key gathers nothing" do
