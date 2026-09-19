@@ -1168,5 +1168,92 @@ IO.puts("")
    :ok
  end).()
 
+# --- inspection -------------------------------------------------------------------------
+#
+# `Rete.Inspect.explain/1` and `why_not/1` walk every rule in the session, so both are
+# shaped to go quadratic in the rule count. Two ways of doing so were found and fixed:
+# resolving a rule's terminal node scans the beta graph, and `Rete.Memory.inserters/2` scans
+# every insertion record when its index is not built. Neither shows at a size anybody writes
+# by hand.
+
+defmodule Bench.Explain do
+  @moduledoc false
+
+  # r rules in two layers. `a_i` concludes from an inserted fact, and `b_i` concludes from
+  # what `a_i` concluded. So half the matched facts are derived, which is the path that
+  # reads the provenance index. Each rule fires exactly once, so the work is linear in r and
+  # any curve above that is the measurement finding a bug.
+  def module(r) do
+    name = Module.concat(Bench.Explain.Generated, "R#{r}")
+
+    defs =
+      for i <- 1..r do
+        quote do
+          defrule unquote(:"a#{i}")({:f, unquote(i), amt}) do
+            {:mid, unquote(i), amt}
+          end
+
+          defrule unquote(:"b#{i}")({:mid, unquote(i), amt}) do
+            {:out, unquote(i), amt}
+          end
+        end
+      end
+
+    Module.create(
+      name,
+      quote do
+        use Rete.Ruleset
+        unquote_splicing(defs)
+      end,
+      Macro.Env.location(__ENV__)
+    )
+
+    name
+  end
+
+  def session(r) do
+    facts = for i <- 1..r, do: {:f, i, i}
+
+    [module(r)]
+    |> Rete.Session.new()
+    |> Rete.Session.insert(facts)
+    |> Rete.Session.fire_rules()
+  end
+
+  # Both scenarios take `isolate: true`, because each call allocates a whole answer and the
+  # heap of the bench process would otherwise grow with `r`. Spawning copies the closure,
+  # though, and a closure over a map of loaded sessions would copy every one of them at
+  # every repeat. That is a fixed cost at each size, so it would flatten the curve and hide
+  # the very shape the gate looks for.
+  #
+  # `:persistent_term` is read without copying, so the isolated process reads the session
+  # and allocates nothing but its own answer. Written once here, and never updated, so the
+  # global cost of an update is not paid.
+  def put(r), do: :persistent_term.put({__MODULE__, r}, session(r))
+  def get(r), do: :persistent_term.get({__MODULE__, r})
+end
+
+inspect_sizes = [64, 128, 256, 512]
+
+for r <- inspect_sizes, do: Bench.Explain.put(r)
+
+Bench.scenario(
+  "explain every rule in a session of r rules",
+  inspect_sizes,
+  fn r -> r |> Bench.Explain.get() |> Rete.Inspect.explain() end,
+  isolate: true,
+  note:
+    "2r rules, each firing once, half the matched facts derived — was O(r²) twice " <>
+      "over: a beta graph scan per rule, and an unindexed provenance lookup per fact"
+)
+
+Bench.scenario(
+  "why_not every rule in a session of r rules",
+  inspect_sizes,
+  fn r -> r |> Bench.Explain.get() |> Rete.Inspect.why_not() end,
+  isolate: true,
+  note: "one chain walk per rule — was a beta graph scan per rule to find its terminal"
+)
+
 # Last, because it sets the exit status of the run.
 Bench.finish()

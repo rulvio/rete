@@ -98,10 +98,11 @@ defmodule Rete.Inspect do
       [{:query, :flagged_for, 1}, {:rule, :large_order, 1}]
   """
   @spec explain(Session.t()) :: [explanation()]
-  def explain(%Session{state: state} = session) do
+  def explain(%Session{state: state}) do
     settled!(state, "explain/1")
+    state = indexed(state)
 
-    state |> rule_refs() |> Enum.sort_by(&sort_key/1) |> Enum.map(&explain(session, &1))
+    state |> terminal_nodes() |> Enum.map(&explanation(state, &1))
   end
 
   @doc """
@@ -149,12 +150,7 @@ defmodule Rete.Inspect do
     node = terminal!(state, ref)
     settled!(state, "explain/2")
 
-    %{
-      rule: node.name,
-      module: node.module,
-      type: type(node),
-      activations: activations(state, node)
-    }
+    explanation(indexed(state), node)
   end
 
   def explain(%Session{state: state}, name) when is_atom(name) do
@@ -168,10 +164,10 @@ defmodule Rete.Inspect do
   helpers are left out. Name one with `why_not/2` to see it anyway.
   """
   @spec why_not(Session.t()) :: [chain()]
-  def why_not(%Session{state: state} = session) do
+  def why_not(%Session{state: state}) do
     settled!(state, "why_not/1")
 
-    state |> rule_refs() |> Enum.sort_by(&sort_key/1) |> Enum.map(&why_not(session, &1))
+    state |> terminal_nodes() |> Enum.map(&chain(state, &1))
   end
 
   @doc """
@@ -203,15 +199,30 @@ defmodule Rete.Inspect do
     node = terminal!(state, ref)
     settled!(state, "why_not/2")
 
+    chain(state, node)
+  end
+
+  def why_not(%Session{state: state}, name) when is_atom(name) do
+    raise ArgumentError, bare_name_message(state, name)
+  end
+
+  # --- building one entry ---------------------------------------------------------
+
+  defp explanation(state, node) do
+    %{
+      rule: node.name,
+      module: node.module,
+      type: type(node),
+      activations: activations(state, node)
+    }
+  end
+
+  defp chain(state, node) do
     %{
       rule: node.name,
       module: node.module,
       chain: state |> chain_to(node.id) |> Enum.map(&describe_node(state, &1))
     }
-  end
-
-  def why_not(%Session{state: state}, name) when is_atom(name) do
-    raise ArgumentError, bare_name_message(state, name)
   end
 
   # --- activations ----------------------------------------------------------------
@@ -274,6 +285,18 @@ defmodule Rete.Inspect do
       refs -> %{fact: fact, origin: :derived, from: refs, members: nil}
     end
   end
+
+  # Builds the `inserters` index, and keeps it for the rest of this call.
+  #
+  # `Rete.Memory.inserters/2` falls back to a scan of every insertion record when the index
+  # is not built, which suits a reader that asks one time. This asks once per matched fact,
+  # so the fallback would be quadratic in the size of the session. The index costs one pass
+  # and answers every later lookup by map. It is already built on a session where one rule
+  # re-concludes what another concluded, and there this is free.
+  #
+  # The memory this returns does not leave the call. Nothing here changes what the session
+  # holds, and `index_inserters/1` derives the index from `insertions` alone.
+  defp indexed(%State{} = state), do: %State{state | memory: Memory.index_inserters(state.memory)}
 
   # Truth maintenance records "this match at this production inserted these facts", which
   # read backwards is a provenance edge. `Rete.Memory.inserters/2` is that index, kept the
@@ -385,12 +408,22 @@ defmodule Rete.Inspect do
   defp terminal?(%Node.Query{}), do: true
   defp terminal?(_node), do: false
 
-  defp rule_refs(state) do
-    for node <- Network.beta_nodes(state.network),
-        terminal?(node),
-        not generated?(node),
-        do: {node.module, node.name}
+  # Every rule and query a caller may name, in one pass, sorted.
+  #
+  # The arity-1 forms map over **these nodes**, and not over their refs. `terminal/2` scans
+  # the beta graph, so resolving a ref per rule would scan it once per rule, which is
+  # quadratic in the rule count. That is the exact shape `bench/run.exs` exists to catch:
+  # over 400 rules it read ~n^1.7 before, where the gate is n^1.5.
+  defp terminal_nodes(state) do
+    state.network
+    |> Network.beta_nodes()
+    |> Enum.filter(&(terminal?(&1) and not generated?(&1)))
+    |> Enum.sort_by(&sort_key({&1.module, &1.name}))
   end
+
+  # The same set as a list of refs, for the two error messages that list what exists. An
+  # error path pays for one more pass without anybody noticing.
+  defp rule_refs(state), do: state |> terminal_nodes() |> Enum.map(&{&1.module, &1.name})
 
   # Walks back from the terminal to the root, and reports root-first. So the list reads
   # in the order the conditions are evaluated. A disjunction gives a node several
