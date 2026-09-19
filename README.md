@@ -28,7 +28,7 @@ becomes dormant again. You do no bookkeeping yourself.
 ```elixir
 def deps do
   [
-    {:rete, "~> 0.7.0"}
+    {:rete, "~> 0.8.0"}
   ]
 end
 ```
@@ -138,7 +138,7 @@ session =
 Rete.Session.facts(session)
 #=> the six facts above, and nothing else
 
-Retail.large_orders(session, cid: 1)
+Retail.large_orders(session, 1)
 #=> [] — nothing has matched yet
 ```
 
@@ -190,22 +190,37 @@ A query has the same left hand side as a rule, but it never fires. It holds the 
 that reached it. **It is a function in its own module**, so you read it back by calling it.
 
 ```elixir
-Retail.large_orders(session, cid: 1)
+Retail.large_orders(session, 1)
 #=> [{1, 250}]
 ```
 
 A query returns **what its body computes**, one result per match. It answers in whatever
 shape suits the caller, instead of handing back raw bindings.
 
-The `(cid)` before the conditions is the **head** of the query. It declares the parameters.
-The engine keys the matches on those parameters, so a read is a map lookup and not a scan.
-A call must name every parameter, and no other name. Write no head for a query that takes
-no parameters and answers with every match that it holds.
+The `(cid)` before the conditions is the **head** of the query, and it is the argument list
+of the function. A head is a list of ordinary Elixir patterns, so you choose the shape a
+caller writes:
+
+```elixir
+defquery by_pair(cid, tid)(...)             #=> by_pair(session, 1, 2)
+defquery by_tuple({cid, tid})(...)          #=> by_tuple(session, {1, 2})
+defquery by_map(%{cid: cid, tid: tid})(...) #=> by_map(session, %{cid: 1, tid: 2})
+defquery big(cid, amt when amt > 1000)(...) #=> big(session, 1, 5_000)
+```
+
+What the patterns bind is what the engine keys the matches on, so a read is a map lookup
+and not a scan. A call that does not match raises `FunctionClauseError`, and one of the
+wrong arity does not compile. Both are reported at the line you wrote, and an editor
+completes the call. Write no head for a query that answers with every match that it holds.
+
+A guard on the head runs on the arguments of the call. It is also a test on the left hand
+side, so the query holds no match that fails it.
 
 A query is identified by `{module, name}`, never by a bare name. Because of this, two
 rulesets that each define a `:summary` compose into one session without collision.
 
-When you choose the query at runtime, name the pair:
+When you choose the query at runtime, name the pair. That call takes the **bindings**, and
+not the head, because it cannot know the pattern:
 `Rete.Session.query(session, {Retail, :large_orders}, cid: 1)`.
 
 ### Retract

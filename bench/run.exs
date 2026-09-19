@@ -809,7 +809,7 @@ IO.puts("")
    Bench.scenario(
      "a query read by a parameter, selecting 1 of n",
      [500, 1_000, 2_000, 4_000],
-     fn n -> for _ <- 1..200, do: Bench.KeyedQuery.rows(query_sessions[n].keyed, cid: 1) end,
+     fn n -> for _ <- 1..200, do: Bench.KeyedQuery.rows(query_sessions[n].keyed, 1) end,
      note: "`defquery rows(cid)(...)`, so the read is one bucket and n stops mattering"
    )
 
@@ -830,7 +830,7 @@ IO.puts("")
        :keyed ->
          session = query_sessions[4_000].keyed
 
-         for _ <- 1..200, do: Bench.KeyedQuery.rows(session, cid: 1)
+         for _ <- 1..200, do: Bench.KeyedQuery.rows(session, 1)
      end,
      note: "one row returned in each case. A head decreases this number."
    )
@@ -989,7 +989,7 @@ IO.puts("")
          end
 
        :keyed ->
-         for _ <- 1..50, do: Bench.FatKeyedQuery.rows(keyed, a: 1)
+         for _ <- 1..50, do: Bench.FatKeyedQuery.rows(keyed, 1)
      end,
      note: "50 reads. The filter runs the body 4,000 times per read, and the head runs it once"
    )

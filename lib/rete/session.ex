@@ -35,7 +35,7 @@ defmodule Rete.Session do
       ...>   |> Session.fire_rules()
       iex> Session.facts(session) |> Enum.sort()
       [{:customer, 1}, {:flagged, 1, 250}, {:order, 1, 250}]
-      iex> Rete.Doc.Orders.flagged_for(session, cid: 1)
+      iex> Rete.Doc.Orders.flagged_for(session, 1)
       [{1, 250}]
 
   See `docs/dsl.md` for writing rules and `docs/design/engine.md` §8 for truth
@@ -142,9 +142,9 @@ defmodule Rete.Session do
       iex> queued =
       ...>   Session.new([Rete.Doc.Orders])
       ...>   |> Session.insert([{:customer, 1}, {:order, 1, 250}])
-      iex> Rete.Doc.Orders.flagged_for(queued, cid: 1)
+      iex> Rete.Doc.Orders.flagged_for(queued, 1)
       []
-      iex> Rete.Doc.Orders.flagged_for(Session.fire_rules(queued), cid: 1)
+      iex> Rete.Doc.Orders.flagged_for(Session.fire_rules(queued), 1)
       [{1, 250}]
   """
   @spec fire_rules(t(), keyword()) :: t()
@@ -175,16 +175,27 @@ defmodule Rete.Session do
 
   **Usually you would not write this.** `defquery flagged_for(...)` defines
   `flagged_for/2` in its own module, so the same call reads
-  `Rete.Doc.Orders.flagged_for(session, cid: 1)`, which the compiler checks. Use this form
+  `Rete.Doc.Orders.flagged_for(session, 1)`, which the compiler checks. Use this form
   when the query is decided at runtime.
 
   A query is addressed by module and name together because two rulesets composed into one
   session may each define a `:summary`.
 
-  `params` gives a value for every parameter that the head of the query declares, and for
-  no other name. Write it as a keyword list or a map. A query with no head takes no
+  `params` gives a value for every binding that the head of the query makes, and for no
+  other name. Write it as a keyword list or a map. A query with no head takes no
   parameters. A partial key, an extra key or an unknown key raises an error. It does not
   answer `[]`.
+
+  **This takes the bindings, and not the head.** The head of a query is a pattern, and the
+  generated function matches it. This call is dispatched by `{module, name}` at run time,
+  so it cannot know that pattern. It takes the names the pattern binds instead. For a head
+  of `({cid, tid})`, the generated function takes `{1, 2}` and this one takes
+  `%{cid: 1, tid: 2}`.
+
+  A head guard holds here too. The guard is a test on the left hand side as well as a guard
+  on the generated function, so the query holds no match that fails it. A call that names a
+  value the guard rejects thus answers `[]`, in the way that the generated function refuses
+  it. See `Rete.Ruleset.defquery/2`.
 
   **A query answers as of the most recent fire.** On a session you never fired that is
   `[]`. On one you fired and then inserted into, it is the answer from before that insert,

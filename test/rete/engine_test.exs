@@ -1283,9 +1283,12 @@ defmodule Rete.EngineTest do
     test "a query with no conditions binds nothing, so any parameter is rejected" do
       session = [NoLhs] |> Session.new() |> Session.fire_rules()
 
-      assert [:constant] == NoLhs.constant(session, [])
+      assert [:constant] == NoLhs.constant(session)
 
-      error = assert_raise ArgumentError, fn -> NoLhs.constant(session, id: 1) end
+      error =
+        assert_raise ArgumentError, fn ->
+          Session.query(session, {NoLhs, :constant}, id: 1)
+        end
 
       assert error.message =~ "takes no parameters, and was given [:id]"
       assert error.message =~ "It binds []"
@@ -1852,14 +1855,14 @@ defmodule Rete.EngineTest do
       assert [{1, 250}, {1, 900}, {2, 300}] == Queries.flagged_for(session)
     end
 
-    # The head declares the parameters. A call gives a value for each one, as a keyword
-    # list or a map. A value that matches nothing answers `[]`, which is a true answer.
-    test "a query is read by its parameters, as a keyword list or a map" do
+    # The head is the argument list. A call matches it. A value that matches nothing
+    # answers `[]`, which is a true answer.
+    test "a query is read by the arguments its head declares" do
       session = run([Queries], [{:order, 1, 250}, {:order, 1, 900}, {:order, 2, 300}])
 
-      assert [{1, 250}, {1, 900}] == Queries.flagged_by(session, cid: 1)
-      assert [{2, 300}] == Queries.flagged_by(session, %{cid: 2})
-      assert [] == Queries.flagged_by(session, cid: 99)
+      assert [{1, 250}, {1, 900}] == Queries.flagged_by(session, 1)
+      assert [{2, 300}] == Queries.flagged_by(session, 2)
+      assert [] == Queries.flagged_by(session, 99)
     end
 
     # A parameter keys on the bindings, before the body runs. It thus names a variable,
@@ -1867,21 +1870,20 @@ defmodule Rete.EngineTest do
     test "a parameter names a binding even when the body hides it" do
       session = run([Queries], [{:order, 1, 250}, {:order, 2, 300}])
 
-      assert [%{customer: 1, doubled: 500}] == Queries.summary_by(session, amt: 250)
+      assert [%{customer: 1, doubled: 500}] == Queries.summary_by(session, 250)
     end
 
-    # A query with a head and a query without one are two queries. Neither one can answer
-    # the call of the other.
-    test "a headless query takes no parameters, and a parameterised one takes all of them" do
-      session = run([Queries], [{:order, 1, 250}])
+    # A query with a head and a query without one are two queries, and they generate
+    # functions of different arity. Neither one can answer the call of the other, and the
+    # compiler reports that at the call site rather than the engine reporting it at run
+    # time.
+    test "a headless query takes the session alone, and a parameterised one takes its head" do
+      arities = Queries.__info__(:functions)
 
-      assert_raise ArgumentError, ~r/takes no parameters/, fn ->
-        Queries.flagged_for(session, cid: 1)
-      end
-
-      assert_raise ArgumentError, ~r/takes parameters \[:cid\]/, fn ->
-        Queries.flagged_by(session)
-      end
+      assert 1 == arities[:flagged_for]
+      assert 2 == arities[:flagged_by]
+      assert 1 == arities[:summary]
+      assert 2 == arities[:summary_by]
     end
 
     test "a query reflects retraction" do
@@ -1951,7 +1953,9 @@ defmodule Rete.EngineTest do
       session = run([Queries], [])
 
       error =
-        assert_raise ArgumentError, fn -> Queries.flagged_for(session, bogus: 1) end
+        assert_raise ArgumentError, fn ->
+          Session.query(session, {Queries, :flagged_for}, bogus: 1)
+        end
 
       assert error.message =~ "binds [:amt, :cid]"
       assert error.message =~ "was given [:bogus]"

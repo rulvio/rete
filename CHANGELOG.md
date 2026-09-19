@@ -4,7 +4,75 @@ All notable changes to `rete` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.8.0
+
+**This release changes how you call a query.** The head of a query is an Elixir pattern
+now, and the call matches it. **This release has breaking changes.** Every call of a query
+with a head has to be rewritten.
+
+Before, a head was a list of names, and a call gave a keyword list or a map of those names.
+The name was written twice, and the engine checked the caller's keys while the program ran.
+Now the head is the argument list of the function that the query becomes:
+
+```elixir
+defquery orders_for(cid)({:large_order, cid, amt}), do: {cid, amt}
+
+MyRuleset.orders_for(session, 1)     # was: orders_for(session, cid: 1)
+```
+
+A head is a list of ordinary patterns, so you choose the shape a caller writes:
+
+```elixir
+defquery by_pair(cid, tid)(...)             #=> by_pair(session, 1, 2)
+defquery by_tuple({cid, tid})(...)          #=> by_tuple(session, {1, 2})
+defquery by_map(%{cid: cid, tid: tid})(...) #=> by_map(session, %{cid: 1, tid: 2})
+defquery by_list(cid: cid, tid: tid)(...)   #=> by_list(session, cid: 1, tid: 2)
+```
+
+The compiler checks the call, and an editor completes it. A call that does not match raises
+`FunctionClauseError`, and one of the wrong arity does not compile.
+
+### Added
+
+* **A guard on a head pattern.** `defquery big(cid, amt when amt > 1000)({:sale, cid, amt})`
+  refuses a call of `big(session, 1, 5)`. The guard reads only what the head binds, and
+  every head variable is in scope for it, so `(cid, tid when cid < tid)` compares the two.
+  A guard over the other bindings is the rule level guard, after the conditions, and the
+  error for one in the head names it.
+
+* **A head guard prunes the store.** The guard is a test on the left hand side as well as a
+  guard on the generated function. So the query node never holds a match that fails it.
+  This is sound because a query is read by term equality: the guard holds of an argument
+  exactly when it holds of the binding that the argument matches. It removes only the
+  matches that no call could reach.
+
+### Changed
+
+* **A head of N patterns generates `name/(N+1)`, and nothing else.** The arity-2 clause
+  with a default is gone. `q(session)` on a query with a head, and `q(session, cid: 1)` on
+  a query without one, are now compile errors at the call site. Before, each was an
+  `ArgumentError` while the program ran.
+
+* **A keyword head matches in the order you declared it.** `(cid: cid, tid: tid)` does not
+  match a call of `(tid: 2, cid: 1)`. A head is a pattern, so it behaves like one. Before,
+  the order of a call never mattered.
+
+* **A repeated variable in a head is an equality constraint.** `(cid, cid)` means the two
+  values have to be equal, and it contributes one key. Before, it was a compile error.
+
+* **A head may bind nothing.** `defquery ping(:tick)(...)` keys on nothing and answers with
+  every match. The argument is an assertion at the call site. Before, a head took a bare
+  variable and nothing else.
+
+* **`Rete.Session.query/3` is unchanged, and it now differs from the generated function.**
+  It is dispatched by `{module, name}` while the program runs, so it cannot know the head
+  pattern. It keeps taking the bindings as a keyword list or a map, and it keeps the check
+  on them. For a head of `({cid, tid})`, the function takes `{1, 2}` and this call takes
+  `%{cid: 1, tid: 2}`.
+
+* `Rete.IR.Production`'s `:params` is sorted, where it kept declaration order before. The
+  head itself is a list of patterns, and it stays in `:__ast__` for the code generator. No
+  runtime structure changed, so the figures for what a head costs and saves still hold.
 
 ### Fixed
 

@@ -369,26 +369,50 @@ defmodule Rete.DSL.Codegen do
   @doc """
   The quoted definition of a query's own function, or `nil` for a rule.
 
-  `defquery summary(...)` defines `summary/1` and `summary/2`, so you run a query by
-  calling it:
+  The head of the query is the argument list, so you run a query by calling it in the shape
+  that you declared:
 
-      MyRuleset.summary(session)
-      MyRuleset.summary(session, cid: 1)
+      defquery summary({:total, cid, n})           #=> MyRuleset.summary(session)
+      defquery by_customer(cid)({:total, cid, n})  #=> MyRuleset.by_customer(session, 1)
+      defquery pair({cid, n})({:total, cid, n})    #=> MyRuleset.pair(session, {1, 2})
 
-  It delegates to `Rete.Session.query/3`, with `{__MODULE__, name}`. This is what lets
-  two rulesets use the same query name. The pair is the identity, and the caller writes
-  the module. The caller does not depend on a bare name being unique.
+  A head of N patterns gives `name/(N+1)`. The session is the first argument, so a query
+  pipes. A call that does not match the head raises `FunctionClauseError`, in the way that
+  any other function does.
+
+  The body builds the key map from the variables the head bound, and hands it to
+  `Rete.Session.query/3` with `{__MODULE__, name}`. This is what lets two rulesets use the
+  same query name. The pair is the identity, and the caller writes the module. The caller
+  does not depend on a bare name being unique.
   """
   @spec query_def(IR.Production.t()) :: Macro.t() | nil
-  def query_def(%IR.Production{type: :query, name: name}) do
-    quote do
-      Kernel.def unquote(name)(session, params \\ []) do
-        Rete.Session.query(session, {__MODULE__, unquote(name)}, params)
-      end
+  def query_def(%IR.Production{type: :query, name: name, __ast__: ast}) do
+    head = Map.get(ast, :head, [])
+    key_map = key_map(Map.get(ast, :head_bind, %{}))
+    call = quote(do: Rete.Session.query(session, {__MODULE__, unquote(name)}, unquote(key_map)))
+
+    case Map.get(ast, :head_guard) do
+      nil ->
+        quote do
+          Kernel.def(unquote(name)(session, unquote_splicing(head)), do: unquote(call))
+        end
+
+      guard ->
+        quote do
+          Kernel.def(unquote(name)(session, unquote_splicing(head)) when unquote(guard),
+            do: unquote(call)
+          )
+        end
     end
   end
 
   def query_def(%IR.Production{}), do: nil
+
+  # The map the engine keys on, built from the variables the head patterns bound. Sorted by
+  # name, so that one declaration always generates one piece of code.
+  defp key_map(head_bind) do
+    {:%{}, [], head_bind |> Enum.sort_by(&elem(&1, 0)) |> Enum.map(fn {k, ast} -> {k, ast} end)}
+  end
 
   @doc """
   The quoted definitions of every expression function of a production.

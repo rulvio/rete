@@ -245,10 +245,11 @@ defmodule Rete.IR do
         negation's variables, and it is the *union* over a disjunction's branches. A
         variable only some branches bind is not in every token, so the RHS reads it
         defensively.
-      * `:params` is the head of a query: the bindings that key its matches. It is always
+      * `:params` is what the head of a query binds: the keys of its matches. It is always
         `[]` on a rule. Unlike `:bind`, it holds only *guaranteed* bindings, which are the
-        keys that every match carries. It keeps declaration order, because that is the
-        order in which an error message about a call names the parameters.
+        keys that every match carries. It is sorted. The head itself is a list of patterns,
+        and it stays in `__ast__.head` for the code generator, because only the generated
+        function needs it.
       * `:rhs` is `nil` until the production is escaped. The engine logically inserts
         and truth-maintains its return value. `nil` or `[]` inserts nothing.
     """
