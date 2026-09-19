@@ -344,6 +344,42 @@ defmodule Rete.QueryParamsTest do
       assert_raise FunctionClauseError, fn -> LiteralHead.rows(session, :tock) end
     end
 
+    # A head is the argument list of a `def`, so a `_`-prefixed name means there what it
+    # means there. It labels a position the query accepts and ignores. It keys nothing, so
+    # the head keys on the rest, and the call still has to match the shape.
+    test "a discarded name in a head labels a position and keys nothing" do
+      defmodule DiscardedHead do
+        use Rete.Ruleset
+
+        defquery rows({_cid, tid})({:rec, cid, tid, amt}), do: {cid, tid, amt}
+      end
+
+      session = run(DiscardedHead, [{:rec, 1, 5, 10}, {:rec, 2, 5, 20}, {:rec, 1, 6, 30}])
+
+      # Keyed on `tid` alone, so the first element of the call is a label and not a key.
+      assert [{1, 5, 10}, {2, 5, 20}] == DiscardedHead.rows(session, {1, 5})
+      assert DiscardedHead.rows(session, {1, 5}) == DiscardedHead.rows(session, {99, 5})
+      assert [{1, 6, 30}] == DiscardedHead.rows(session, {1, 6})
+
+      # The shape still has to match, because the head is still a pattern.
+      assert_raise FunctionClauseError, fn -> DiscardedHead.rows(session, 5) end
+    end
+
+    # A head of nothing but discarded names keys on nothing, in the way a head of literals
+    # does. The arity is what the caller sees.
+    test "a head of discarded names alone takes arguments and keys on nothing" do
+      defmodule AllDiscarded do
+        use Rete.Ruleset
+
+        defquery rows(_cid, _)({:rec, cid}), do: cid
+      end
+
+      session = run(AllDiscarded, [{:rec, 1}, {:rec, 2}])
+
+      assert [rows: 3] == arities(AllDiscarded, [:rows])
+      assert [1, 2] == AllDiscarded.rows(session, :anything, :at_all)
+    end
+
     # `()` and no head make the same statement: this query takes no parameters.
     test "an empty head is a query with no parameters" do
       defmodule EmptyHead do

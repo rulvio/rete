@@ -258,10 +258,11 @@ defmodule Rete.Ruleset do
   A query has the same left hand side as a rule, but it never fires. It holds the matches
   that reached it. Its **body is what the caller gets**, one result per match.
 
-  **The query is a function.** `defquery find_user(...)` also defines `find_user/1,2` in
-  the same module, so you run it by calling it. That is what makes a query addressable,
-  and why two rulesets may each define one of the same name. Use `Rete.Session.query/3`,
-  with `{MyRuleset, :find_user}`, when the query is decided at runtime.
+  **The query is a function.** `defquery find_user(...)` also defines `find_user` in the
+  same module, so you run it by calling it. Its arity is one more than the number of
+  patterns in the head. That is what makes a query addressable, and why two rulesets may
+  each define one of the same name. Use `Rete.Session.query/3`, with
+  `{MyRuleset, :find_user}`, when the query is decided at runtime.
 
   A **head** before the conditions is the argument list of that function. It is a list of
   ordinary Elixir patterns, and a call matches them. The variables they bind are what the
@@ -309,7 +310,8 @@ defmodule Rete.Ruleset do
   Every variable a head binds must be a variable that the left hand side binds, and
   **every** match must carry it. Thus you cannot use a variable that only some branches of
   a disjunction bind. A head that binds nothing, such as `(:tick)`, is allowed: it keys on
-  nothing, and the argument is an assertion at the call site. A rule cannot take
+  nothing, and the argument is an assertion at the call site. A `_`-prefixed name labels a
+  position and keys nothing, in the way that it does in any `def`. A rule cannot take
   parameters, because you never read a rule. See `docs/dsl.md`.
   """
   defmacro defquery(decl, body) do

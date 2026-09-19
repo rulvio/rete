@@ -669,6 +669,17 @@ the call, because the query is an ordinary function.
 A head may bind nothing. `defquery ping(:tick)(...)` keys on nothing and answers with
 every match. The argument is then an assertion at the call site, and nothing more.
 
+A `_`-prefixed name in a head behaves as it does in any `def`. It labels a position that
+the query accepts and ignores, and it keys nothing:
+
+```elixir
+defquery rows({_cid, tid})({:rec, cid, tid, amt}), do: {cid, tid, amt}
+
+MyRuleset.rows(session, {1, 5})  # keyed on tid alone, so `1` is a label and not a key
+```
+
+Rename it to `cid` to key on it. A guard cannot read it, because the pattern discards it.
+
 A query has one head. Thus two ways to read the same conditions are two queries. Together
 they cost one network: the engine matches the conditions above them one time, whether you
 write one query or four.

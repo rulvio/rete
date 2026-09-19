@@ -1934,8 +1934,18 @@ defmodule Rete.EngineTest do
       error = assert_raise ArgumentError, fn -> Session.query(session, :flagged_for) end
 
       assert error.message =~ "a query is named by {module, name}"
-      assert error.message =~ "Rete.EngineTest.Queries.flagged_for(session, params)"
+      assert error.message =~ "Rete.EngineTest.Queries.flagged_for(session)"
       assert error.message =~ "{Rete.EngineTest.Queries, :flagged_for}"
+    end
+
+    # The head decides what the function takes, and the head does not reach the network.
+    # So the suggestion names the session and leaves the rest to the declaration.
+    test "a bare name for a query with a head points at its head" do
+      session = run([Queries], [])
+
+      error = assert_raise ArgumentError, fn -> Session.query(session, :flagged_by) end
+
+      assert error.message =~ "Rete.EngineTest.Queries.flagged_by(session, <the head>)"
     end
 
     test "a bare name nothing defines says so rather than guessing" do

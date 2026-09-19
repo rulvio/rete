@@ -270,8 +270,8 @@ defmodule Bench do
     record_failure(label)
 
     IO.puts(
-      "  \e[31m✗\e[0m superlinear: fit ~n^#{fmt(fit)}, expected about n^1 " <>
-        "(worst pair ~n^#{fmt(worst)})"
+      "  \e[31m✗\e[0m superlinear: fit ~n^#{fmt(fit)}, over the bound of " <>
+        "n^#{fmt(@linear_fit)} (worst pair ~n^#{fmt(worst)})"
     )
   end
 
@@ -279,8 +279,8 @@ defmodule Bench do
     record_failure(label)
 
     IO.puts(
-      "  \e[31m✗\e[0m the top end is steeper than the fit: last pair " <>
-        "~n^#{fmt(last)}, fit ~n^#{fmt(fit)}"
+      "  \e[31m✗\e[0m the top end is superlinear: last pair ~n^#{fmt(last)}, over the " <>
+        "bound of n^#{fmt(@linear_last)} (fit ~n^#{fmt(fit)})"
     )
   end
 

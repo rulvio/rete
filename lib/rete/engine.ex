@@ -279,12 +279,17 @@ defmodule Rete.Engine do
   Runs a query: one result per match, computed by the query's body.
 
   A query is named by the `{module, name}` pair it was defined under. `defquery
-  summary(...)` also defines `summary/2` in its own module. `MyRuleset.summary(session,
-  params)` is the readable form of this call.
+  summary(...)` also defines `summary` in its own module, and calling that is the readable
+  form of this call.
 
-  `params` gives a value for every parameter of the head of the query, and for no other
-  name. The engine keys the matches on those parameters, so this is a map lookup and not a
-  scan. A query with no head takes no parameters, and it answers with every match.
+  `params` gives a value for every binding that the head of the query makes, and for no
+  other name. The engine keys the matches on those bindings, so this is a map lookup and
+  not a scan. A query with no head takes no parameters, and it answers with every match.
+
+  **This takes the bindings, and not the head.** The head of a query is a list of patterns,
+  and the generated function matches them. This call is dispatched by `{module, name}` at
+  run time, so it cannot know those patterns. For a head of `({cid, tid})`, the generated
+  function takes `{1, 2}` and this one takes `%{cid: 1, tid: 2}`.
 
   A parameter matches a binding by **term equality**, in the same way as a map key. `1` and
   `1.0` are therefore different parameter values, but `==` reports that they are equal.
@@ -313,7 +318,7 @@ defmodule Rete.Engine do
     suggestions =
       for {module, ^name} = ref <- Network.query_refs(state.network),
           do:
-            "    #{inspect(module)}.#{name}(session, params)\n" <>
+            "    #{inspect(module)}.#{name}(#{call_args(state, ref)})\n" <>
               "    Rete.Session.query(session, #{inspect(ref)}, params)"
 
     detail =
@@ -324,6 +329,16 @@ defmodule Rete.Engine do
 
     "a query is named by {module, name}, not by #{inspect(name)} alone — " <>
       "two rulesets may each define one. " <> detail
+  end
+
+  # The head of a query decides what its function takes, and the head does not reach the
+  # network. So this names the session, and leaves the rest to the declaration. A query
+  # with no parameters takes the session alone, and that much is known here.
+  defp call_args(state, ref) do
+    case Network.query(state.network, ref) do
+      %{params: []} -> "session"
+      _node -> "session, <the head>"
+    end
   end
 
   defp query_node!(state, {module, _name} = ref) do

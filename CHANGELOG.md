@@ -72,6 +72,11 @@ The compiler checks the call, and an editor completes it. A call that does not m
   every match. The argument is an assertion at the call site. Before, a head took a bare
   variable and nothing else.
 
+* **A `_`-prefixed name in a head labels a position and keys nothing.** It behaves as it
+  does in any `def`. `defquery rows({_cid, tid})(...)` keys on `tid` alone, and `_cid`
+  names the other element of the tuple for a reader. A guard cannot read it, because the
+  pattern discards it.
+
 * **`Rete.Session.query/3` is unchanged, and it now differs from the generated function.**
   It is dispatched by `{module, name}` while the program runs, so it cannot know the head
   pattern. It keeps taking the bindings as a keyword list or a map, and it keeps the check
