@@ -479,6 +479,41 @@ defmodule Rete.QueryParamsTest do
       assert [] == Guarded.ordered(session, 3, 2)
     end
 
+    # The guards above all read one condition, so they lift into an alpha. This one reads
+    # two, so `Rete.DSL.Bindings` has to leave it as a join filter. That is the other half
+    # of the split, and a head guard reaches it by the same path a rule level guard does.
+    test "a head guard that reads two conditions becomes a join filter" do
+      defmodule JoinGuard do
+        use Rete.Ruleset
+
+        defquery pair(cid, tid when cid < tid)({:a, cid}, {:b, tid}), do: {cid, tid}
+      end
+
+      session = run(JoinGuard, [{:a, 1}, {:a, 5}, {:b, 3}, {:b, 9}])
+
+      assert [{1, 3}] == JoinGuard.pair(session, 1, 3)
+      assert [{5, 9}] == JoinGuard.pair(session, 5, 9)
+      assert [] == JoinGuard.pair(session, 5, 3)
+      assert [] == Session.query(session, {JoinGuard, :pair}, cid: 5, tid: 3)
+    end
+
+    # A head guard sits with the rest of the left hand side, so a gate downstream of it
+    # does not change what it does.
+    test "a head guard coexists with a negation and with a collection" do
+      defmodule GatedGuard do
+        use Rete.Ruleset
+
+        defquery open(cid when cid > 0)({:a, cid}, {:not, [{:blocked, cid}]}), do: cid
+        defquery sized(cid when cid > 0)({:a, cid}, xs = [{:b, cid, _n}]), do: {cid, length(xs)}
+      end
+
+      session = run(GatedGuard, [{:a, 1}, {:a, 2}, {:blocked, 2}, {:b, 1, 10}, {:b, 1, 20}])
+
+      assert [1] == GatedGuard.open(session, 1)
+      assert [] == GatedGuard.open(session, 2)
+      assert [{1, 2}] == GatedGuard.sized(session, 1)
+    end
+
     test "two guards both apply" do
       session = run(Guarded, [{:rec, 1, 2, 10}, {:rec, 1, 0, 20}])
 
