@@ -278,26 +278,37 @@ its own. See the empty-collection rule in [docs/dsl.md](docs/dsl.md) for why.
 ### Ask why
 
 ```elixir
-Rete.Inspect.explain(session, {:dormant, "Ada"})
-#=> [
-#     %{
-#       fact: {:dormant, "Ada"},
-#       rule: :dormant,
-#       origin: :derived,
-#       bindings: %{cid: 1, name: "Ada"},
-#       supports: [%{fact: {:customer, 1, "Ada"}, rule: nil}]
-#     }
-#   ]
+Rete.Inspect.explain(session, {Retail, :dormant})
+#=> %{
+#     rule: :dormant,
+#     module: Retail,
+#     type: :rule,
+#     activations: [
+#       %{
+#         bindings: %{cid: 1, name: "Ada"},
+#         matches: [
+#           %{fact: {:customer, 1, "Ada"}, origin: :asserted, from: [], members: nil}
+#         ],
+#         inserted: [{:dormant, "Ada"}]
+#       }
+#     ]
+#   }
 ```
 
-Each entry is one independent support. A fact concluded twice needs both supports to go
-before the fact itself goes.
+One activation is one match the rule fired on. Each entry of `:matches` says where its fact
+came from. `:from` names the rules that concluded it, so you read a chain by following that
+pair to its own entry. It is a list, because a fact concluded twice has two independent
+supports, and both must go before the fact itself goes.
 
-`Rete.Inspect` also has:
+A collection reports the gathered list under `origin: :gathered`, with each member described
+in `:members`. That is what the rule received.
 
-* `fired/2` — what has concluded something
-* `why_not/2` — how far a rule got, condition by condition
-* `collection/3`
+`Rete.Inspect` has one other function:
+
+* `why_not/1,2` — how far a rule got, condition by condition
+
+Both take a `{module, name}` pair for one rule or query. Call either with the session alone
+for every rule and query at once. Both need a session you have fired.
 
 For history instead of a snapshot, attach `Rete.Listener.Collect` or `Rete.Listener.Trace`.
 
@@ -326,7 +337,7 @@ Seven modules are public. They are the ones the examples above use:
 | `Rete` | aggregating rule, expression and taxonomy data across ruleset modules |
 | `Rete.Ruleset` | `defrule`, `defquery`, `derive`, `underive` |
 | `Rete.Session` | building a session, inserting, retracting, firing, querying |
-| `Rete.Inspect` | `explain/2`, `fired/2`, `why_not/2`, `collection/3` |
+| `Rete.Inspect` | `explain/1,2`, `why_not/1,2` |
 | `Rete.Listener` (+ `.Collect`, `.Trace`) | watching what a session does |
 
 **Everything else is internal**: the DSL front end, the IR, the compiler, the network, the

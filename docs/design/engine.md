@@ -64,8 +64,9 @@ one that catches people out, because an empty result at least looks wrong.
 
 `Rete.Session.settled?/1` reports an empty queue. A query does not raise on a full one,
 because the last settled answer is a true answer about some state of the session.
-`Rete.Inspect.why_not/2` and `collection/3` do raise, because they answer *why* a rule did
-not match, and an answer about the wrong state of the session is false to that question.
+`Rete.Inspect.why_not/1,2` and `explain/1,2` do raise, because they answer *why* a rule did
+or did not match, and an answer about the wrong state of the session is false to that
+question.
 See `observability.md` §2 for the split, and §12 for why the query side answers `[]`
 rather than raising.
 
@@ -157,12 +158,13 @@ invalidating one of them does not make the fact false. `elements` and `tokens` a
 for the same reason. The engine retracts them one occurrence at a time.
 
 **`insertions` is the provenance graph.** "This match at this production inserted these
-facts" — read backwards, this is exactly the edge that `Rete.Inspect.explain/2` walks. No
+facts" — read backwards, this is exactly the edge that `Rete.Inspect.explain/1,2` walks. No
 separate bookkeeping exists for explanation.
 
 `inserters` is that same relation indexed the other way, and the one derived thing in here.
 Both its readers ask "which matches inserted *this fact*". `well_founded/3` asks on every
-conclusion already present, and `Rete.Inspect.derivations/2` asks per fact. Answering from
+conclusion already present, and `Rete.Inspect` asks per matched fact when it names where
+that fact came from. Answering from
 `insertions` costs a pass over every insertion record, which made two rules concluding one
 fact quadratic. Two rules concluding one fact is the ordinary shape of truth maintenance,
 not a pathology.
@@ -391,7 +393,7 @@ nor a call that names it.
 A query reads propagated state, so it answers **as of the most recent fire**. Nothing
 propagates before `fire_rules/2`, so a session nobody fired answers `[]`, and a session
 fired and then inserted into answers from before that insert. A query does not raise on
-either. `Rete.Inspect.why_not/2` does. See §2.
+either. `Rete.Inspect.why_not/1,2` does. See §2.
 
 ## 10. What is asserted about all of this
 
@@ -647,7 +649,7 @@ the rule instead.
   So the engine reports two things instead, and neither costs anything.
   `Rete.Session.settled?/1` says that work is waiting, and not what it is.
   `Rete.Listener` reports each activation as it is added and as it fires, which is the same
-  information at the moment it stops being a guess. `Rete.Inspect.why_not/2` answers the
+  information at the moment it stops being a guess. `Rete.Inspect.why_not/1,2` answers the
   question after the fact, on a settled session.
 
   `Rete.Session.pending/1` was the function that tried the other way, and 0.5.0 removed it.

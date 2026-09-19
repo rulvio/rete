@@ -18,9 +18,9 @@ defmodule Rete.Memory do
 
   `inserters` is not a memory. It holds nothing `insertions` does not, indexed the other way,
   for the two readers that ask "which matches inserted *this fact*":
-  `Rete.Engine.well_founded/3` on a conclusion already present, and
-  `Rete.Inspect.derivations/2`. Answering from `insertions` costs a pass over every insertion
-  record, which made two rules concluding one fact quadratic.
+  `Rete.Engine.well_founded/3` on a conclusion already present, and `Rete.Inspect.explain/1,2`
+  when it names where a matched fact came from. Answering from `insertions` costs a pass over
+  every insertion record, which made two rules concluding one fact quadratic.
 
   **It is `nil` until something needs it.** A ruleset where no rule re-concludes never
   consults it, so `index_inserters/1` builds it on first use and everything after is

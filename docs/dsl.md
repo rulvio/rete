@@ -173,8 +173,8 @@ nothing inserted. It never fires again, however much you insert afterward.
 
 Its conclusion rests on the root token instead of on a fact. So retracting everything you
 inserted leaves the conclusion in place. This is the one conclusion
-`Rete.Session.retract/2` cannot reach. `Rete.Inspect.explain/2` reports it as `:derived`
-with no supports.
+`Rete.Session.retract/2` cannot reach. `Rete.Inspect.explain/2` reports one activation for
+the rule, with no matches behind it.
 
 Salience applies as usual. So a rule with no conditions can run before the rest of the
 ruleset, and seed a fact the other rules match on.
@@ -1142,7 +1142,7 @@ defrule flag({:or, [{:order, cid, amt}, {:ticket, cid}]}) do
 end
 ```
 
-If you wanted the rules scheduled separately, or told apart in `Rete.Inspect.fired/2`,
+If you wanted the rules scheduled separately, or told apart in `Rete.Inspect.explain/1`,
 give them different names instead. That is what a name is for.
 
 ### Others worth knowing

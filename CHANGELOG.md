@@ -109,19 +109,51 @@ The compiler checks the call, and an editor completes it. A call that does not m
   head itself is a list of patterns, and it stays in `:__ast__` for the code generator. No
   runtime structure changed, so the figures for what a head costs and saves still hold.
 
+* **`Rete.Inspect` is two functions, `explain/1,2` and `why_not/1,2`.** Both are addressed
+  by a `{module, name}` pair, which is the pair you wrote in `defrule`. Call either with the
+  session alone for every rule and query at once. Both need a session you have fired.
+
+* **`explain` reports a rule, and no longer a fact.** `explain(session, fact)` walked
+  provenance recursively. `explain(session, {module, name})` reports every match the rule
+  fired on, the facts behind each one, and what it concluded. Provenance is one level deep
+  now: each matched fact carries `:origin` and `:from`, and `:from` is the **list** of rules
+  that concluded it. You read a chain by following one of those pairs to its own entry. A
+  tree repeated the same subtree under everything resting on it, and needed a cycle guard
+  for a conclusion that supports itself.
+
+* **`why_not` reports the rule it is about.** It returns `%{rule:, module:, chain:}`, where
+  `:chain` is the node list it used to return on its own. This is what lets `why_not/1`
+  report every rule in one list.
+
+### Removed
+
+* **`fired/2`, from `Rete.Inspect`.** `explain(session)` answers the same question and
+  more. It reads the same `memory.insertions`, keyed by rule instead of flattened, and it
+  reports the rules that concluded nothing as well. The `generated: true` option is gone
+  with it: the arity-1 forms leave generated negation helpers out, and naming one
+  explicitly still works.
+
+* **`collection/3`, from `Rete.Inspect`.** It took a node id **and a join key**. `why_not`
+  gave you the node id, but nothing public gave you the join key — it is whatever
+  `Rete.DSL.Bindings` classified as `join_bind` for that node, and `Rete.Memory` is
+  internal. A wrong key answered `[]`, which is what "gathered nothing" also answered. On a
+  rule joining `[:cid, :kind]`, the natural guess `%{cid: 1}` reported `[]` while the rule
+  had gathered three facts into two collections.
+
+  Nothing is lost. A token records the list the accumulate node handed the rule, already
+  filtered for a collection with a cross-condition guard, so `explain/2` reports it under
+  `origin: :gathered` with each member in `:members`. Keyed by the activation, two
+  activations sharing one join key each report their own collection, which the old call
+  could only answer as their union.
+
 ### Fixed
 
-* **`Rete.Inspect.collection/3` now reads a plain collection.** It read every member as
-  `%Rete.Element{}`. Only a collection with a cross-condition guard stores elements. A
-  plain one stores facts, so the call raised `BadMapError` on the shape the README leads
-  with, `orders = [{:order, cid, _amt}]`. It now reads each of the two shapes the way the
-  node stores it.
-
-* **`Rete.Inspect.collection/3` now reports what a filtered collection gave the rule.** A
-  collection with a cross-condition guard stores candidates, and its filter decides
-  membership for each token. The call reported the candidates, so it named facts that no
-  rule received. A rule that gathered one order out of two was reported as gathering both.
-  The call now applies the filter, in the way the engine applies it.
+* **A collection in an explanation reports what the rule received.** Two defects, both since
+  0.1.0, and both in code that `collection/3` took with it. A plain collection stores facts
+  and a filtered one stores `%Rete.Element{}` candidates. Reading every member as an element
+  raised `BadMapError` on the plain shape, which is the shape the README leads with. Reading
+  a filtered group whole named facts that the filter kept out, so a rule that gathered one
+  order out of two was reported as gathering both.
 
 ## 0.7.0
 

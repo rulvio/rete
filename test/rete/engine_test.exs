@@ -1240,10 +1240,7 @@ defmodule Rete.EngineTest do
 
       assert [{:started, :once}] == derived(session, :started)
 
-      assert 1 ==
-               session
-               |> Rete.Inspect.fired()
-               |> Enum.count(&(&1.rule == :startup))
+      assert %{activations: [_one]} = Rete.Inspect.explain(session, {NoLhs, :startup})
     end
 
     # Its support is the root token, which no retraction reaches. So the one thing
@@ -1255,8 +1252,9 @@ defmodule Rete.EngineTest do
 
       assert [{:started, :once}] == derived(emptied, :started)
 
-      assert [%{origin: :derived, bindings: %{}, supports: []}] =
-               Rete.Inspect.explain(emptied, {:started, :once})
+      # Its one activation rests on the root token, which contributes no matched fact.
+      assert %{activations: [%{bindings: %{}, matches: [], inserted: [{:started, :once}]}]} =
+               Rete.Inspect.explain(emptied, {NoLhs, :startup})
     end
 
     test "a rule with no conditions honors salience and feeds rules below it" do
