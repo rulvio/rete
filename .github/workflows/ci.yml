@@ -115,3 +115,46 @@ jobs:
       - run: mix dialyzer --plt
 
       - run: mix dialyzer --format github
+
+  # The shape check, and the one thing that catches this engine's real failure mode: an
+  # operation that proves quadratic in something a session accumulates. It runs once, on
+  # the current release, because the shape of a scenario does not vary with the Elixir
+  # version.
+  #
+  # An exponent is a ratio between two timings, so a slower or a busier runner cancels out
+  # of it. Measured at 2 and at 4 schedulers, and under 3x CPU oversubscription, where the
+  # worst of the eighteen readings moved from n^1.12 to n^1.13 against a gate of n^1.5.
+  # Wall clock is still asserted on nowhere.
+  bench:
+    name: bench
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        id: beam
+        with:
+          elixir-version: "1.20"
+          otp-version: "29"
+
+      # Its own key rather than the one `quality` writes. Two jobs saving one key is
+      # harmless, and it logs a warning on every run.
+      - name: Restore deps and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-bench-${{ steps.beam.outputs.elixir-version }}-${{ steps.beam.outputs.otp-version }}-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-bench-${{ steps.beam.outputs.elixir-version }}-${{ steps.beam.outputs.otp-version }}-
+
+      - run: mix deps.get
+
+      - run: mix compile --warnings-as-errors
+
+      # One run, and no retry. A scenario that fails once in a while is a scenario sitting
+      # too near the gate, and that is worth knowing about rather than passing on the
+      # second attempt.
+      - run: mix bench

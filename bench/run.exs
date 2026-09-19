@@ -10,7 +10,7 @@
 # k in O(n^k). Around 1.0 is linear and fine. Around 2.0 is quadratic and is a bug
 # unless it is listed as a known gap below.
 #
-# Two numbers decide it, and `verdict/2` says why each one is there. The **fit** is
+# Two numbers decide it, and `verdict/3` says why each one is there. The **fit** is
 # k over every size at once, and it is the verdict. The **last pair** guards the top
 # end, because a fit is an average and it would dilute a scenario that only turns
 # quadratic at the largest size.
@@ -19,10 +19,15 @@
 # the growing heap of the bench process is not measured as the growth of the thing
 # under it. See `time_isolated/1`.
 #
-# Timing is not asserted on and this is not in CI. Wall-clock thresholds on
-# shared runners produce failures that mean nothing, and the number worth
-# watching — the exponent — is stable enough to read by eye and too noisy to
-# gate on.
+# **The exponent gates CI.** A run that finds a superlinear scenario exits non-zero, and
+# `finish/0` names it. An exponent is a ratio between two timings, so a slower or a busier
+# runner cancels out of it: measured at 2 and at 4 schedulers, and under 3x CPU
+# oversubscription, the worst of the eighteen readings moved from n^1.12 to n^1.13 against
+# a gate of n^1.5.
+#
+# **Wall clock is asserted on nowhere.** A duration threshold on a shared runner fails for
+# reasons that mean nothing. Every millisecond figure this prints is there to be read, and
+# not to be compared against a bound.
 
 defmodule Bench do
   @moduledoc false
@@ -45,7 +50,64 @@ defmodule Bench do
       )
     end)
 
-    verdict(results, opts[:expect] || :linear)
+    tally(:scenarios)
+    verdict(label, results, opts[:expect] || :linear)
+  end
+
+  # --- the exit status ----------------------------------------------------------------
+  #
+  # CI runs this, so a scenario that turns superlinear has to fail the build rather than
+  # print a red cross nobody reads.
+  #
+  # Every `scenario/4` call runs in the process of the script. The `(fn -> ... end).()`
+  # wrappers around some of them are ordinary calls, and `time_isolated/1` is the one thing
+  # that spawns. So the counts live in the process dictionary, and no result has to be
+  # threaded back through a thousand lines of call sites.
+
+  @tally :bench_tally
+  @failed :bench_failed
+
+  defp tally(key) do
+    counts = Process.get(@tally, %{})
+    Process.put(@tally, Map.update(counts, key, 1, &(&1 + 1)))
+  end
+
+  defp count(key), do: Process.get(@tally, %{}) |> Map.get(key, 0)
+
+  defp record_failure(label) do
+    Process.put(@failed, [label | Process.get(@failed, [])])
+  end
+
+  @doc false
+  # The last statement of the script. A `?` does not fail: it reports that a scenario has
+  # grown too fast to measure itself, which needs a person to raise its sizes rather than a
+  # red build. A `!` does not fail either, because `expect: {:known, why}` is a decision
+  # somebody recorded.
+  def finish do
+    unjudged = count(:unjudged)
+
+    if unjudged > 0 do
+      IO.puts("\n\e[33m?\e[0m #{unjudged} scenario(s) too fast to judge. Raise their sizes.")
+    end
+
+    case Process.get(@failed, []) |> Enum.reverse() do
+      [] ->
+        IO.puts("\n\e[32m✓\e[0m all #{count(:scenarios)} scenarios are linear")
+
+      labels ->
+        IO.puts(
+          "\n\e[31m✗\e[0m #{length(labels)} of #{count(:scenarios)} scenarios are " <>
+            "not linear:"
+        )
+
+        Enum.each(labels, &IO.puts("  #{&1}"))
+
+        # `System.stop/1` shuts the node down gracefully, so everything above reaches the
+        # terminal. `System.halt/1` is documented as not flushing ports. It is asynchronous,
+        # so the script has to stay alive for it to take effect.
+        System.stop(1)
+        Process.sleep(:infinity)
+    end
   end
 
   # An A/B rather than a shape. `:concurrency` does not change how firing scales, only how
@@ -169,7 +231,7 @@ defmodule Bench do
   @linear_fit 1.5
   @linear_last 1.8
 
-  defp verdict(results, expect) do
+  defp verdict(label, results, expect) do
     ks =
       results
       |> Enum.chunk_every(2, 1, :discard)
@@ -178,10 +240,11 @@ defmodule Bench do
 
     case {ks, expect} do
       {[], _} ->
+        tally(:unjudged)
         IO.puts("  \e[33m?\e[0m too fast to judge — raise the sizes")
 
       {ks, :linear} ->
-        report(fit(results), List.last(ks), Enum.max(ks))
+        report(label, fit(results), List.last(ks), Enum.max(ks))
 
       {ks, {:known, why}} ->
         IO.puts(
@@ -191,21 +254,25 @@ defmodule Bench do
     end
   end
 
-  defp report(fit, _last, worst) when fit >= @linear_fit do
+  defp report(label, fit, _last, worst) when fit >= @linear_fit do
+    record_failure(label)
+
     IO.puts(
       "  \e[31m✗\e[0m superlinear: fit ~n^#{fmt(fit)}, expected about n^1 " <>
         "(worst pair ~n^#{fmt(worst)})"
     )
   end
 
-  defp report(fit, last, _worst) when last >= @linear_last do
+  defp report(label, fit, last, _worst) when last >= @linear_last do
+    record_failure(label)
+
     IO.puts(
       "  \e[31m✗\e[0m the top end is steeper than the fit: last pair " <>
         "~n^#{fmt(last)}, fit ~n^#{fmt(fit)}"
     )
   end
 
-  defp report(fit, _last, worst) do
+  defp report(_label, fit, _last, worst) do
     IO.puts("  \e[32m✓\e[0m linear (fit ~n^#{fmt(fit)}, worst pair ~n^#{fmt(worst)})")
   end
 
@@ -1088,3 +1155,6 @@ IO.puts("")
 
    :ok
  end).()
+
+# Last, because it sets the exit status of the run.
+Bench.finish()

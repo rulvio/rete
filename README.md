@@ -401,7 +401,8 @@ mix credo --strict
 mix dialyzer
 ```
 
-CI runs exactly those, on the declared floor (Elixir 1.18) and on the current release.
+CI runs exactly those, on the declared floor (Elixir 1.18) and on the current release. It
+also runs the command below, once, on the current release.
 
 ```bash
 mix bench
@@ -422,8 +423,18 @@ largest size and turns quadratic there.
 Around `~n^1` is fine. `~n^2` is a bug, unless `docs/design/` already lists it as a known
 gap.
 
-Wall-clock thresholds are not in CI. On shared runners, they fail for reasons that mean
-nothing.
+**The exponent gates CI.** A run that finds a superlinear scenario exits non-zero and names
+it. This is safe to gate on because an exponent is a ratio between two timings, so a slower
+or a busier runner cancels out of it. Run `mix bench` under `ELIXIR_ERL_OPTIONS="+S 2:2"`,
+or against a loaded machine, and read the same numbers back.
+
+CI runs the benchmark **once**, and it does not retry. A scenario that fails now and then
+is a scenario sitting too near the gate. Move it away from the gate, or record why it
+belongs there.
+
+**Wall-clock thresholds are asserted on nowhere.** On shared runners they fail for reasons
+that mean nothing. Every duration `mix bench` prints is there to be read, and not to be
+compared against a bound.
 
 ## Acknowledgments
 
