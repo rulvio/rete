@@ -36,10 +36,54 @@ defmodule Rete.ObservabilityTest do
     end
   end
 
+  # The two shapes a collection compiles to. `collection/3` reads each of them
+  # differently, because they store different things. See `Rete.Memory.groups/3`.
+  defmodule Collections do
+    use Rete.Ruleset
+
+    # No cross-condition guard, so this compiles to an Accumulate, which stores facts.
+    defrule spend({:customer, cid, _name}, orders = [{:order, cid, _amt}]) do
+      {:spend, cid, length(orders)}
+    end
+
+    # The guard reads `limit` from another condition, so this compiles to an
+    # AccumulateJoin, which stores elements and decides membership for each token.
+    defrule big(
+              {:threshold, limit},
+              {:vip, cid, _name},
+              orders = [{:sale, cid, amt} when amt > limit]
+            ) do
+      {:big, cid, length(orders)}
+    end
+  end
+
   @facts [{:order, 1, 250}, {:gold, 2}, {:spender, 2}, {:cust, 3}]
 
   defp session(facts \\ @facts) do
     [Rules] |> Session.new() |> Session.insert(facts) |> Session.fire_rules()
+  end
+
+  defp plain_collection do
+    [Collections]
+    |> Session.new()
+    |> Session.insert([{:customer, 1, "Ada"}, {:order, 1, 250}, {:order, 1, 40}])
+    |> Session.fire_rules()
+  end
+
+  defp filtered_collection do
+    [Collections]
+    |> Session.new()
+    |> Session.insert([{:threshold, 100}, {:vip, 1, "Ada"}, {:sale, 1, 250}, {:sale, 1, 40}])
+    |> Session.fire_rules()
+  end
+
+  # The id of the accumulate node on a rule's chain, read the way a caller of
+  # `collection/3` would read it.
+  defp accumulate_node(session, rule) do
+    session
+    |> Inspect.why_not({Collections, rule})
+    |> Enum.find(&String.starts_with?(&1.kind, "accumulate"))
+    |> Map.fetch!(:node)
   end
 
   defp observed(facts \\ @facts) do
@@ -456,7 +500,88 @@ defmodule Rete.ObservabilityTest do
       session = Session.fire_rules(unfired())
 
       assert [_ | _] = Inspect.why_not(session, {Rules, :flag})
-      assert [] == Inspect.collection(session, 1, %{})
+
+      collections = plain_collection()
+      assert [] == Inspect.collection(collections, accumulate_node(collections, :spend), %{})
+    end
+  end
+
+  # --- what a collection gathered ----------------------------------------------------------
+
+  describe "collection/3" do
+    # A plain collection stores facts, not elements. Reading a member as `&1.fact` raised
+    # a BadMapError on the shape the README leads with.
+    test "a plain collection answers with the facts it gathered" do
+      session = plain_collection()
+
+      assert [{:order, 1, 40}, {:order, 1, 250}] ==
+               session
+               |> Inspect.collection(accumulate_node(session, :spend), %{cid: 1})
+               |> Enum.sort()
+
+      assert {:spend, 1, 2} in Session.facts(session)
+    end
+
+    # The stored group is only a candidate set here. Reporting it whole would name a fact
+    # that the filter kept out, so the diagnostic would describe a larger collection than
+    # the rule received.
+    test "a filtered collection answers with what passed its filter" do
+      session = filtered_collection()
+
+      assert [{:sale, 1, 250}] ==
+               Inspect.collection(session, accumulate_node(session, :big), %{cid: 1})
+
+      assert {:big, 1, 1} in Session.facts(session)
+    end
+
+    # The filter decides membership for each token, so two thresholds over one customer
+    # give two tokens under one join key, each seeing a different set. A join key is all
+    # this call takes, so it cannot answer for one of them. It answers with the union, and
+    # `why_not/2` reports the token count that explains why.
+    test "two tokens under one join key answer with the union of what each sees" do
+      session =
+        [Collections]
+        |> Session.new()
+        |> Session.insert([
+          {:threshold, 100},
+          {:threshold, 200},
+          {:vip, 1, "Ada"},
+          {:sale, 1, 250},
+          {:sale, 1, 150},
+          {:sale, 1, 40}
+        ])
+        |> Session.fire_rules()
+
+      node = accumulate_node(session, :big)
+
+      # The token for 100 sees 250 and 150. The token for 200 sees 250 alone. Neither sees
+      # 40, so the union leaves it out.
+      assert [{:sale, 1, 150}, {:sale, 1, 250}] ==
+               session |> Inspect.collection(node, %{cid: 1}) |> Enum.sort()
+
+      assert {:big, 1, 2} in Session.facts(session)
+      assert {:big, 1, 1} in Session.facts(session)
+
+      assert 2 ==
+               session
+               |> Inspect.why_not({Collections, :big})
+               |> Enum.find(&(&1.node == node))
+               |> Map.fetch!(:tokens)
+    end
+
+    test "an unknown join key gathers nothing" do
+      session = plain_collection()
+
+      assert [] == Inspect.collection(session, accumulate_node(session, :spend), %{cid: 99})
+    end
+
+    # Safe to call with any node id. Only an accumulate node holds a collection, so there
+    # is nothing to report for the rest.
+    test "a node that holds no collection gathers nothing" do
+      session = plain_collection()
+
+      assert [] == Inspect.collection(session, 1, %{cid: 1})
+      assert [] == Inspect.collection(session, 9999, %{cid: 1})
     end
   end
 

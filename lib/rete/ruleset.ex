@@ -19,7 +19,7 @@ defmodule Rete.Ruleset do
 
   Using this module makes the ruleset expose `get_rule_data/0`, `get_expr_data/0`,
   `get_taxo_data/0`, and `get_version/0`. `Rete` aggregates these across modules. It also
-  defines `<query_name>/1,2` for each query, which is the public face of a query, plus the
+  defines `<query_name>/(N+1)` for each query, which is the public face of a query, plus the
   `__rhs_<name>__/2` and `__<expr_code>__/1,2` machinery the engine calls.
 
   Every `defrule` and `defquery` expands by running the front end pipeline:
@@ -126,8 +126,13 @@ defmodule Rete.Ruleset do
     end
   end
 
-  defp signature(%IR.Production{name: name, params: params}) do
-    "defquery #{name}(#{Enum.join(params, ", ")})"
+  # Renders the head as it was written, not as a list of names. A head is a pattern now, so
+  # `defquery rows([:cid])` would name nothing the author could find in their source.
+  defp signature(%IR.Production{name: name, params: params, __ast__: ast}) do
+    case ast && Map.get(ast, :head) do
+      nil -> "defquery #{name}(#{Enum.join(params, ", ")})"
+      head -> "defquery #{name}(#{Enum.map_join(head, ", ", &Macro.to_string/1)})"
+    end
   end
 
   # Keeps the variable AST the parser collected, so the RHS pattern carries the source
@@ -253,22 +258,50 @@ defmodule Rete.Ruleset do
   A query has the same left hand side as a rule, but it never fires. It holds the matches
   that reached it. Its **body is what the caller gets**, one result per match.
 
-  **The query is a function.** `defquery find_user(...)` also defines `find_user/1,2` in
-  the same module, so you run it by calling it. That is what makes a query addressable,
-  and why two rulesets may each define one of the same name. Use `Rete.Session.query/3`,
-  with `{MyRuleset, :find_user}`, when the query is decided at runtime.
+  **The query is a function.** `defquery find_user(...)` also defines `find_user` in the
+  same module, so you run it by calling it. Its arity is one more than the number of
+  patterns in the head. That is what makes a query addressable, and why two rulesets may
+  each define one of the same name. Use `Rete.Session.query/3`, with
+  `{MyRuleset, :find_user}`, when the query is decided at runtime.
 
-  A **head** before the conditions declares the parameters of the query. The engine keys
-  the matches of the query on those parameters, and they are the only way to read it.
+  A **head** before the conditions is the argument list of that function. It is a list of
+  ordinary Elixir patterns, and a call matches them. The variables they bind are what the
+  engine keys the matches on, and they are the only way to read the query.
 
       defquery find_user(id)({:user, id, name}) do
         {id, name}
       end
-      #=> MyRuleset.find_user(session, id: 1)  [{1, "Ada"}]
+      #=> MyRuleset.find_user(session, 1)  [{1, "Ada"}]
 
-  A call must name **every** parameter, and no other name. A read is thus one map lookup,
-  and not a scan. A partial key, an extra key or an unknown key raises an error. It does
-  not answer `[]`.
+  Any pattern works, so you choose the shape a caller writes:
+
+      defquery by_pair(cid, tid)(...)          #=> by_pair(session, 1, 2)
+      defquery by_tuple({cid, tid})(...)       #=> by_tuple(session, {1, 2})
+      defquery by_map(%{cid: cid})(...)        #=> by_map(session, %{cid: 1})
+      defquery by_list(cid: cid, tid: tid)(...) #=> by_list(session, cid: 1, tid: 2)
+
+  The session is the first argument, so a query pipes. A head of N patterns gives
+  `name/(N+1)`. A call that does not match raises `FunctionClauseError`, in the way that
+  any other function does. Because the head is a pattern, a keyword head matches in the
+  order that you declared, and a map head accepts a call with extra keys.
+
+  A pattern may carry a **guard**:
+
+      defquery big_sales(cid, amt when amt > 1000)({:sale, cid, amt}) do
+        {cid, amt}
+      end
+
+  The guard becomes a test on the left hand side, and nothing else. So the query holds no
+  match that it rejects, and `big_sales(session, 1, 5)` answers `[]`. This is sound because
+  a query is read by term equality: the guard holds of an argument exactly when it holds of
+  the binding that the argument matches.
+
+  The guard is **not** on the generated clause. It would reject the same calls, so it would
+  add nothing, and it would have to be a valid Elixir guard. As a test it may call anything
+  a rule body may call, such as `name when String.length(name) > 3`.
+
+  A head guard reads only what the head binds. Write a guard over the other bindings as a
+  rule level guard instead, after the conditions.
 
   A query **without** a head takes no parameters. It answers with every match that it
   holds, in arrival order. This is the default, and it costs nothing more.
@@ -278,10 +311,12 @@ defmodule Rete.Ruleset do
       end
       #=> MyRuleset.all_users(session)  [{1, "Ada"}, {2, "Grace"}]
 
-  A parameter must be a variable that the left hand side binds. **Every** match must also
-  carry that variable. Thus you cannot use a variable that only some branches of a
-  disjunction bind. A rule cannot take parameters, because you never read a rule. See
-  `docs/dsl.md`.
+  Every variable a head binds must be a variable that the left hand side binds, and
+  **every** match must carry it. Thus you cannot use a variable that only some branches of
+  a disjunction bind. A head that binds nothing, such as `(:tick)`, is allowed: it keys on
+  nothing, and the argument is an assertion at the call site. A `_`-prefixed name labels a
+  position and keys nothing, in the way that it does in any `def`. A rule cannot take
+  parameters, because you never read a rule. See `docs/dsl.md`.
   """
   defmacro defquery(decl, body) do
     defproduction(__CALLER__, decl, body, :query)

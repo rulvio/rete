@@ -163,15 +163,22 @@ defmodule Rete.IR do
     A rule-level guard produces this — `defrule r(...) when <guard> do` — and so do
     guards lifted out of a condition, when they only reference variables bound upstream.
     `:bind` is what the guard **reads**, not what it introduces.
+
+    `:source` records which of the two the author wrote, so that a message about the guard
+    names the construct they can find in their file. The advice differs as well. A head
+    guard reads only what the head binds, so it cannot move onto a condition the way a rule
+    level guard can. It is compile-time only, in the way `:__ast__` is, and
+    `Rete.IR.escape/1` drops it.
     """
 
     @type t :: %__MODULE__{
             bind: [atom()],
             expr: Rete.IR.Expr.t(),
+            source: :rule | :head,
             __ast__: %{guard: Macro.t(), bind: %{atom() => Macro.t()}} | nil
           }
 
-    defstruct [:bind, :expr, :__ast__]
+    defstruct [:bind, :expr, :__ast__, source: :rule]
   end
 
   defmodule Gate do
@@ -245,10 +252,11 @@ defmodule Rete.IR do
         negation's variables, and it is the *union* over a disjunction's branches. A
         variable only some branches bind is not in every token, so the RHS reads it
         defensively.
-      * `:params` is the head of a query: the bindings that key its matches. It is always
+      * `:params` is what the head of a query binds: the keys of its matches. It is always
         `[]` on a rule. Unlike `:bind`, it holds only *guaranteed* bindings, which are the
-        keys that every match carries. It keeps declaration order, because that is the
-        order in which an error message about a call names the parameters.
+        keys that every match carries. It is sorted. The head itself is a list of patterns,
+        and it stays in `__ast__.head` for the code generator, because only the generated
+        function needs it.
       * `:rhs` is `nil` until the production is escaped. The engine logically inserts
         and truth-maintains its return value. `nil` or `[]` inserts nothing.
     """

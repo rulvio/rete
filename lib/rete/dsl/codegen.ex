@@ -369,26 +369,47 @@ defmodule Rete.DSL.Codegen do
   @doc """
   The quoted definition of a query's own function, or `nil` for a rule.
 
-  `defquery summary(...)` defines `summary/1` and `summary/2`, so you run a query by
-  calling it:
+  The head of the query is the argument list, so you run a query by calling it in the shape
+  that you declared:
 
-      MyRuleset.summary(session)
-      MyRuleset.summary(session, cid: 1)
+      defquery summary({:total, cid, n})           #=> MyRuleset.summary(session)
+      defquery by_customer(cid)({:total, cid, n})  #=> MyRuleset.by_customer(session, 1)
+      defquery pair({cid, n})({:total, cid, n})    #=> MyRuleset.pair(session, {1, 2})
 
-  It delegates to `Rete.Session.query/3`, with `{__MODULE__, name}`. This is what lets
-  two rulesets use the same query name. The pair is the identity, and the caller writes
-  the module. The caller does not depend on a bare name being unique.
+  A head of N patterns gives `name/(N+1)`. The session is the first argument, so a query
+  pipes. A call that does not match the head raises `FunctionClauseError`, in the way that
+  any other function does.
+
+  **A head guard does not reach the clause.** It is a `Rete.IR.Test` on the left hand side,
+  so the query node holds no match that fails it, and a call that names a rejected value
+  finds nothing and answers `[]`. A guard on the clause would reject the same calls, so it
+  would add no answer that this one gets wrong. It would cost the guard its language: a
+  test on the left hand side is a compiled function and may call anything, where a guard on
+  a clause may not. See `Rete.DSL.Parser` and `docs/design/ir.md` §2.
+
+  The body builds the key map from the variables the head bound, and hands it to
+  `Rete.Session.query/3` with `{__MODULE__, name}`. This is what lets two rulesets use the
+  same query name. The pair is the identity, and the caller writes the module. The caller
+  does not depend on a bare name being unique.
   """
   @spec query_def(IR.Production.t()) :: Macro.t() | nil
-  def query_def(%IR.Production{type: :query, name: name}) do
+  def query_def(%IR.Production{type: :query, name: name, __ast__: ast}) do
+    head = Map.get(ast, :head, [])
+    key_map = key_map(Map.get(ast, :head_bind, %{}))
+    call = quote(do: Rete.Session.query(session, {__MODULE__, unquote(name)}, unquote(key_map)))
+
     quote do
-      Kernel.def unquote(name)(session, params \\ []) do
-        Rete.Session.query(session, {__MODULE__, unquote(name)}, params)
-      end
+      Kernel.def(unquote(name)(session, unquote_splicing(head)), do: unquote(call))
     end
   end
 
   def query_def(%IR.Production{}), do: nil
+
+  # The map the engine keys on, built from the variables the head patterns bound. Sorted by
+  # name, so that one declaration always generates one piece of code.
+  defp key_map(head_bind) do
+    {:%{}, [], head_bind |> Enum.sort_by(&elem(&1, 0)) |> Enum.map(fn {k, ast} -> {k, ast} end)}
+  end
 
   @doc """
   The quoted definitions of every expression function of a production.

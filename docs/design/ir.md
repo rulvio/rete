@@ -73,7 +73,8 @@ join keys. Normalization must therefore run first.
 ### What a ruleset module ends up containing
 
 * `__<code>__/1` and `__<code>__/2` - one function per distinct expression,
-* `<query_name>/1,2` - one per query, running it against a session,
+* `<query_name>/(N+1)` - one per query, running it against a session. `N` is the number
+  of patterns in its head, and it is `0` for a query with no head,
 * `__rhs_<name>__/2` - the RHS of each production,
 * `get_rule_data/0`, `get_expr_data/0`, `get_taxo_data/0`, `get_version/0`.
 
@@ -94,11 +95,11 @@ alpha expressions, join filters, and tests alike, deduplicated by code.
 | `:hash` | `integer` | W1 | `:erlang.phash2([decl_ast, body_ast])` after module-attribute qualification. `decl_ast` includes the head |
 | `:opts` | `keyword` | W1 | from the leading options map, e.g. `[salience: 100]`; `[]` if absent |
 | `:bind` | `[atom]`, **sorted** | W2c | every variable the LHS can make visible to the RHS, including fact/collection bindings; see below |
-| `:params` | `[atom]`, **declaration order** | W1, checked by W2c | the head of a query: the bindings that key its matches. `[]` on a rule; see below |
+| `:params` | `[atom]`, **sorted** | W1, checked by W2c | what the head of a query binds: the keys of its matches. `[]` on a rule. The head itself is a list of patterns, and it stays in `:__ast__`. See below |
 | `:lhs` | `t:Rete.IR.lhs/0` | W1, rewritten by W2 | ordered condition list |
 | `:rhs` | `(hash, bindings_map -> facts) \| nil` | `escape/1` | `nil` before escaping |
 | `:module` | `module` | W1 | defining module |
-| `:__ast__` | `%{bind: %{atom => quoted}, decl: quoted, body: quoted}` | W1, narrowed by W2c | compile-time only, dropped by `escape/1` |
+| `:__ast__` | `%{bind: %{atom => quoted}, decl: quoted, body: quoted}` | W1, narrowed by W2c | compile-time only, dropped by `escape/1`. A query with a head adds `head` (the patterns) and `head_bind` (`%{atom => quoted}`). A head guard is not here — it is on the `Rete.IR.Test` it became |
 
 #### `:bind` is a product of the pipeline
 
@@ -150,10 +151,10 @@ downstream, so there is nothing to hand the RHS.
 
 #### `:params` is checked against the same two halves
 
-The parser reads `:params` from the head as you wrote it. It checks only the shape: bare
-variables, no repeated name, and not on a rule. For the reason above, the parser cannot
-know yet whether each name is a binding. `Rete.Ruleset.build/4` therefore checks this where
-it recomputes `:bind`.
+The head is a list of patterns. The parser runs `Rete.DSL.Vars.pattern_vars/1` over them
+and takes the sorted keys as `:params`. It checks only that the head is not on a rule. For
+the reason above, the parser cannot know yet whether each name is a binding.
+`Rete.Ruleset.build/4` therefore checks this where it recomputes `:bind`.
 
 A parameter must be **guaranteed**. It is not sufficient for it to be in `:bind`. A
 parameter keys every match that the query holds. If a token does not carry one parameter,
@@ -161,9 +162,41 @@ parameter keys every match that the query holds. If a token does not carry one p
 because a call always supplies every parameter. The engine therefore rejects an optional
 binding as a parameter, and the message names the disjunction.
 
-`:params` keeps declaration order. It is not sorted, because this is the order in which
-each message about the query names the parameters. The order does not change the key:
-`Token.join_key/2` returns a map, and two maps with the same pairs are the same key.
+`:params` is sorted. The order does not change the key: `Token.join_key/2` returns a map,
+and two maps with the same pairs are the same key. The order a reader cares about is the
+order of the head, which `:__ast__.head` keeps as it was written. Each message about the
+query renders that, so it names the patterns the author can find in their source.
+
+#### A head guard is one thing
+
+A pattern of the head may carry a guard, `rows(amt when amt > 10)(...)`. The parser peels
+every `when` out of the head, combines the guards with `and`, and checks with
+`Rete.DSL.Vars.read_var_names/1` that the result reads nothing the head does not bind. It
+then appends a `Rete.IR.Test` to `:lhs`, by the same path the trailing `when` takes. That
+prunes the store, and it is everything the guard does. The test carries the guard AST in
+its own `:__ast__`, in the shape every other guard uses, so `:__ast__` on the production
+keeps only the patterns and what they bind.
+
+This is sound because a query is read by term equality. The guard holds of an argument
+exactly when it holds of the binding that the argument matches, so the test removes exactly
+the matches that no call could reach. A call that names a rejected value thus finds nothing
+and answers `[]`, through the generated function and `Rete.Session.query/3` alike.
+
+The guard is deliberately **not** put on the generated clause. It would reject the same
+calls, because the test already emptied their keys, so it would add no answer that the test
+gets wrong. What it would cost is the guard's language. A `Rete.IR.Test` compiles to a
+function and may call anything a rule body may call. A guard on a clause may not, so
+`name when String.length(name) > 3` would not compile.
+
+A clause guard also could not hold for both ways of reading a query. `Rete.Engine.query/3`
+is dispatched by `{module, name}` while the program runs, so it never sees the head. Only
+the generated function could carry a call-time guard, and a query answered two ways has to
+answer once. The store is the one place both paths meet, so the store is where the guard
+has to act. Everything in a production is evaluated as a match propagates, and a head guard
+is no exception to that.
+
+The check above stays for a different reason: a head guard constrains the call, and one
+that read the rest of the LHS would be the trailing `when` under a second spelling.
 
 ### `Rete.IR.Fact`
 

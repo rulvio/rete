@@ -4,17 +4,30 @@
 # that matters for a Rete engine, where the failure mode is not a slow function
 # but an operation that is quadratic in something a session accumulates. Three
 # such quadratics were found and fixed at once, and each was invisible until the
-# one above it was gone; nothing but a scaling measurement would have shown them.
+# one above it was gone. Nothing but a scaling measurement would have shown them.
 #
-# So a scaling scenario runs at three sizes and reports the empirical exponent: the
-# k in O(n^k), read off the growth between one size and the next. Around 1.0 is
-# linear and fine. Around 2.0 is quadratic and is a bug unless it is listed as a
-# known gap below.
+# So a scaling scenario runs at four sizes and reports the empirical exponent: the
+# k in O(n^k). Around 1.0 is linear and fine. Around 2.0 is quadratic and is a bug.
+# Every scenario is judged the same way, and there is no way to exempt one.
 #
-# Timing is not asserted on and this is not in CI. Wall-clock thresholds on
-# shared runners produce failures that mean nothing, and the number worth
-# watching — the exponent — is stable enough to read by eye and too noisy to
-# gate on.
+# Two numbers decide it, and `verdict/2` says why each one is there. The **fit** is
+# k over every size at once, and it is the verdict. The **last pair** guards the top
+# end, because a fit is an average and it would dilute a scenario that only turns
+# quadratic at the largest size.
+#
+# A scenario that allocates a whole structure per call takes `isolate: true`. The heap of
+# the bench process grows as that structure grows, and this keeps the measurement clear of
+# it. See `time_isolated/1`.
+#
+# **The exponent gates CI.** A run that finds a superlinear scenario exits non-zero, and
+# `finish/0` names it. An exponent is a ratio between two timings, so the speed of the
+# machine has no effect on it. Measured at 2 and at 4 schedulers, and under 3x CPU
+# oversubscription, the worst of the eighteen readings moved from n^1.12 to n^1.13. The
+# gate is n^1.5.
+#
+# **Wall clock is asserted on nowhere.** A duration threshold on a shared runner fails for
+# reasons that mean nothing. Every millisecond figure this prints is there to be read, and
+# not to be compared against a bound.
 
 defmodule Bench do
   @moduledoc false
@@ -26,7 +39,8 @@ defmodule Bench do
     IO.puts("\n\e[1m#{label}\e[0m")
     for note <- List.wrap(opts[:note]), do: IO.puts("  #{note}")
 
-    results = Enum.map(sizes, fn n -> {n, time(fn -> fun.(n) end)} end)
+    timer = if opts[:isolate], do: &time_isolated/1, else: &time/1
+    results = Enum.map(sizes, fn n -> {n, timer.(fn -> fun.(n) end)} end)
 
     results
     |> Enum.with_index()
@@ -36,7 +50,80 @@ defmodule Bench do
       )
     end)
 
-    verdict(results, opts[:expect] || :linear)
+    tally(:scenarios)
+    verdict(label, results)
+  end
+
+  # --- the exit status ----------------------------------------------------------------
+  #
+  # CI runs this, so a scenario that turns superlinear has to fail the build rather than
+  # print a red cross nobody reads.
+  #
+  # Every `scenario/4` call runs in the process of the script. The `(fn -> ... end).()`
+  # wrappers around some of them are ordinary calls, and `time_isolated/1` is the one thing
+  # that spawns. So the counts live in the process dictionary, and no result has to be
+  # threaded back through a thousand lines of call sites.
+
+  @tally :bench_tally
+  @failed :bench_failed
+
+  # How long a graceful shutdown may take before `finish/0` stops waiting for it.
+  @stop_timeout :timer.minutes(15)
+
+  defp tally(key) do
+    counts = Process.get(@tally, %{})
+    Process.put(@tally, Map.update(counts, key, 1, &(&1 + 1)))
+  end
+
+  defp count(key), do: Process.get(@tally, %{}) |> Map.get(key, 0)
+
+  defp record_failure(label) do
+    Process.put(@failed, [label | Process.get(@failed, [])])
+  end
+
+  @doc false
+  # The last statement of the script. A `?` does not fail: it reports that a scenario has
+  # grown too fast to measure itself, which needs a person to raise its sizes rather than a
+  # red build.
+  def finish do
+    unjudged = count(:unjudged)
+
+    if unjudged > 0 do
+      IO.puts("\n\e[33m?\e[0m #{unjudged} scenario(s) too fast to judge. Raise their sizes.")
+    end
+
+    case Process.get(@failed, []) |> Enum.reverse() do
+      [] ->
+        IO.puts("\n\e[32m✓\e[0m #{passed(unjudged)}")
+
+      labels ->
+        IO.puts(
+          "\n\e[31m✗\e[0m #{length(labels)} of #{count(:scenarios)} scenarios are " <>
+            "not linear:"
+        )
+
+        Enum.each(labels, &IO.puts("  #{&1}"))
+
+        # `System.stop/1` shuts the node down gracefully, so everything above reaches the
+        # terminal. `System.halt/1` is documented as not flushing ports. Stopping is
+        # asynchronous, so the script has to stay alive for it to take effect.
+        #
+        # The wait is bounded, and `halt/1` is the backstop. A shutdown that never arrives
+        # would otherwise hang the run until the CI job times out, hours later. Reaching
+        # the backstop means output may be cut, and that is still better than a hang.
+        System.stop(1)
+        Process.sleep(@stop_timeout)
+        System.halt(1)
+    end
+  end
+
+  # Says what was measured, and not more. A scenario too fast to judge is not a scenario
+  # found to be linear, so it is not counted as one.
+  defp passed(0), do: "all #{count(:scenarios)} scenarios are linear"
+
+  defp passed(unjudged) do
+    "#{count(:scenarios) - unjudged} of #{count(:scenarios)} scenarios are linear, and " <>
+      "#{unjudged} could not be judged"
   end
 
   # An A/B rather than a shape. `:concurrency` does not change how firing scales, only how
@@ -98,6 +185,38 @@ defmodule Bench do
     |> median()
   end
 
+  # `time/1`, with each repeat on its own process. `scenario/4` takes this for `isolate:
+  # true`.
+  #
+  # `:erlang.garbage_collect/0` returns a process to a clean heap, but not to a *small* one.
+  # A function that allocates a whole structure per call grows the heap of the bench
+  # process. Collection then costs more at every later size. The measurement reads as
+  # superlinear while the function under it is linear. Compiling 1,024 rules measured
+  # ~n^1.34 this way, and ~n^1.05 on a fresh heap.
+  #
+  # The warm-up moves inside the process, because the heap is the thing being isolated.
+  #
+  # **This is not the default, and it suits few scenarios.** Spawning copies the closure. A
+  # scenario that holds a loaded session would thus copy it at every repeat. Building a
+  # network is the case this fits, because an application builds one time at start.
+  def time_isolated(fun) do
+    1..@repeats
+    |> Enum.map(fn _ ->
+      caller = self()
+
+      spawn(fn ->
+        fun.()
+        {us, _} = :timer.tc(fun)
+        send(caller, us / 1000)
+      end)
+
+      receive do
+        ms -> ms
+      end
+    end)
+    |> median()
+  end
+
   defp median(times) do
     times |> Enum.sort() |> Enum.at(div(length(times), 2))
   end
@@ -113,29 +232,76 @@ defmodule Bench do
   # k such that t2/t1 = (n2/n1)^k.
   defp exponent(n1, t1, n2, t2), do: :math.log(t2 / t1) / :math.log(n2 / n1)
 
-  defp verdict(results, expect) do
+  # What the shape is judged on. Two numbers, because one of them cannot do both jobs.
+  #
+  # `fit` is the **verdict**. It is `k` over every size at once, so one noisy measurement
+  # moves it a little rather than deciding it. The worst pair used to be the verdict. It is
+  # the worst of three ratios, so it is biased upward and it swings. Over six runs of one
+  # unchanged scenario it read 1.45 to 1.89, where the fit read 1.32 to 1.36.
+  #
+  # `last` is the **guard on the top end**. A fit is an average, so a scenario that is linear
+  # up to the largest size and quadratic at it comes out near 1.43 over four points, and
+  # passes. That is the failure this file exists to catch. A quadratic last step puts `last`
+  # near 2.0, and every reading of a healthy scenario is far below the bound.
+  @linear_fit 1.5
+  @linear_last 1.8
+
+  # Every scenario is judged the same way, and there is no way to exempt one. A scenario
+  # that cannot hold the line is one to fix or to delete. An exemption nobody uses is an
+  # untested branch in the thing that gates the build.
+  defp verdict(label, results) do
     ks =
       results
       |> Enum.chunk_every(2, 1, :discard)
       |> Enum.filter(fn [{_, t1}, _] -> t1 > 0 end)
       |> Enum.map(fn [{n1, t1}, {n2, t2}] -> exponent(n1, t1, n2, t2) end)
 
-    case {ks, expect} do
-      {[], _} ->
+    case ks do
+      [] ->
+        tally(:unjudged)
         IO.puts("  \e[33m?\e[0m too fast to judge — raise the sizes")
 
-      {ks, :linear} ->
-        worst = Enum.max(ks)
-
-        if worst < 1.5 do
-          IO.puts("  \e[32m✓\e[0m linear (worst ~n^#{fmt(worst)})")
-        else
-          IO.puts("  \e[31m✗\e[0m superlinear: ~n^#{fmt(worst)}, expected about n^1")
-        end
-
-      {ks, {:known, why}} ->
-        IO.puts("  \e[33m!\e[0m ~n^#{fmt(Enum.max(ks))} — known: #{why}")
+      ks ->
+        report(label, fit(results), List.last(ks), Enum.max(ks))
     end
+  end
+
+  defp report(label, fit, _last, worst) when fit >= @linear_fit do
+    record_failure(label)
+
+    IO.puts(
+      "  \e[31m✗\e[0m superlinear: fit ~n^#{fmt(fit)}, over the bound of " <>
+        "n^#{fmt(@linear_fit)} (worst pair ~n^#{fmt(worst)})"
+    )
+  end
+
+  defp report(label, fit, last, _worst) when last >= @linear_last do
+    record_failure(label)
+
+    IO.puts(
+      "  \e[31m✗\e[0m the top end is superlinear: last pair ~n^#{fmt(last)}, over the " <>
+        "bound of n^#{fmt(@linear_last)} (fit ~n^#{fmt(fit)})"
+    )
+  end
+
+  defp report(_label, fit, _last, worst) do
+    IO.puts("  \e[32m✓\e[0m linear (fit ~n^#{fmt(fit)}, worst pair ~n^#{fmt(worst)})")
+  end
+
+  # `k` in `t = c * n^k`, by least squares on log t against log n. A size whose timing is
+  # zero carries no ratio, so it is dropped rather than turned into an infinity.
+  defp fit(results) do
+    points = for {n, t} <- results, t > 0, do: {:math.log(n), :math.log(t)}
+    {xs, ys} = Enum.unzip(points)
+    mean_x = Enum.sum(xs) / length(xs)
+    mean_y = Enum.sum(ys) / length(ys)
+
+    covariance =
+      points |> Enum.map(fn {x, y} -> (x - mean_x) * (y - mean_y) end) |> Enum.sum()
+
+    variance = xs |> Enum.map(fn x -> (x - mean_x) * (x - mean_x) end) |> Enum.sum()
+
+    covariance / variance
   end
 
   defp fmt(float), do: :erlang.float_to_binary(float * 1.0, decimals: 2)
@@ -708,6 +874,11 @@ Bench.scenario(
   "compile r rules over one fact type",
   [128, 256, 512, 1024],
   fn r -> Rete.Compiler.build([width_modules[r]]) end,
+  # `isolate: true`, because a build allocates a whole network. Five of them in the bench
+  # process grow its heap with `r`, and collecting that heap then costs more at every later
+  # size, which reads as a superlinear compiler. On a fresh heap this measures ~n^1.05. An
+  # application builds its network once at start, so a fresh heap is the honest case too.
+  isolate: true,
   note:
     "every rule hangs off the beta root, so sharing has to look past all the others — " <>
       "was O(r\u00B2) while that was a scan"
@@ -809,7 +980,7 @@ IO.puts("")
    Bench.scenario(
      "a query read by a parameter, selecting 1 of n",
      [500, 1_000, 2_000, 4_000],
-     fn n -> for _ <- 1..200, do: Bench.KeyedQuery.rows(query_sessions[n].keyed, cid: 1) end,
+     fn n -> for _ <- 1..200, do: Bench.KeyedQuery.rows(query_sessions[n].keyed, 1) end,
      note: "`defquery rows(cid)(...)`, so the read is one bucket and n stops mattering"
    )
 
@@ -830,7 +1001,7 @@ IO.puts("")
        :keyed ->
          session = query_sessions[4_000].keyed
 
-         for _ <- 1..200, do: Bench.KeyedQuery.rows(session, cid: 1)
+         for _ <- 1..200, do: Bench.KeyedQuery.rows(session, 1)
      end,
      note: "one row returned in each case. A head decreases this number."
    )
@@ -989,10 +1160,13 @@ IO.puts("")
          end
 
        :keyed ->
-         for _ <- 1..50, do: Bench.FatKeyedQuery.rows(keyed, a: 1)
+         for _ <- 1..50, do: Bench.FatKeyedQuery.rows(keyed, 1)
      end,
      note: "50 reads. The filter runs the body 4,000 times per read, and the head runs it once"
    )
 
    :ok
  end).()
+
+# Last, because it sets the exit status of the run.
+Bench.finish()

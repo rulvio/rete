@@ -24,9 +24,14 @@ defmodule Rete.DSL.Parser do
   A leading `%{...}` literal is the options map, not a fact pattern. A rule level guard
   becomes a trailing `Rete.IR.Test`.
 
-  A query can carry a **head**, `rows(cid, tid)(<conditions>)`. The head names the bindings
-  that key its matches. Elixir parses this as a call applied to a second argument list, so
-  it arrives here around the declaration. It becomes `:params`.
+  A query can carry a **head**, `rows(cid, tid)(<conditions>)`. Elixir parses this as a call
+  applied to a second argument list, so the head arrives here around the declaration.
+
+  A head is a list of **patterns**, and a call matches them. The variables they bind key the
+  matches of the query, and they become `:params`. A pattern may carry a guard,
+  `rows(amt when amt > 10)(...)`. The guard becomes a `Rete.IR.Test` on the left hand side,
+  and it reads only what the head binds. A `when` after the second argument list is the rule
+  level guard instead, and it reads every binding.
 
   A type is any term except `nil`. A pattern must write it as a literal. `__type__` always
   declares a type. It is never a field to match on, so the parser drops it from every
@@ -85,14 +90,28 @@ defmodule Rete.DSL.Parser do
 
   # The head of a query: `rows(cid, tid)(<conditions>)`. Elixir parses a call applied to a
   # second argument list as a nested call, so the head arrives around the declaration. The
-  # head names the bindings that key the matches of the query, and a call supplies exactly
-  # those. `Rete.Ruleset.build/4` checks them against the classified bindings, which are
-  # not known until the full pipeline has run.
+  # head is a list of patterns. Its bindings key the matches of the query, and a call
+  # matches those patterns. `Rete.Ruleset.build/4` checks the bindings against the
+  # classified LHS, which is not known until the full pipeline has run.
   defp parse_rule(env, hash, type, {{name, _, head}, _, args}, body)
        when is_atom(name) and is_list(head) do
     %IR.Production{} = production = parse_rule(env, hash, type, {name, [], args}, body)
 
-    %IR.Production{production | params: parse_params!(name, type, head)}
+    reject_head_on_rule!(name, type, head)
+
+    {patterns, guard} = split_head(head)
+    head_bind = parse_bind(patterns)
+
+    check_head_guard!(name, patterns, guard, head_bind)
+
+    %IR.Production{
+      production
+      | params: bind_vars(head_bind),
+        lhs: production.lhs ++ head_test(env, guard),
+        # The guard is not kept here. It goes into the `Rete.IR.Test` that `head_test/2`
+        # appends, which records it in the same shape every other guard uses.
+        __ast__: Map.merge(production.__ast__, %{head: patterns, head_bind: head_bind})
+    }
   end
 
   defp parse_rule(env, hash, type, {name, _, args}, body) when is_atom(name) do
@@ -119,17 +138,10 @@ defmodule Rete.DSL.Parser do
             Macro.to_string(decl)
   end
 
-  # This reads the parameter names from a head. It checks only the shape. To know whether
-  # each name is a binding, and one that every match carries, needs the classified LHS.
-  # `Rete.Ruleset.build/4` does that after the pipeline has run.
-  #
-  # This keeps declaration order. It is the order in which every message about this query
-  # names the parameters.
-  #
-  # This also rejects an empty head on a rule. `defrule r()(<conditions>)` declares nothing,
+  # This rejects an empty head on a rule too. `defrule r()(<conditions>)` declares nothing,
   # but it has the shape of a query. To accept it without a message would let a person who
   # intended a query believe that they had written one.
-  defp parse_params!(name, :rule, head) do
+  defp reject_head_on_rule!(name, :rule, head) do
     raise ArgumentError,
           "#{name}(#{Enum.map_join(head, ", ", &Macro.to_string/1)}) gives a rule a head, " <>
             "and a rule cannot take parameters. Only a query is read by parameters, because " <>
@@ -137,29 +149,88 @@ defmodule Rete.DSL.Parser do
             "Write the conditions as the one argument list: `defrule #{name}(...)`."
   end
 
-  defp parse_params!(name, _type, head) do
-    params = Enum.map(head, &param_name!(name, &1))
+  defp reject_head_on_rule!(_name, _type, _head), do: :ok
 
-    case params -- Enum.uniq(params) do
+  # Separates the patterns of a head from its guards. Elixir attaches a `when` to the one
+  # argument it follows, so `rows(cid, tid when cid < tid)` guards the last pattern alone.
+  # The guards all become one test over the head bindings, though, and every head binding
+  # is in scope for it. So they combine into one, and where an author wrote a guard does
+  # not change what it reads.
+  defp split_head(head) do
+    {patterns, guards} =
+      Enum.map_reduce(head, [], fn
+        {:when, _meta, [pattern, guard]}, guards -> {pattern, guards ++ [guard]}
+        pattern, guards -> {pattern, guards}
+      end)
+
+    {patterns, combine_guards(guards)}
+  end
+
+  defp combine_guards([]), do: nil
+  defp combine_guards(guards), do: Enum.reduce(guards, &quote(do: unquote(&2) and unquote(&1)))
+
+  # A head guard is a constraint on the call, so it reads what the call supplies. Letting it
+  # read the rest of the left hand side would make it the trailing `when` under a second
+  # spelling, and the two are one character apart in the source. So this keeps them apart,
+  # and it names the other one.
+  defp check_head_guard!(_name, _patterns, nil, _head_bind), do: :ok
+
+  defp check_head_guard!(name, patterns, guard, head_bind) do
+    case Vars.read_var_names(guard) -- Map.keys(head_bind) do
       [] ->
-        params
+        :ok
 
-      [repeat | _] ->
+      outside ->
         raise ArgumentError,
-              "#{name}(#{Enum.join(params, ", ")}) repeats #{repeat}. Parameters are a " <>
-                "set. They key a match, so a second use of one name adds no key."
+              "the head guard of #{name} reads #{inspect(outside)}, which the head does " <>
+                "not bind. A head guard constrains the call, so it reads only what its own " <>
+                "patterns bind, which is #{inspect(bind_vars(head_bind))}. " <>
+                head_guard_hint(name, patterns, guard, outside)
     end
   end
 
-  defp param_name!(_name, {param, _meta, context}) when is_atom(param) and is_atom(context) do
-    param
+  # A `_`-prefixed name is discarded by the pattern that writes it, so moving the guard
+  # would not help. Say the one thing that does.
+  defp head_guard_hint(name, patterns, guard, outside) do
+    case Enum.find(outside, &String.starts_with?(Atom.to_string(&1), "_")) do
+      nil ->
+        "To filter the matches instead, write a rule level guard: `defquery " <>
+          "#{name}(#{Enum.map_join(patterns, ", ", &Macro.to_string/1)})(...) when " <>
+          "#{Macro.to_string(guard)}`."
+
+      discarded ->
+        "A variable whose name starts with `_` is discarded by the pattern that binds it, " <>
+          "so nothing can read it. Rename `#{discarded}` to " <>
+          "`#{String.trim_leading(Atom.to_string(discarded), "_")}`."
+    end
   end
 
-  defp param_name!(name, other) do
-    raise ArgumentError,
-          "#{name} takes a bare variable in its head, got: #{Macro.to_string(other)}. " <>
-            "A parameter names a variable that the left hand side binds. Write it as that " <>
-            "variable: `defquery #{name}(cid)({:rec, cid, amt})`."
+  # A head guard is a test over the bindings, and that is all it is. A query is read by term
+  # equality, so the guard holds of an argument exactly when it holds of the binding that
+  # argument matches. Testing it here thus removes exactly the matches that no call could
+  # reach, and a call that names a rejected value finds nothing and answers `[]`.
+  #
+  # A guard on the generated clause would reject those same calls, so it would add no answer
+  # that this one gets wrong. It would cost the guard its language. A test is a compiled
+  # function and may call anything, where a guard on a clause may not.
+  #
+  # It also could not hold for both ways of reading a query. `Rete.Engine.query/3` is
+  # dispatched by `{module, name}` while the program runs, so it never sees the head. The
+  # store is the one place the two paths meet, so the store is where the guard has to act.
+  # See `docs/dsl.md`.
+  defp head_test(_env, nil), do: []
+
+  defp head_test(env, guard) do
+    bind = parse_bind(guard)
+
+    [
+      %IR.Test{
+        bind: bind_vars(bind),
+        expr: build_test_expr(env, guard, bind),
+        source: :head,
+        __ast__: %{guard: guard, bind: bind}
+      }
+    ]
   end
 
   # `:params` used to be an option. It is the head of a query now, so it is deliberately

@@ -828,15 +828,32 @@ every alpha its type routes to. `BetaGraph` found a shareable node by scanning e
 of every parent, and r rules that share nothing all hang off the root. `link/3` then
 appended to that child list, which is O(children) per node added. Sharing is an index now,
 and children are stored newest first and reversed by `children/2`. Compiling 1,024 rules
-over one fact type went from an extrapolated ~225 ms to 7.7 ms.
+over one fact type went from an extrapolated ~225 ms to 3.2 ms.
+
+`mix bench` measures that scenario on a **fresh process**, which is what `isolate: true`
+asks for. A build allocates a whole network, so five builds in one process grow its heap
+with the rule count. Collection then costs more at every later size. The measurement read
+~n^1.34 that way, and it reads ~n^1.05 on a fresh heap. An application builds its network
+one time at start, so the isolated figure is the one that describes it.
 
 ### Queries
 
-The **parameters** of a query are its head, and they key its matches. `Rete.Engine.Nodes`
-stores each token under `Token.join_key(token, node.params)`, in the store of the query
-node. `Rete.Engine.query/3` then uses the parameters of a call as that key. There is one
-store and one keying. A read is thus a map fetch, and it costs what it returns, not what
-the query holds.
+The **parameters** of a query are what its head binds, and they key its matches.
+`Rete.Engine.Nodes` stores each token under `Token.join_key(token, node.params)`, in the
+store of the query node. `Rete.Engine.query/3` then uses the parameters of a call as that
+key. There is one store and one keying. A read is thus a map fetch, and it costs what it
+returns, not what the query holds.
+
+The head itself does not reach the network. It is a list of Elixir patterns, and it is the
+argument list of the function the query generates. That function matches the call against
+it, takes out the bindings, and hands this node the same map it always took. So the
+calling convention is a compile-time matter, and the store is unchanged by it.
+
+A guard on the head is the one part of it that the network does see, and the network is
+the only place it acts. It becomes a `Rete.IR.Test` on the left hand side, so the query
+node never stores a match the guard rejects, and a call that names a rejected value finds
+nothing. A query is read by term equality, so this removes exactly the matches that no
+call could reach. See `ir.md` §2.
 
 | 200 reads, 4,000 matches, one row returned | |
 |---|---|
@@ -902,7 +919,7 @@ out of 4,000:
 | | |
 |---|---|
 | `rows(session) \|> Enum.filter(...)` | 18 ms |
-| `defquery rows(a)(...)` then `rows(session, a: 1)` | **0.01 ms** |
+| `defquery rows(a)(...)` then `rows(session, 1)` | **0.01 ms** |
 
 That is a factor of approximately 1,600, and the body is what makes it so large. A head
 keys on the bindings, so the body runs for the one row that comes back. A filter on the
@@ -913,8 +930,9 @@ so it did not read like a head. But it ran on the bindings, and called the body 
 the rows it kept, so it did not pay the body cost that `Enum.filter/2` pays. That filter is
 deleted, so `mix bench` cannot measure it and no row here stands for it.
 
-You cannot reach for it by accident. The old call raises an error, and the message names
-the head to write.
+You cannot reach for it by accident. A query with no head is `name/1`, so the old call
+does not compile. `Rete.Session.query/3` reaches the same query at run time, and it
+raises an error whose message names the head to write.
 
 In one case you must use the first row. This is a binding that **cannot** become a
 parameter. If only some branches of a disjunction bind a variable, that variable is
