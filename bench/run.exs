@@ -35,6 +35,12 @@ defmodule Bench do
   # Enough repeats to median away a stray GC pause, few enough to stay usable.
   @repeats 5
 
+  # How long one repeat of an isolated scenario may run. The slowest of them takes a few
+  # milliseconds, so this is far above anything healthy. It is a backstop against a hang,
+  # and not a timing threshold. Breaching it aborts the run, so the whole bench costs this
+  # once and not once per repeat.
+  @isolated_timeout :timer.minutes(2)
+
   def scenario(label, sizes, fun, opts \\ []) do
     IO.puts("\n\e[1m#{label}\e[0m")
     for note <- List.wrap(opts[:note]), do: IO.puts("  #{note}")
@@ -200,21 +206,43 @@ defmodule Bench do
   # scenario that holds a loaded session would thus copy it at every repeat. Building a
   # network is the case this fits, because an application builds one time at start.
   def time_isolated(fun) do
-    1..@repeats
-    |> Enum.map(fn _ ->
-      caller = self()
+    1..@repeats |> Enum.map(fn _ -> isolated_repeat(fun) end) |> median()
+  end
 
-      spawn(fn ->
+  # One repeat, on its own process, with no way to wait forever.
+  #
+  # Three things have to be right, and a bare `spawn` with a bare `receive` gets none of
+  # them. `spawn_monitor` means a scenario that raises reports the crash, where an unlinked
+  # `spawn` would die in silence. The reply carries a `make_ref/0`, so a stray message is
+  # not mistaken for a timing and fed to `median/1`. The `after` clause bounds the wait, so
+  # a scenario that hangs fails the run rather than holding the CI job open until its own
+  # limit. Each of those failures aborts the script, which is what a broken measurement
+  # deserves.
+  defp isolated_repeat(fun) do
+    caller = self()
+    ref = make_ref()
+
+    {pid, monitor} =
+      spawn_monitor(fn ->
         fun.()
         {us, _} = :timer.tc(fun)
-        send(caller, us / 1000)
+        send(caller, {ref, us / 1000})
       end)
 
-      receive do
-        ms -> ms
-      end
-    end)
-    |> median()
+    receive do
+      {^ref, ms} ->
+        Process.demonitor(monitor, [:flush])
+        ms
+
+      {:DOWN, ^monitor, :process, ^pid, reason} ->
+        raise "an isolated scenario crashed: #{Exception.format_exit(reason)}"
+    after
+      @isolated_timeout ->
+        Process.demonitor(monitor, [:flush])
+        Process.exit(pid, :kill)
+
+        raise "an isolated scenario ran longer than #{@isolated_timeout}ms"
+    end
   end
 
   defp median(times) do
@@ -256,14 +284,21 @@ defmodule Bench do
       |> Enum.filter(fn [{_, t1}, _] -> t1 > 0 end)
       |> Enum.map(fn [{n1, t1}, {n2, t2}] -> exponent(n1, t1, n2, t2) end)
 
-    case ks do
-      [] ->
-        tally(:unjudged)
-        IO.puts("  \e[33m?\e[0m too fast to judge — raise the sizes")
+    case {ks, results |> log_points() |> fit()} do
+      {[], _fit} ->
+        unjudged()
 
-      ks ->
-        report(label, fit(results), List.last(ks), Enum.max(ks))
+      {_ks, nil} ->
+        unjudged()
+
+      {ks, fit} ->
+        report(label, fit, List.last(ks), Enum.max(ks))
     end
+  end
+
+  defp unjudged do
+    tally(:unjudged)
+    IO.puts("  \e[33m?\e[0m too fast to judge — raise the sizes")
   end
 
   defp report(label, fit, _last, worst) when fit >= @linear_fit do
@@ -290,19 +325,30 @@ defmodule Bench do
 
   # `k` in `t = c * n^k`, by least squares on log t against log n. A size whose timing is
   # zero carries no ratio, so it is dropped rather than turned into an infinity.
-  defp fit(results) do
-    points = for {n, t} <- results, t > 0, do: {:math.log(n), :math.log(t)}
+  # `nil` when the points cannot carry a slope. A size whose timing is zero is dropped
+  # above, so one size may be all that is left, and one point has no slope. The variance
+  # underneath would be zero, and the fit would raise where it is asked to judge. That is
+  # the "too fast to judge" case arriving by a second route, so `verdict/2` reports it as
+  # one rather than failing a build on it.
+  defp fit([]), do: nil
+
+  defp fit(points) do
     {xs, ys} = Enum.unzip(points)
     mean_x = Enum.sum(xs) / length(xs)
     mean_y = Enum.sum(ys) / length(ys)
-
-    covariance =
-      points |> Enum.map(fn {x, y} -> (x - mean_x) * (y - mean_y) end) |> Enum.sum()
-
     variance = xs |> Enum.map(fn x -> (x - mean_x) * (x - mean_x) end) |> Enum.sum()
 
-    covariance / variance
+    if variance > 0 do
+      covariance =
+        points |> Enum.map(fn {x, y} -> (x - mean_x) * (y - mean_y) end) |> Enum.sum()
+
+      covariance / variance
+    end
   end
+
+  # The log-log points a fit is taken over. A timing of zero has no logarithm, so it is
+  # dropped rather than turned into an infinity.
+  defp log_points(results), do: for({n, t} <- results, t > 0, do: {:math.log(n), :math.log(t)})
 
   defp fmt(float), do: :erlang.float_to_binary(float * 1.0, decimals: 2)
 
