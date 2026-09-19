@@ -4,12 +4,20 @@
 # that matters for a Rete engine, where the failure mode is not a slow function
 # but an operation that is quadratic in something a session accumulates. Three
 # such quadratics were found and fixed at once, and each was invisible until the
-# one above it was gone; nothing but a scaling measurement would have shown them.
+# one above it was gone. Nothing but a scaling measurement would have shown them.
 #
-# So a scaling scenario runs at three sizes and reports the empirical exponent: the
-# k in O(n^k), read off the growth between one size and the next. Around 1.0 is
-# linear and fine. Around 2.0 is quadratic and is a bug unless it is listed as a
-# known gap below.
+# So a scaling scenario runs at four sizes and reports the empirical exponent: the
+# k in O(n^k). Around 1.0 is linear and fine. Around 2.0 is quadratic and is a bug
+# unless it is listed as a known gap below.
+#
+# Two numbers decide it, and `verdict/2` says why each one is there. The **fit** is
+# k over every size at once, and it is the verdict. The **last pair** guards the top
+# end, because a fit is an average and it would dilute a scenario that only turns
+# quadratic at the largest size.
+#
+# A scenario that allocates a whole structure per call takes `isolate: true`, so that
+# the growing heap of the bench process is not measured as the growth of the thing
+# under it. See `time_isolated/1`.
 #
 # Timing is not asserted on and this is not in CI. Wall-clock thresholds on
 # shared runners produce failures that mean nothing, and the number worth
@@ -26,7 +34,8 @@ defmodule Bench do
     IO.puts("\n\e[1m#{label}\e[0m")
     for note <- List.wrap(opts[:note]), do: IO.puts("  #{note}")
 
-    results = Enum.map(sizes, fn n -> {n, time(fn -> fun.(n) end)} end)
+    timer = if opts[:isolate], do: &time_isolated/1, else: &time/1
+    results = Enum.map(sizes, fn n -> {n, timer.(fn -> fun.(n) end)} end)
 
     results
     |> Enum.with_index()
@@ -98,6 +107,39 @@ defmodule Bench do
     |> median()
   end
 
+  # `time/1`, with each repeat on its own process. `scenario/4` takes this for `isolate:
+  # true`.
+  #
+  # `:erlang.garbage_collect/0` returns a process to a clean heap, but not to a *small* one.
+  # A function that allocates a whole structure per call grows the heap of the bench process
+  # with the size of that structure, and collecting it then costs more at every later size.
+  # The measurement reads as superlinear while the function under it is linear. Compiling
+  # 1,024 rules measured ~n^1.34 this way and ~n^1.05 on a fresh heap.
+  #
+  # The warm-up moves inside the process, because the heap is the thing being isolated.
+  #
+  # **Opt in, and only where a fresh heap is the honest measurement.** Spawning copies the
+  # closure, so a scenario holding a loaded session would pay to copy it at every repeat.
+  # Building a network is the case this fits: an application does it once at start, and not
+  # five times in a row.
+  def time_isolated(fun) do
+    1..@repeats
+    |> Enum.map(fn _ ->
+      caller = self()
+
+      spawn(fn ->
+        fun.()
+        {us, _} = :timer.tc(fun)
+        send(caller, us / 1000)
+      end)
+
+      receive do
+        ms -> ms
+      end
+    end)
+    |> median()
+  end
+
   defp median(times) do
     times |> Enum.sort() |> Enum.at(div(length(times), 2))
   end
@@ -113,6 +155,20 @@ defmodule Bench do
   # k such that t2/t1 = (n2/n1)^k.
   defp exponent(n1, t1, n2, t2), do: :math.log(t2 / t1) / :math.log(n2 / n1)
 
+  # What the shape is judged on. Two numbers, because one of them cannot do both jobs.
+  #
+  # `fit` is the **verdict**. It is `k` over every size at once, so one noisy measurement
+  # moves it a little rather than deciding it. The worst pair used to be the verdict, and it
+  # is the worst of three ratios, so it is biased upward and it swings: over six runs of one
+  # unchanged scenario it read 1.45 to 1.89, where the fit read 1.32 to 1.36.
+  #
+  # `last` is the **guard on the top end**. A fit is an average, so a scenario that is linear
+  # up to the largest size and quadratic at it comes out near 1.43 over four points, and
+  # passes. That is the failure this file exists to catch. A quadratic last step puts `last`
+  # near 2.0, and every reading of a healthy scenario is far below the bound.
+  @linear_fit 1.5
+  @linear_last 1.8
+
   defp verdict(results, expect) do
     ks =
       results
@@ -125,17 +181,48 @@ defmodule Bench do
         IO.puts("  \e[33m?\e[0m too fast to judge — raise the sizes")
 
       {ks, :linear} ->
-        worst = Enum.max(ks)
-
-        if worst < 1.5 do
-          IO.puts("  \e[32m✓\e[0m linear (worst ~n^#{fmt(worst)})")
-        else
-          IO.puts("  \e[31m✗\e[0m superlinear: ~n^#{fmt(worst)}, expected about n^1")
-        end
+        report(fit(results), List.last(ks), Enum.max(ks))
 
       {ks, {:known, why}} ->
-        IO.puts("  \e[33m!\e[0m ~n^#{fmt(Enum.max(ks))} — known: #{why}")
+        IO.puts(
+          "  \e[33m!\e[0m fit ~n^#{fmt(fit(results))}, worst pair " <>
+            "~n^#{fmt(Enum.max(ks))} — known: #{why}"
+        )
     end
+  end
+
+  defp report(fit, _last, worst) when fit >= @linear_fit do
+    IO.puts(
+      "  \e[31m✗\e[0m superlinear: fit ~n^#{fmt(fit)}, expected about n^1 " <>
+        "(worst pair ~n^#{fmt(worst)})"
+    )
+  end
+
+  defp report(fit, last, _worst) when last >= @linear_last do
+    IO.puts(
+      "  \e[31m✗\e[0m the top end is steeper than the fit: last pair " <>
+        "~n^#{fmt(last)}, fit ~n^#{fmt(fit)}"
+    )
+  end
+
+  defp report(fit, _last, worst) do
+    IO.puts("  \e[32m✓\e[0m linear (fit ~n^#{fmt(fit)}, worst pair ~n^#{fmt(worst)})")
+  end
+
+  # `k` in `t = c * n^k`, by least squares on log t against log n. A size whose timing is
+  # zero carries no ratio, so it is dropped rather than turned into an infinity.
+  defp fit(results) do
+    points = for {n, t} <- results, t > 0, do: {:math.log(n), :math.log(t)}
+    {xs, ys} = Enum.unzip(points)
+    mean_x = Enum.sum(xs) / length(xs)
+    mean_y = Enum.sum(ys) / length(ys)
+
+    covariance =
+      points |> Enum.map(fn {x, y} -> (x - mean_x) * (y - mean_y) end) |> Enum.sum()
+
+    variance = xs |> Enum.map(fn x -> (x - mean_x) * (x - mean_x) end) |> Enum.sum()
+
+    covariance / variance
   end
 
   defp fmt(float), do: :erlang.float_to_binary(float * 1.0, decimals: 2)
@@ -708,6 +795,11 @@ Bench.scenario(
   "compile r rules over one fact type",
   [128, 256, 512, 1024],
   fn r -> Rete.Compiler.build([width_modules[r]]) end,
+  # `isolate: true`, because a build allocates a whole network. Five of them in the bench
+  # process grow its heap with `r`, and collecting that heap then costs more at every later
+  # size, which reads as a superlinear compiler. On a fresh heap this measures ~n^1.05. An
+  # application builds its network once at start, so a fresh heap is the honest case too.
+  isolate: true,
   note:
     "every rule hangs off the beta root, so sharing has to look past all the others — " <>
       "was O(r\u00B2) while that was a scan"

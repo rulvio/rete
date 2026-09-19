@@ -407,12 +407,17 @@ CI runs exactly those, on the declared floor (Elixir 1.18) and on the current re
 mix bench
 ```
 
-Scaling benchmarks report the **empirical exponent**: the k in O(n^k), read from the growth
-between one size and the next. This is more useful than a wall-clock figure, since nobody
-has a baseline for that.
+Scaling benchmarks report the **empirical exponent**: the k in O(n^k). This is more useful
+than a wall-clock figure, since nobody has a baseline for that.
 
 This engine's real failure mode is not a slow function. It is an operation that proves
 quadratic in something a session accumulates. A single-size measurement cannot show this.
+
+Each scenario runs at four sizes and reports two numbers. The **fit** is k over every size
+at once, by least squares, and it is the verdict. The **worst pair** is the steepest step
+between two sizes, and the run fails when the *last* step is much steeper than the fit. A
+fit is an average, so on its own it would dilute a scenario that stays linear until the
+largest size and turns quadratic there.
 
 Around `~n^1` is fine. `~n^2` is a bug, unless `docs/design/` already lists it as a known
 gap.
