@@ -247,15 +247,51 @@ defmodule Rete.Inspect do
   A collection propagates only its result, so the members are otherwise invisible, once
   a token has moved on. Give this the node id of the accumulate node — `why_not/2`
   reports it — and the join key from the token.
+
+  A collection with a cross-condition guard decides its membership for each token. Where
+  several tokens share one join key, this answers with the union of what each of them
+  sees. `why_not/2` reports how many tokens a node holds.
+
+  This answers `[]` for a join key that gathered nothing, and for a node that holds no
+  collection. Only an accumulate node holds one.
   """
   @spec collection(Session.t(), term(), map()) :: [term()]
   def collection(%Session{state: state}, node_id, join_key) do
     settled!(state, "collection/3")
 
+    state.network |> Network.node(node_id) |> gathered(state, node_id, join_key)
+  end
+
+  # A plain collection stores facts. The stored list is the one the node hands to the
+  # rule, so it is the answer as it stands. See `Rete.Memory.groups/3`.
+  defp gathered(%Node.Accumulate{}, state, node_id, join_key) do
     state.memory
     |> Memory.groups(node_id, join_key)
-    |> Enum.flat_map(fn {_group, elements} -> Enum.map(elements, & &1.fact) end)
+    |> Enum.flat_map(fn {_group, facts} -> facts end)
   end
+
+  # A filtered collection stores **candidates**, and its filter decides membership for each
+  # token. So the stored group names facts that no rule received. To report it as it stands
+  # would describe a collection larger than the one the rule saw, which is the failure this
+  # module exists to catch. This applies the filter instead, in the way that
+  # `Rete.Engine.Nodes` applies it.
+  defp gathered(%Node.AccumulateJoin{filter: filter}, state, node_id, join_key) do
+    candidates =
+      state.memory
+      |> Memory.groups(node_id, join_key)
+      |> Enum.flat_map(fn {_group, elements} -> elements end)
+
+    for token <- Memory.tokens(state.memory, node_id, join_key),
+        element <- candidates,
+        filter.(token.bindings, element.bindings),
+        uniq: true,
+        do: element.fact
+  end
+
+  # Any other node, and a node id that is not in the network at all. Only an accumulate
+  # node holds a collection, so there is nothing to report. This answers rather than
+  # raising, so that a caller exploring a session can ask about any node id.
+  defp gathered(_node, _state, _node_id, _join_key), do: []
 
   # Refuses to answer from a session with propagation still queued. Both callers read what
   # propagation built, and on a session that never fired that is zero of everything. It
@@ -291,7 +327,7 @@ defmodule Rete.Inspect do
 
     base = %{
       node: id,
-      kind: node.__struct__ |> Module.split() |> List.last() |> Macro.underscore(),
+      kind: kind(node),
       type: Map.get(node, :type),
       elements: length(Memory.all_elements(state.memory, id)),
       tokens: length(Memory.all_tokens(state.memory, id))
@@ -308,6 +344,10 @@ defmodule Rete.Inspect do
   end
 
   # --- helpers ------------------------------------------------------------------
+
+  # The node struct name, as `why_not/2` reports it: `Rete.Network.Node.HashJoin` reads
+  # `hash_join`.
+  defp kind(node), do: node.__struct__ |> Module.split() |> List.last() |> Macro.underscore()
 
   defp terminal(state, {module, name}) do
     Enum.find(Network.beta_nodes(state.network), fn node ->

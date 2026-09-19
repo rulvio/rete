@@ -4,6 +4,22 @@ All notable changes to `rete` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+* **`Rete.Inspect.collection/3` now reads a plain collection.** It read every member as
+  `%Rete.Element{}`. Only a collection with a cross-condition guard stores elements. A
+  plain one stores facts, so the call raised `BadMapError` on the shape the README leads
+  with, `orders = [{:order, cid, _amt}]`. It now reads each of the two shapes the way the
+  node stores it.
+
+* **`Rete.Inspect.collection/3` now reports what a filtered collection gave the rule.** A
+  collection with a cross-condition guard stores candidates, and its filter decides
+  membership for each token. The call reported the candidates, so it named facts that no
+  rule received. A rule that gathered one order out of two was reported as gathering both.
+  The call now applies the filter, in the way the engine applies it.
+
 ## 0.7.0
 
 **This release changes how you read a query.** A query now declares its parameters in a
