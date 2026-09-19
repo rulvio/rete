@@ -282,6 +282,42 @@ defmodule Rete.ObservabilityTest do
       assert %{rule: :flag, activations: []} = Inspect.explain(session([]), {Rules, :flag})
     end
 
+    # The documented limit of reading truth maintenance. A body returning `nil` concludes
+    # nothing, so no match rests on a conclusion, and a production keeps no tokens of its
+    # own. The firing leaves nothing in memory to report. A listener is what sees it, so
+    # this pins both halves: what `explain` cannot say, and what does say it.
+    test "a rule that fired and concluded nothing is indistinguishable from one that did not" do
+      defmodule Silent do
+        use Rete.Ruleset
+
+        defrule quiet({:ping, id}) do
+          _ = id
+          nil
+        end
+
+        defrule loud({:ping, id}), do: {:pong, id}
+      end
+
+      session =
+        [Silent]
+        |> Session.new()
+        |> Session.with_listener(Listener.Collect, [])
+        |> Session.insert({:ping, 1})
+        |> Session.fire_rules()
+
+      assert %{activations: []} = Inspect.explain(session, {Silent, :quiet})
+      assert %{activations: [_]} = Inspect.explain(session, {Silent, :loud})
+
+      # It did fire, and the listener is the thing that knows.
+      fired =
+        session
+        |> Listener.Collect.by_tag(:activation_fired)
+        |> Enum.map(fn {:activation_fired, source, _token, facts} -> {source.rule, facts} end)
+
+      assert {{Silent, :quiet}, []} in fired
+      assert {{Silent, :loud}, [{:pong, 1}]} in fired
+    end
+
     test "a retracted conclusion stops being reported" do
       session = session() |> Session.retract({:order, 1, 250}) |> Session.fire_rules()
 

@@ -275,6 +275,12 @@ just catch the error.
 * **`explain/1,2` is a snapshot, not a history.** It reads truth maintenance, so a rule
   that fired and was later retracted reports no activation for that match. Attach
   `Rete.Listener.Collect`, and read `:activation_fired` events for that instead.
+* **A rule that concludes nothing reports no activation.** Truth maintenance records a
+  match only where a conclusion rests on it, and a production keeps no tokens of its own.
+  So a body returning `nil` or `[]` fires and leaves nothing behind to read, and
+  `activations: []` cannot be told apart from a rule that never matched. Clara splits the
+  same way: its `:rule-matches` holds only the matches with a logical insertion. A listener
+  sees these firings, as an `:activation_fired` event carrying no facts.
 * **No "why did this fact *not* get concluded".** `why_not/1,2` answers that for a named
   rule. Nothing starts from a hypothetical fact and works backwards.
 * **`Listener.Collect` grows without bound.** Fine for a test or a debugging session, not
