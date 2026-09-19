@@ -46,6 +46,14 @@ The compiler checks the call, and an editor completes it. A call that does not m
   exactly when it holds of the binding that the argument matches. It removes only the
   matches that no call could reach.
 
+* **`mix bench` gates CI.** A run that finds a superlinear scenario names it and exits
+  non-zero. A `bench` job runs it on every push and pull request. An exponent is a ratio
+  between two timings, so the speed of the runner has no effect on it. Measured at 2 and at
+  4 schedulers, and under 3x CPU oversubscription, the worst of the eighteen readings moved
+  from n^1.12 to n^1.13. The gate is n^1.5. Wall clock is still asserted on nowhere. The
+  run is not retried, because a scenario that fails now and then is a scenario sitting too
+  near the gate.
+
 ### Changed
 
 * **A head of N patterns generates `name/(N+1)`, and nothing else.** The arity-2 clause
@@ -69,6 +77,22 @@ The compiler checks the call, and an editor completes it. A call that does not m
   pattern. It keeps taking the bindings as a keyword list or a map, and it keeps the check
   on them. For a head of `({cid, tid})`, the function takes `{1, 2}` and this call takes
   `%{cid: 1, tid: 2}`.
+
+* **`mix bench` judges a scenario on a least-squares fit, and guards the top end
+  separately.** It used the steepest step between two sizes. That is the worst of three
+  noisy ratios, and it swings. Over six runs of one unchanged scenario it read 1.45 to
+  1.89, where the fit read 1.32 to 1.36. The fit is the verdict now. A second check covers
+  the last step against a looser bound, because a fit is an average. Without it, a scenario
+  that only turns quadratic at the largest size would pass. There is no way to exempt a
+  scenario.
+
+* **A scenario may take `isolate: true`, which times each repeat on a fresh process.** A
+  build allocates a whole network. Repeating it in one process grows that process's heap
+  with the size of the input, and collection then costs more at every later size. The
+  measurement reads as superlinear while the thing under it is linear. "compile r rules
+  over one fact type" measured ~n^1.34 that way, and ~n^1.05 isolated. The figure in
+  `docs/design/engine.md` for compiling 1,024 rules thus moves from 7.7 ms to 3.2 ms. The
+  compiler did not change. The measurement did.
 
 * `Rete.IR.Production`'s `:params` is sorted, where it kept declaration order before. The
   head itself is a list of patterns, and it stays in `:__ast__` for the code generator. No

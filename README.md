@@ -424,9 +424,9 @@ Around `~n^1` is fine. `~n^2` is a bug, unless `docs/design/` already lists it a
 gap.
 
 **The exponent gates CI.** A run that finds a superlinear scenario exits non-zero and names
-it. This is safe to gate on because an exponent is a ratio between two timings, so a slower
-or a busier runner cancels out of it. Run `mix bench` under `ELIXIR_ERL_OPTIONS="+S 2:2"`,
-or against a loaded machine, and read the same numbers back.
+it. This is safe to gate on because an exponent is a ratio between two timings. The speed of
+the machine thus has no effect on it. Run `mix bench` under `ELIXIR_ERL_OPTIONS="+S 2:2"`, or
+on a loaded machine, and it reports the same numbers.
 
 CI runs the benchmark **once**, and it does not retry. A scenario that fails now and then
 is a scenario sitting too near the gate. Move it away from the gate, or record why it

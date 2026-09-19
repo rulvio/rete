@@ -163,15 +163,21 @@ defmodule Rete.IR do
     A rule-level guard produces this — `defrule r(...) when <guard> do` — and so do
     guards lifted out of a condition, when they only reference variables bound upstream.
     `:bind` is what the guard **reads**, not what it introduces.
+
+    `:source` records which of the two the author wrote, so that a message about the guard
+    names the construct they can find in their file. A head guard is also a guard on the
+    generated query function, and the advice for it differs. It is compile-time only, in
+    the way `:__ast__` is, and `Rete.IR.escape/1` drops it.
     """
 
     @type t :: %__MODULE__{
             bind: [atom()],
             expr: Rete.IR.Expr.t(),
+            source: :rule | :head,
             __ast__: %{guard: Macro.t(), bind: %{atom() => Macro.t()}} | nil
           }
 
-    defstruct [:bind, :expr, :__ast__]
+    defstruct [:bind, :expr, :__ast__, source: :rule]
   end
 
   defmodule Gate do

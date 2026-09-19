@@ -401,7 +401,7 @@ defmodule Rete.QueryParamsTest do
   end
 
   # A head guard runs on the arguments of the call. It is also a test on the left hand
-  # side, which is sound because a query is read by term equality: the guard holds of an
+  # side. That is sound because a query is read by term equality. The guard holds of an
   # argument exactly when it holds of the binding that the argument matches.
   describe "a head guard" do
     defmodule Guarded do
@@ -475,6 +475,57 @@ defmodule Rete.QueryParamsTest do
       assert error.message =~ "the head guard of rows reads [:amt]"
       assert error.message =~ "which the head does not bind"
       assert error.message =~ "`defquery rows(cid)(...) when amt > 1`"
+    end
+
+    # A `_`-prefixed name is discarded by the pattern that writes it, so moving the guard
+    # to the conditions would fail there too. The message has to name the real mistake.
+    test "a guard reading a discarded name says to rename it" do
+      error =
+        assert_raise ArgumentError, fn ->
+          defmodule DiscardedGuard do
+            use Rete.Ruleset
+
+            defquery rows(_cid when _cid > 0)({:rec, _cid}), do: 1
+          end
+        end
+
+      assert error.message =~ "starts with `_` is discarded"
+      assert error.message =~ "Rename `_cid` to `cid`"
+      refute error.message =~ "write a rule level guard"
+    end
+
+    # The guard becomes a test on the left hand side, so the check that a variable is
+    # bound on every path reports it. It has to call it a head guard, because a head guard
+    # cannot move onto a condition the way a rule level guard can.
+    test "a guard on a variable only some disjunction branches bind names the head" do
+      error =
+        assert_raise ArgumentError, fn ->
+          defmodule OptionalGuard do
+            use Rete.Ruleset
+
+            defquery rows(x when x > 0)({:or, [{:a, x}, {:b, y}]}), do: {x, y}
+          end
+        end
+
+      assert error.message =~ "the head guard `x > 0` reads `x`"
+      assert error.message =~ "A head guard keys the matches of the query"
+      assert error.message =~ "write one query for each branch"
+      refute error.message =~ "rule level guard"
+    end
+
+    # And the rule level guard keeps its own wording, which points at the condition.
+    test "the same guard written after the conditions still reads as a rule level guard" do
+      error =
+        assert_raise ArgumentError, fn ->
+          defmodule OptionalRuleGuard do
+            use Rete.Ruleset
+
+            defquery rows({:or, [{:a, x}, {:b, y}]}) when x > 0, do: {x, y}
+          end
+        end
+
+      assert error.message =~ "the rule level guard `x > 0` reads `x`"
+      assert error.message =~ "put such a guard on the condition"
     end
   end
 

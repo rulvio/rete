@@ -186,10 +186,24 @@ defmodule Rete.DSL.Parser do
         raise ArgumentError,
               "the head guard of #{name} reads #{inspect(outside)}, which the head does " <>
                 "not bind. A head guard runs on the arguments of a call, so it reads only " <>
-                "what its own patterns bind, which is #{inspect(bind_vars(head_bind))}. To " <>
-                "filter the matches instead, write a rule level guard: `defquery " <>
-                "#{name}(#{Enum.map_join(patterns, ", ", &Macro.to_string/1)})(...) when " <>
-                "#{Macro.to_string(guard)}`."
+                "what its own patterns bind, which is #{inspect(bind_vars(head_bind))}. " <>
+                head_guard_hint(name, patterns, guard, outside)
+    end
+  end
+
+  # A `_`-prefixed name is discarded by the pattern that writes it, so moving the guard
+  # would not help. Say the one thing that does.
+  defp head_guard_hint(name, patterns, guard, outside) do
+    case Enum.find(outside, &String.starts_with?(Atom.to_string(&1), "_")) do
+      nil ->
+        "To filter the matches instead, write a rule level guard: `defquery " <>
+          "#{name}(#{Enum.map_join(patterns, ", ", &Macro.to_string/1)})(...) when " <>
+          "#{Macro.to_string(guard)}`."
+
+      discarded ->
+        "A variable whose name starts with `_` is discarded by the pattern that binds it, " <>
+          "so nothing can read it. Rename `#{discarded}` to " <>
+          "`#{String.trim_leading(Atom.to_string(discarded), "_")}`."
     end
   end
 
@@ -206,6 +220,7 @@ defmodule Rete.DSL.Parser do
       %IR.Test{
         bind: bind_vars(bind),
         expr: build_test_expr(env, guard, bind),
+        source: :head,
         __ast__: %{guard: guard, bind: bind}
       }
     ]

@@ -475,29 +475,47 @@ defmodule Rete.DSL.Bindings do
   @spec check_test_vars!(IR.Test.t(), bound()) :: :ok
   def check_test_vars!(%IR.Test{__ast__: nil}, _bound), do: :ok
 
-  def check_test_vars!(%IR.Test{__ast__: %{guard: guard}}, bound) do
+  def check_test_vars!(%IR.Test{__ast__: %{guard: guard}, source: source}, bound) do
     case guard |> read_vars() |> MapSet.difference(bound) |> Enum.sort() do
       [] ->
         :ok
 
       [var | _] ->
         raise ArgumentError,
-              "the rule level guard `#{Macro.to_string(guard)}` reads `#{var}`, which no " <>
-                "condition binds on this path through the left hand side. " <> test_hint(var)
+              "the #{guard_noun(source)} `#{Macro.to_string(guard)}` reads `#{var}`, which " <>
+                "no condition binds on this path through the left hand side. " <>
+                test_hint(source, var)
     end
   end
 
-  defp test_hint(var) do
+  defp guard_noun(:head), do: "head guard"
+  defp guard_noun(_rule), do: "rule level guard"
+
+  # A `_`-prefixed name is the same mistake wherever the guard was written. The rest of the
+  # advice is not: a head guard cannot move onto a condition, because it also has to be a
+  # guard on the generated query function. So it names the two ways out that a head has.
+  defp test_hint(source, var) do
     case Atom.to_string(var) do
       "_" <> rest ->
         "A variable whose name starts with `_` is discarded by the pattern that binds it, " <>
           "so a guard cannot read it. Rename it to `#{rest}`."
 
       _ ->
-        "A negation binds nothing downstream, and a variable only some branches of a " <>
-          "disjunction bind is not available after it - put such a guard on the condition " <>
-          "inside the branch instead. Otherwise, correct the name."
+        tail_hint(source)
     end
+  end
+
+  defp tail_hint(:head) do
+    "A head guard keys the matches of the query, so it can only read a variable that " <>
+      "every match carries. A negation binds nothing downstream, and a variable only some " <>
+      "branches of a disjunction bind is not one either. Filter in your own code, or write " <>
+      "one query for each branch. Otherwise, correct the name."
+  end
+
+  defp tail_hint(_rule) do
+    "A negation binds nothing downstream, and a variable only some branches of a " <>
+      "disjunction bind is not available after it - put such a guard on the condition " <>
+      "inside the branch instead. Otherwise, correct the name."
   end
 
   @doc """
