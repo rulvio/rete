@@ -29,9 +29,9 @@ defmodule Rete.DSL.Parser do
 
   A head is a list of **patterns**, and a call matches them. The variables they bind key the
   matches of the query, and they become `:params`. A pattern may carry a guard,
-  `rows(amt when amt > 10)(...)`. The guard becomes a guard on the generated function, and
-  a `Rete.IR.Test` on the left hand side as well. A `when` after the second argument list is
-  the rule level guard instead, and it reads every binding.
+  `rows(amt when amt > 10)(...)`. The guard becomes a `Rete.IR.Test` on the left hand side,
+  and it reads only what the head binds. A `when` after the second argument list is the rule
+  level guard instead, and it reads every binding.
 
   A type is any term except `nil`. A pattern must write it as a literal. `__type__` always
   declares a type. It is never a field to match on, so the parser drops it from every
@@ -172,9 +172,10 @@ defmodule Rete.DSL.Parser do
   defp combine_guards([]), do: nil
   defp combine_guards(guards), do: Enum.reduce(guards, &quote(do: unquote(&2) and unquote(&1)))
 
-  # A head guard becomes a guard on the generated function, so it can only read what that
-  # function takes. A guard over the rest of the left hand side is the trailing `when`, and
-  # this names it, because the two are one character apart in the source.
+  # A head guard is a constraint on the call, so it reads what the call supplies. Letting it
+  # read the rest of the left hand side would make it the trailing `when` under a second
+  # spelling, and the two are one character apart in the source. So this keeps them apart,
+  # and it names the other one.
   defp check_head_guard!(_name, _patterns, nil, _head_bind), do: :ok
 
   defp check_head_guard!(name, patterns, guard, head_bind) do
@@ -185,8 +186,8 @@ defmodule Rete.DSL.Parser do
       outside ->
         raise ArgumentError,
               "the head guard of #{name} reads #{inspect(outside)}, which the head does " <>
-                "not bind. A head guard runs on the arguments of a call, so it reads only " <>
-                "what its own patterns bind, which is #{inspect(bind_vars(head_bind))}. " <>
+                "not bind. A head guard constrains the call, so it reads only what its own " <>
+                "patterns bind, which is #{inspect(bind_vars(head_bind))}. " <>
                 head_guard_hint(name, patterns, guard, outside)
     end
   end
@@ -207,10 +208,14 @@ defmodule Rete.DSL.Parser do
     end
   end
 
-  # A head guard is also a test over the bindings. A query is read by term equality, so the
-  # guard holds of an argument exactly when it holds of the binding that argument matches.
-  # To test it here thus removes only the matches that no call could reach, and it makes
-  # `Rete.Session.query/3` agree with the generated function. See `docs/dsl.md`.
+  # A head guard is a test over the bindings, and that is all it is. A query is read by term
+  # equality, so the guard holds of an argument exactly when it holds of the binding that
+  # argument matches. Testing it here thus removes exactly the matches that no call could
+  # reach, and a call that names a rejected value finds nothing and answers `[]`.
+  #
+  # A guard on the generated clause would reject those same calls, so it would add no answer
+  # that this one gets wrong. It would cost the guard its language. A test is a compiled
+  # function and may call anything, where a guard on a clause may not. See `docs/dsl.md`.
   defp head_test(_env, nil), do: []
 
   defp head_test(env, guard) do

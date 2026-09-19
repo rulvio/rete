@@ -167,23 +167,27 @@ and two maps with the same pairs are the same key. The order a reader cares abou
 order of the head, which `:__ast__.head` keeps as it was written. Each message about the
 query renders that, so it names the patterns the author can find in their source.
 
-#### A head guard is two things
+#### A head guard is one thing
 
 A pattern of the head may carry a guard, `rows(amt when amt > 10)(...)`. The parser peels
 every `when` out of the head, combines the guards with `and`, and checks with
-`Rete.DSL.Vars.read_var_names/1` that the result reads nothing the head does not bind.
+`Rete.DSL.Vars.read_var_names/1` that the result reads nothing the head does not bind. It
+then appends a `Rete.IR.Test` to `:lhs`, by the same path the trailing `when` takes. That
+prunes the store, and it is everything the guard does. `:__ast__.head_guard` keeps the
+combined guard as the record of what was parsed.
 
-It then does two things with the one guard:
+This is sound because a query is read by term equality. The guard holds of an argument
+exactly when it holds of the binding that the argument matches, so the test removes exactly
+the matches that no call could reach. A call that names a rejected value thus finds nothing
+and answers `[]`, through the generated function and `Rete.Session.query/3` alike.
 
-1. `:__ast__.head_guard` carries it to `Rete.DSL.Codegen.query_def/1`, which puts it on the
-   generated clause. This is what refuses a call.
-2. It appends a `Rete.IR.Test` to `:lhs`, by the same path the trailing `when` takes. This
-   is what prunes the store.
-
-The second is sound because a query is read by term equality. The guard holds of an
-argument exactly when it holds of the binding that the argument matches, so the test
-removes only the matches that no call could reach. It also makes `Rete.Session.query/3`,
-which never sees the head, answer the way the generated function does.
+The guard is deliberately **not** put on the generated clause. It would reject the same
+calls, because the test already emptied their keys, so it would add no answer that the test
+gets wrong. What it would cost is the guard's language. A `Rete.IR.Test` compiles to a
+function and may call anything a rule body may call. A guard on a clause may not, so
+`name when String.length(name) > 3` would not compile. The check above stays for a
+different reason: a head guard constrains the call, and one that read the rest of the LHS
+would be the trailing `when` under a second spelling.
 
 ### `Rete.IR.Fact`
 

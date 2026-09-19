@@ -35,16 +35,22 @@ The compiler checks the call, and an editor completes it. A call that does not m
 ### Added
 
 * **A guard on a head pattern.** `defquery big(cid, amt when amt > 1000)({:sale, cid, amt})`
-  refuses a call of `big(session, 1, 5)`. The guard reads only what the head binds, and
-  every head variable is in scope for it, so `(cid, tid when cid < tid)` compares the two.
-  A guard over the other bindings is the rule level guard, after the conditions, and the
-  error for one in the head names it.
+  answers `[]` for a call of `big(session, 1, 5)`. The guard reads only what the head binds,
+  and every head variable is in scope for it, so `(cid, tid when cid < tid)` compares the
+  two. A guard over the other bindings is the rule level guard, after the conditions, and
+  the error for one in the head names it.
 
-* **A head guard prunes the store.** The guard is a test on the left hand side as well as a
-  guard on the generated function. So the query node never holds a match that fails it.
-  This is sound because a query is read by term equality: the guard holds of an argument
-  exactly when it holds of the binding that the argument matches. It removes only the
-  matches that no call could reach.
+* **A head guard prunes the store, and does nothing else.** It is a test on the left hand
+  side, so the query node never holds a match that fails it, and a call that names a
+  rejected value finds nothing. This is sound because a query is read by term equality: the
+  guard holds of an argument exactly when it holds of the binding that the argument
+  matches. It removes exactly the matches that no call could reach, so the generated
+  function and `Rete.Session.query/3` answer the same way.
+
+* **A head guard may be any expression, and not only a valid Elixir guard.** It is not put
+  on the generated clause, because a clause guard would reject the same calls and add
+  nothing. So `defquery named(name when String.length(name) > 3)(...)` compiles, in the way
+  that the same guard on a condition does.
 
 * **`mix bench` gates CI.** A run that finds a superlinear scenario names it and exits
   non-zero. A `bench` job runs it on every push and pull request. An exponent is a ratio

@@ -380,6 +380,13 @@ defmodule Rete.DSL.Codegen do
   pipes. A call that does not match the head raises `FunctionClauseError`, in the way that
   any other function does.
 
+  **A head guard does not reach the clause.** It is a `Rete.IR.Test` on the left hand side,
+  so the query node holds no match that fails it, and a call that names a rejected value
+  finds nothing and answers `[]`. A guard on the clause would reject the same calls, so it
+  would add no answer that this one gets wrong. It would cost the guard its language: a
+  test on the left hand side is a compiled function and may call anything, where a guard on
+  a clause may not. See `Rete.DSL.Parser` and `docs/design/ir.md` §2.
+
   The body builds the key map from the variables the head bound, and hands it to
   `Rete.Session.query/3` with `{__MODULE__, name}`. This is what lets two rulesets use the
   same query name. The pair is the identity, and the caller writes the module. The caller
@@ -391,18 +398,8 @@ defmodule Rete.DSL.Codegen do
     key_map = key_map(Map.get(ast, :head_bind, %{}))
     call = quote(do: Rete.Session.query(session, {__MODULE__, unquote(name)}, unquote(key_map)))
 
-    case Map.get(ast, :head_guard) do
-      nil ->
-        quote do
-          Kernel.def(unquote(name)(session, unquote_splicing(head)), do: unquote(call))
-        end
-
-      guard ->
-        quote do
-          Kernel.def(unquote(name)(session, unquote_splicing(head)) when unquote(guard),
-            do: unquote(call)
-          )
-        end
+    quote do
+      Kernel.def(unquote(name)(session, unquote_splicing(head)), do: unquote(call))
     end
   end
 

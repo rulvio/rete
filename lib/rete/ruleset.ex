@@ -291,13 +291,17 @@ defmodule Rete.Ruleset do
         {cid, amt}
       end
 
-  The guard runs on the arguments of the call, so it reads only what the head binds. It
-  becomes a guard on the generated function **and** a test on the left hand side. The
-  second is sound because a query is read by term equality: the guard holds of an argument
-  exactly when it holds of the binding that the argument matches. So the query holds no
-  match that the guard rejects, and `Rete.Session.query/3` answers the same way the
-  function does. Write a guard over the other bindings as a rule level guard instead,
-  after the conditions.
+  The guard becomes a test on the left hand side, and nothing else. So the query holds no
+  match that it rejects, and `big_sales(session, 1, 5)` answers `[]`. This is sound because
+  a query is read by term equality: the guard holds of an argument exactly when it holds of
+  the binding that the argument matches.
+
+  The guard is **not** on the generated clause. It would reject the same calls, so it would
+  add nothing, and it would have to be a valid Elixir guard. As a test it may call anything
+  a rule body may call, such as `name when String.length(name) > 3`.
+
+  A head guard reads only what the head binds. Write a guard over the other bindings as a
+  rule level guard instead, after the conditions.
 
   A query **without** a head takes no parameters. It answers with every match that it
   holds, in arrival order. This is the default, and it costs nothing more.

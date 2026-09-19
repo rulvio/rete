@@ -704,37 +704,52 @@ end
 
 ```elixir
 MyRuleset.big_sales(session, 1, 5_000)  #=> [{1, 5000}]
-MyRuleset.big_sales(session, 1, 5)      #=> ** (FunctionClauseError)
+MyRuleset.big_sales(session, 1, 5)      #=> []
 ```
 
-The guard runs on the arguments of the call, so it reads only what the head binds. Every
-head variable is in scope for it, whichever pattern you wrote it after. So
-`(cid, tid when cid < tid)` compares the two, and two guards both apply:
+A head guard is a **test on the left hand side**, and that is all it is. The query thus
+holds no match that fails it, and a call that names a rejected value finds nothing. `[]` is
+the true answer, and it is the same answer `big_sales(session, 99, 5_000)` gets for a
+customer that does not exist.
+
+This is sound because a query is read by term equality. The guard holds of an argument
+exactly when it holds of the binding that the argument matches. So it removes exactly the
+matches that no call could reach, and `Rete.Session.query/3` answers the same way.
+
+**The guard is not on the generated clause.** It would reject the same calls, so it would
+add no answer that the test gets wrong. It would cost the guard its language. A test is a
+compiled function and may call anything a rule body may call:
+
+```elixir
+defquery named(name when String.length(name) > 3)({:user, name, id}), do: {name, id}
+```
+
+`String.length/1` is not allowed in an Elixir guard. It is allowed here, in the way that it
+is allowed in a condition guard.
+
+A head guard reads only what the head binds. Every head variable is in scope for it,
+whichever pattern you wrote it after. So `(cid, tid when cid < tid)` compares the two, and
+two guards both apply:
 
 ```elixir
 defquery ordered(cid, tid when cid < tid)(...)
 defquery checked(cid when is_integer(cid), tid when tid > 0)(...)
 ```
 
-A head guard is also a **test on the left hand side**, so the query holds no match that
-fails it. This is sound because a query is read by term equality: the guard holds of an
-argument exactly when it holds of the binding that the argument matches. So it removes
-only the matches that no call could reach, and `Rete.Session.query/3` answers the same way
-the function does.
-
-A head guard must be a valid Elixir guard expression, because it becomes one. Write a
-guard over the **other** bindings as a rule level guard instead, after the conditions:
+Write a guard over the **other** bindings as a rule level guard instead, after the
+conditions. The head guard constrains the call, so letting it read the rest would make it
+the trailing `when` under a second spelling:
 
 ```elixir
 defquery rows(cid when amt > 1)({:rec, cid, amt}), do: {cid, amt}
 #=> ** (ArgumentError) the head guard of rows reads [:amt], which the head does not
-#     bind. A head guard runs on the arguments of a call, so it reads only what its own
-#     patterns bind, which is [:cid]. To filter the matches instead, write a rule level
-#     guard: `defquery rows(cid)(...) when amt > 1`.
+#     bind. A head guard constrains the call, so it reads only what its own patterns
+#     bind, which is [:cid]. To filter the matches instead, write a rule level guard:
+#     `defquery rows(cid)(...) when amt > 1`.
 ```
 
-The two can be written together. The head guard bounds the call, and the rule level guard
-filters the matches:
+The two can be written together. The head guard filters on what the head binds, and the
+rule level guard filters on the rest:
 
 ```elixir
 defquery rows(cid when cid > 0)({:rec, cid, amt}) when amt > 1, do: {cid, amt}

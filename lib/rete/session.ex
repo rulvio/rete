@@ -192,10 +192,10 @@ defmodule Rete.Session do
   of `({cid, tid})`, the generated function takes `{1, 2}` and this one takes
   `%{cid: 1, tid: 2}`.
 
-  A head guard holds here too. The guard is a test on the left hand side as well as a guard
-  on the generated function, so the query holds no match that fails it. A call that names a
-  value the guard rejects thus answers `[]`, in the way that the generated function refuses
-  it. See `Rete.Ruleset.defquery/2`.
+  A head guard holds here too. The guard is a test on the left hand side, and the store is
+  the only thing it acts on, so the query holds no match that fails it. A call that names a
+  value the guard rejects thus answers `[]`, here and through the generated function alike.
+  See `Rete.Ruleset.defquery/2`.
 
   **A query answers as of the most recent fire.** On a session you never fired that is
   `[]`. On one you fired and then inserted into, it is the answer from before that insert,

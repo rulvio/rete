@@ -213,8 +213,10 @@ and not a scan. A call that does not match raises `FunctionClauseError`, and one
 wrong arity does not compile. Both are reported at the line you wrote, and an editor
 completes the call. Write no head for a query that answers with every match that it holds.
 
-A guard on the head runs on the arguments of the call. It is also a test on the left hand
-side, so the query holds no match that fails it.
+A guard on the head is a test on the left hand side, so the query holds no match that fails
+it, and a call that names a rejected value answers `[]`. The guard is not on the generated
+clause, so it may call anything a rule body may call, and not only what an Elixir guard
+allows.
 
 A query is identified by `{module, name}`, never by a bare name. Because of this, two
 rulesets that each define a `:summary` compose into one session without collision.

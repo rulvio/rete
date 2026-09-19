@@ -849,10 +849,11 @@ argument list of the function the query generates. That function matches the cal
 it, takes out the bindings, and hands this node the same map it always took. So the
 calling convention is a compile-time matter, and the store is unchanged by it.
 
-A guard on the head is the one part of it that the network does see. It becomes a
-`Rete.IR.Test` on the left hand side as well as a guard on the generated clause, so the
-query node never stores a match the guard rejects. A query is read by term equality, so
-this removes only the matches that no call could reach. See `ir.md` §2.
+A guard on the head is the one part of it that the network does see, and the network is
+the only place it acts. It becomes a `Rete.IR.Test` on the left hand side, so the query
+node never stores a match the guard rejects, and a call that names a rejected value finds
+nothing. A query is read by term equality, so this removes exactly the matches that no
+call could reach. See `ir.md` §2.
 
 | 200 reads, 4,000 matches, one row returned | |
 |---|---|

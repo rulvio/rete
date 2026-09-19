@@ -436,9 +436,10 @@ defmodule Rete.QueryParamsTest do
     end
   end
 
-  # A head guard runs on the arguments of the call. It is also a test on the left hand
-  # side. That is sound because a query is read by term equality. The guard holds of an
-  # argument exactly when it holds of the binding that the argument matches.
+  # A head guard is a test on the left hand side, and nothing else. That is sound because a
+  # query is read by term equality. The guard holds of an argument exactly when it holds of
+  # the binding that the argument matches. So the store holds no match the guard rejects,
+  # and a call that names a rejected value finds nothing.
   describe "a head guard" do
     defmodule Guarded do
       use Rete.Ruleset
@@ -452,35 +453,54 @@ defmodule Rete.QueryParamsTest do
 
     @sales [{:sale, 1, 5_000}, {:sale, 1, 5}, {:sale, 2, 9_000}]
 
-    test "it refuses a call it does not hold for" do
+    # `[]` and not a raise. The guard pruned the store, so the call asks a key that holds
+    # nothing, which is the same answer a value nothing matches gets.
+    test "a call it does not hold for answers empty" do
       session = run(Guarded, @sales)
 
       assert [{1, 5_000}] == Guarded.big(session, 1, 5_000)
-      assert_raise FunctionClauseError, fn -> Guarded.big(session, 1, 5) end
+      assert [] == Guarded.big(session, 1, 5)
     end
 
-    # The query node never stores the match, so the run time path agrees with the compiled
-    # one instead of answering a row the generated function refuses to ask for.
+    # The store is the only thing the guard acts on, so the two paths into it cannot
+    # disagree. Neither one carries the guard itself.
     test "it prunes the store, so Session.query/3 agrees" do
       session = run(Guarded, @sales)
 
       assert [{1, 5_000}] == Session.query(session, {Guarded, :big}, cid: 1, amt: 5_000)
       assert [] == Session.query(session, {Guarded, :big}, cid: 1, amt: 5)
+      assert Guarded.big(session, 1, 5) == Session.query(session, {Guarded, :big}, cid: 1, amt: 5)
     end
 
     test "a guard on the last pattern may read an earlier one" do
       session = run(Guarded, [{:rec, 1, 2, 10}, {:rec, 3, 2, 30}])
 
       assert [{1, 2, 10}] == Guarded.ordered(session, 1, 2)
-      assert_raise FunctionClauseError, fn -> Guarded.ordered(session, 3, 2) end
+      assert [] == Guarded.ordered(session, 3, 2)
     end
 
     test "two guards both apply" do
       session = run(Guarded, [{:rec, 1, 2, 10}, {:rec, 1, 0, 20}])
 
       assert [{1, 2, 10}] == Guarded.both(session, 1, 2)
-      assert_raise FunctionClauseError, fn -> Guarded.both(session, 1, 0) end
-      assert_raise FunctionClauseError, fn -> Guarded.both(session, :nope, 2) end
+      assert [] == Guarded.both(session, 1, 0)
+      assert [] == Guarded.both(session, :nope, 2)
+    end
+
+    # The point of keeping the guard off the generated clause. A test on the left hand side
+    # is a compiled function, so it may call anything. A guard on a clause may not, and this
+    # declaration would not compile.
+    test "a head guard may be any expression, and not only a valid Elixir guard" do
+      defmodule RichGuard do
+        use Rete.Ruleset
+
+        defquery named(name when String.length(name) > 3)({:user, name, id}), do: {name, id}
+      end
+
+      session = run(RichGuard, [{:user, "Ada", 1}, {:user, "Grace", 2}])
+
+      assert [{"Grace", 2}] == RichGuard.named(session, "Grace")
+      assert [] == RichGuard.named(session, "Ada")
     end
 
     test "a head guard and a rule level guard coexist" do
@@ -493,7 +513,7 @@ defmodule Rete.QueryParamsTest do
       session = run(TwoGuards, [{:rec, 1, 0}, {:rec, 1, 5}, {:rec, 2, 9}])
 
       assert [{1, 5}] == TwoGuards.rows(session, 1)
-      assert_raise FunctionClauseError, fn -> TwoGuards.rows(session, 0) end
+      assert [] == TwoGuards.rows(session, 0)
     end
 
     # A head guard becomes a guard on the generated function, so it can only read what
