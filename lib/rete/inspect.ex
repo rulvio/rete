@@ -121,8 +121,10 @@ defmodule Rete.Inspect do
   result. A collection reports the gathered list as its fact, and describes each member
   under `:members`.
 
-  Activations are sorted by their bindings, and not by the order they fired in. Attach
-  `Rete.Listener.Collect` for order.
+  Activations are sorted by their bindings, and not by the order they fired in. Two that
+  bind the same values keep an order that carries no meaning. One session gives one answer,
+  so a test may rely on the list. Attach `Rete.Listener.Collect` for the order they fired
+  in.
 
       iex> alias Rete.{Inspect, Session}
       iex> session =
@@ -261,6 +263,13 @@ defmodule Rete.Inspect do
   # On the terms, and not on `inspect/1` of them. Term order over maps is already total, and
   # a printed binding grows with the *values*: one holding a 2,000 fact collection sorted
   # 800 times slower.
+  #
+  # Bindings alone, with no tiebreak. Two activations can share them, because a discarded
+  # name in a condition tells two matches apart and never reaches the bindings. Their order
+  # is already settled: the map iterates on its key set, not on the order the session
+  # reached it in. A tiebreak on `:matches` would order them by term order over facts, and
+  # that is no more the order they fired in than this is. `Rete.Listener.Collect` is what
+  # answers that, and the doc points there.
   defp sort_activations(activations), do: Enum.sort_by(activations, & &1.bindings)
 
   # A token's matches are the facts behind it, in order. The empty root token contributes

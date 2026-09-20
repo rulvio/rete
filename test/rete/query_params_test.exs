@@ -12,8 +12,6 @@ defmodule Rete.QueryParamsTest do
   use ExUnit.Case, async: true
   use ExUnitProperties
 
-  import ExUnit.CaptureIO
-
   alias Rete.Session
 
   defmodule Plain do
@@ -266,6 +264,20 @@ defmodule Rete.QueryParamsTest do
       assert tuple.message =~ "Shapes.by_tuple(session, {cid, tid})"
       assert pair.message =~ "Shapes.by_pair(session, cid, tid)"
       assert headless.message =~ "Plain.rows(session)"
+    end
+
+    # The two calls differ in what they take, and the head is exactly that difference. So
+    # the second line names the keys rather than standing a `params` placeholder in for
+    # them. One head, two shapes, and both are spelled out.
+    test "a bare name also spells out the keys Session.query/3 wants" do
+      shapes = run(Shapes, facts_for(12))
+
+      tuple = assert_raise ArgumentError, fn -> Session.query(shapes, :by_tuple) end
+      headless = assert_raise ArgumentError, fn -> Session.query(run(Plain, []), :rows) end
+
+      assert tuple.message =~ "with your own values in place of the names"
+      assert tuple.message =~ "{Rete.QueryParamsTest.Shapes, :by_tuple}, cid: ..., tid: ..."
+      assert headless.message =~ "{Rete.QueryParamsTest.Plain, :rows}, []"
     end
   end
 
@@ -640,25 +652,72 @@ defmodule Rete.QueryParamsTest do
       assert [] == Session.query(session, {NestedGuard, :span}, from: 3, to: 2)
     end
 
-    # A `def` head takes a second `when`, and this does not. The guard becomes a compiled
-    # test function, and a nested `when` is not an expression, so the failure comes from
-    # the compiler. It names `when/2`, which is what `docs/dsl.md` tells a reader to
-    # expect. The diagnostic goes to stderr, so it is captured rather than printed.
-    test "a pattern takes one when, and a second does not compile" do
-      source = """
-      defmodule Rete.QueryParamsTest.TwoWhens do
-        use Rete.Ruleset
+    # A `def` head takes a second `when`, and this does not. Without the check the guard
+    # reaches the compiled test function, where `when` is not an expression, and the
+    # compiler reports "undefined function when/2" against a generated name.
+    test "a head pattern takes one when, and a second is refused" do
+      error =
+        assert_raise ArgumentError, fn ->
+          defmodule TwoWhensHead do
+            use Rete.Ruleset
 
-        defquery mid(amt when amt > 1 when amt < 5)({:sale, amt}), do: amt
-      end
-      """
+            defquery mid(amt when amt > 1 when amt < 5)({:sale, amt}), do: amt
+          end
+        end
 
-      reported =
-        capture_io(:stderr, fn ->
-          assert_raise CompileError, fn -> Code.compile_string(source) end
-        end)
+      assert error.message =~ "mid writes 2 guards where one `when` is all that a head"
+      assert error.message =~ "Join them with `and`: `when amt > 1 and amt < 5`"
+    end
 
-      assert reported =~ "undefined function when/2"
+    # Elixir nests each `when` after the first, so the chain can be any length. The count
+    # and the rewrite both have to describe what was written, and not the first two of it.
+    test "a chain of guards is counted and rewritten whole" do
+      error =
+        assert_raise ArgumentError, fn ->
+          defmodule FourWhensHead do
+            use Rete.Ruleset
+
+            defquery mid(amt when amt > 1 when amt < 9 when amt != 3 when amt != 4)({:sale, amt}),
+              do: amt
+          end
+        end
+
+      assert error.message =~ "mid writes 4 guards where one `when` is all that a head"
+
+      assert error.message =~
+               "Join them with `and`: `when amt > 1 and amt < 9 and amt != 3 and amt != 4`"
+    end
+
+    # The same spelling after the conditions, which fails the same way for the same reason.
+    # One check covers both, so the rule level guard reports it too.
+    test "a rule level guard takes one when as well" do
+      error =
+        assert_raise ArgumentError, fn ->
+          defmodule TwoWhensRule do
+            use Rete.Ruleset
+
+            defrule mid({:sale, amt}) when amt > 1 when amt < 5, do: {:mid, amt}
+          end
+        end
+
+      assert error.message =~ "mid writes 2 guards where one `when` is all that a rule takes"
+      assert error.message =~ "`when amt > 1 and amt < 5`"
+    end
+
+    # `when` binds tighter than `\\`, so a default carrying a guard reaches the head as one
+    # `when`, not two. The default check runs first and keeps that case.
+    test "a default carrying a guard still reports the default" do
+      error =
+        assert_raise ArgumentError, fn ->
+          defmodule DefaultBeatsWhen do
+            use Rete.Ruleset
+
+            defquery rows(cid \\ 1 when cid > 0)({:rec, cid, amt}), do: {cid, amt}
+          end
+        end
+
+      assert error.message =~ "gives a head pattern a default"
+      refute error.message =~ "writes 2 guards"
     end
 
     # The point of keeping the guard off the generated clause. A test on the left hand side

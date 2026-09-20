@@ -50,8 +50,10 @@ Rete.Inspect.why_not(session)
   guard, whichever pattern you wrote it after, so `(cid, tid when cid < tid)` compares the
   two. Several patterns may each carry a guard, and the guards then combine with `and`.
   Each pattern takes one `when`, so write `amt when a and b` rather than
-  `amt when a when b`. A guard over the **other** bindings is the rule level guard, after
-  the conditions, and the error for one in the head names it.
+  `amt when a when b`. The second spelling is refused with a message naming the first,
+  because a `def` head accepts it and a head pattern does not. A guard over the **other**
+  bindings is the rule level guard, after the conditions, and the error for one in the head
+  names it.
 
   The guard becomes a test on the left hand side, and that is all it does. The query node
   never holds a match that fails it, so a call naming a rejected value finds nothing. This
@@ -203,8 +205,9 @@ Rete.Inspect.why_not(session)
   cares about is now `:head`. No runtime structure changed, so the figures for what a head
   costs and saves still hold.
 * `Rete.IR.Test` has a new `:source`, `:rule` or `:head`. It decides which construct an
-  error about a guard names, and what advice it gives. It is read at compile time only, and
-  `escape/1` does not carry it.
+  error about a guard names, and what advice it gives. It is compile-time only, and
+  `escape/1` drops it. It has no default, so an escaped test reads `nil` rather than a
+  `:rule` that would claim something about an author the escaped struct never saw.
 * `Rete.Inspect` is linear in the rule count. Resolving one rule's terminal node scans the
   beta graph, so the arity-1 forms map over the nodes rather than over refs. That alone
   read ~n^1.7 over 400 rules, where the gate is n^1.5. `Memory.inserters/2` scans every

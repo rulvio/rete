@@ -291,29 +291,34 @@ defmodule Rete.Engine do
   defp bare_name_message(state, name) do
     suggestions =
       for {module, ^name} = ref <- Network.query_refs(state.network),
+          node = Network.query(state.network, ref),
           do:
-            "    #{inspect(module)}.#{name}(#{call_args(state, ref)})\n" <>
-              "    Rete.Session.query(session, #{inspect(ref)}, params)"
+            "    #{inspect(module)}.#{name}(#{call_args(node)})\n" <>
+              "    Rete.Session.query(session, #{inspect(ref)}, #{param_args(node)})"
 
     detail =
       case suggestions do
-        [] -> "No query of that name is defined here. " <> defined(state)
-        _ -> "Did you mean:\n\n" <> Enum.join(suggestions, "\n")
+        [] ->
+          "No query of that name is defined here. " <> defined(state)
+
+        _ ->
+          "Did you mean one of these, with your own values in place of the names:\n\n" <>
+            Enum.join(suggestions, "\n")
       end
 
     "a query is named by {module, name}, not by #{inspect(name)} alone — " <>
       "two rulesets may each define one. " <> detail
   end
 
-  # The head of a query decides what its function takes. `Rete.Network.Node.Query` carries
-  # it as source for this one message, so the suggestion is the call to write and not a
-  # placeholder standing in for it.
-  defp call_args(state, ref) do
-    case Network.query(state.network, ref) do
-      %{head: [_ | _] = head} -> Enum.join(["session" | head], ", ")
-      _node -> "session"
-    end
-  end
+  # The two calls differ in what they take, so the suggestion spells out both. The head
+  # decides the arguments of the generated function, and `Rete.Network.Node.Query` carries
+  # it as source for this. `:params` decides the keys this call wants. Neither line stands
+  # a placeholder in for the other, and the lead-in says the names are not values.
+  defp call_args(%{head: [_ | _] = head}), do: Enum.join(["session" | head], ", ")
+  defp call_args(_node), do: "session"
+
+  defp param_args(%{params: [_ | _] = params}), do: Enum.map_join(params, ", ", &"#{&1}: ...")
+  defp param_args(_node), do: "[]"
 
   defp query_node!(state, {module, _name} = ref) do
     case Network.query(state.network, ref) do

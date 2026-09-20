@@ -169,16 +169,21 @@ defmodule Rete.IR do
     guard reads only what the head binds, so it cannot move onto a condition the way a rule
     level guard can. It is compile-time only, in the way `:__ast__` is, and
     `Rete.IR.escape/1` drops it.
+
+    It has no default, for the same reason `:__ast__` has none. A default of `:rule` would
+    survive `escape/1` and read as a claim about what the author wrote, which the escaped
+    struct cannot make. `nil` records that nobody asked. `Rete.DSL.Parser` sets it at both
+    places that build a test.
     """
 
     @type t :: %__MODULE__{
             bind: [atom()],
             expr: Rete.IR.Expr.t(),
-            source: :rule | :head,
+            source: :rule | :head | nil,
             __ast__: %{guard: Macro.t(), bind: %{atom() => Macro.t()}} | nil
           }
 
-    defstruct [:bind, :expr, :__ast__, source: :rule]
+    defstruct [:bind, :expr, :__ast__, :source]
   end
 
   defmodule Gate do

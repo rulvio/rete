@@ -488,8 +488,11 @@ defmodule Rete.DSL.Bindings do
     end
   end
 
+  # Matched, and not defaulted. `Rete.IR.Test` leaves `:source` `nil` on an escaped test,
+  # which nothing here reads. A `nil` reaching this would mean a new way to build a test
+  # that forgot to say which one it is, and naming it "rule level" would hide that.
   defp guard_noun(:head), do: "head guard"
-  defp guard_noun(_rule), do: "rule level guard"
+  defp guard_noun(:rule), do: "rule level guard"
 
   # A `_`-prefixed name is the same mistake wherever the guard was written. The rest of the
   # advice is not: a head guard cannot move onto a condition, because it may read only what
@@ -513,7 +516,7 @@ defmodule Rete.DSL.Bindings do
       "one query for each branch. Otherwise, correct the name."
   end
 
-  defp tail_hint(_rule) do
+  defp tail_hint(:rule) do
     "A negation binds nothing downstream, and a variable only some branches of a " <>
       "disjunction bind is not available after it - put such a guard on the condition " <>
       "inside the branch instead. Otherwise, correct the name."

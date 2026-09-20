@@ -77,11 +77,14 @@ defmodule Rete.DSL.Parser do
 
   defp parse_rule(env, hash, type, {:when, _, [decl, guard]}, body) do
     %IR.Production{} = production = parse_rule(env, hash, type, decl, body)
+
+    reject_extra_guards!(production.name, :rule, guard)
     bind = parse_bind(guard)
 
     test = %IR.Test{
       bind: bind_vars(bind),
       expr: build_test_expr(env, guard, bind),
+      source: :rule,
       __ast__: %{guard: guard, bind: bind}
     }
 
@@ -100,7 +103,7 @@ defmodule Rete.DSL.Parser do
     reject_head_on_rule!(name, type, head)
     reject_defaults!(name, :head, head)
 
-    {patterns, guard} = split_head(head)
+    {patterns, guard} = split_head(name, head)
     head_bind = parse_bind(patterns)
 
     check_head_guard!(name, patterns, guard, head_bind)
@@ -191,16 +194,15 @@ defmodule Rete.DSL.Parser do
   # The guards all become one test over the head bindings, though, and every head binding
   # is in scope for it. So they combine into one, and where an author wrote a guard does
   # not change what it reads.
-  #
-  # One `when` per pattern. `amt when a when b` nests a second `when` inside the guard,
-  # which is not an expression, so the generated test function fails to compile. A `def`
-  # head takes the second spelling and this does not. `docs/dsl.md` says to write
-  # `amt when a and b`.
-  defp split_head(head) do
+  defp split_head(name, head) do
     {patterns, guards} =
       Enum.map_reduce(head, [], fn
-        {:when, _meta, [pattern, guard]}, guards -> {pattern, guards ++ [guard]}
-        pattern, guards -> {pattern, guards}
+        {:when, _meta, [pattern, guard]}, guards ->
+          reject_extra_guards!(name, :head, guard)
+          {pattern, guards ++ [guard]}
+
+        pattern, guards ->
+          {pattern, guards}
       end)
 
     {patterns, combine_guards(guards)}
@@ -208,6 +210,36 @@ defmodule Rete.DSL.Parser do
 
   defp combine_guards([]), do: nil
   defp combine_guards(guards), do: Enum.reduce(guards, &quote(do: unquote(&2) and unquote(&1)))
+
+  # One `when` per pattern, and one after the conditions. Elixir nests each `when` after
+  # the first to the right, so `amt when a when b` leaves a `when` at the root of the
+  # guard. A guard here becomes a compiled function, and `when` is not an expression, so
+  # without this the compiler reports "undefined function when/2" against a generated name
+  # nobody wrote. A `def` head accepts the spelling, which is why an author reaches for it.
+  #
+  # The root only. A guard may be any expression a rule body may call, so it may hold an
+  # `fn` with a clause guard of its own. A walk of the whole guard would refuse that.
+  #
+  # Any number of them, and not two. `flatten_when/1` unnests the whole chain, so the count
+  # and the rewrite both describe what was written rather than the first mistake in it.
+  defp reject_extra_guards!(name, source, {:when, _meta, _args} = guard) do
+    guards = flatten_when(guard)
+
+    raise ArgumentError,
+          "#{name} writes #{length(guards)} guards where one `when` is all that a " <>
+            "#{when_noun(source)} takes. Elixir nests each `when` after the first inside " <>
+            "the one before it. A guard here becomes a compiled function, and `when` is " <>
+            "not an expression, so the nested ones would reach it as a call. Join them " <>
+            "with `and`: `when #{Macro.to_string(combine_guards(guards))}`."
+  end
+
+  defp reject_extra_guards!(_name, _source, _guard), do: :ok
+
+  defp when_noun(:head), do: "head pattern"
+  defp when_noun(:rule), do: "rule"
+
+  defp flatten_when({:when, _meta, [left, right]}), do: flatten_when(left) ++ flatten_when(right)
+  defp flatten_when(guard), do: [guard]
 
   # A head guard is a constraint on the call, so it reads what the call supplies. Letting it
   # read the rest of the left hand side would make it the trailing `when` under a second

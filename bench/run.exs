@@ -73,8 +73,9 @@ defmodule Bench do
   @tally :bench_tally
   @failed :bench_failed
 
-  # How long a graceful shutdown may take before `finish/0` stops waiting for it.
-  @stop_timeout :timer.minutes(15)
+  # How long a graceful shutdown may take before `finish/0` stops waiting for it. A backstop
+  # against a node that will not stop, and not a budget: `System.stop/1` takes milliseconds.
+  @stop_timeout :timer.seconds(60)
 
   defp tally(key) do
     counts = Process.get(@tally, %{})
@@ -116,8 +117,11 @@ defmodule Bench do
         #
         # The wait is bounded, and `halt/1` is the backstop. A shutdown that never arrives
         # would otherwise hang the run. Reaching the backstop means output may be cut, and
-        # that is still better than a hang. The CI job allows longer than this wait, so the
-        # backstop runs there rather than the job timing out on a node that will not stop.
+        # that is still better than a hang.
+        #
+        # A minute, so that the backstop fires well inside the CI job's own limit whatever
+        # the run cost before this point. A longer wait would let the job time out first,
+        # and a job killed from outside reports no scenario at all.
         System.stop(1)
         Process.sleep(@stop_timeout)
         System.halt(1)

@@ -199,6 +199,19 @@ is no exception to that.
 The check above stays for a different reason. A head guard constrains the call, and one
 that read the rest of the LHS would be the trailing `when` under a second spelling.
 
+A guard being a compiled function costs one thing, and
+`Rete.DSL.Parser.reject_extra_guards!/3` pays it. Elixir nests each `when` after the first
+to the right, so `amt when a when b` leaves a `when` at the root of the guard. A `def` head
+takes that spelling, and an expression does not, so the compiler would report "undefined
+function `when/2`" against a generated name. The check reads the root of the guard alone. A
+guard may hold an `fn` with a clause guard of its own, and a walk of the whole guard would
+refuse it. The trailing `when` of a rule is checked the same way, because it compiles the
+same way.
+
+The chain has no length limit, so the message does not assume one. It unnests the whole
+chain, counts it, and rewrites it as one `and`. So `a when b when c when d` reports four
+guards and names the guard to write in their place.
+
 #### A head pattern takes no default
 
 The same argument refuses one. A default cannot reach the store, because it is not a
