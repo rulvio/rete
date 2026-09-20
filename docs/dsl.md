@@ -173,8 +173,8 @@ nothing inserted. It never fires again, however much you insert afterward.
 
 Its conclusion rests on the root token instead of on a fact. So retracting everything you
 inserted leaves the conclusion in place. This is the one conclusion
-`Rete.Session.retract/2` cannot reach. `Rete.Inspect.explain/2` reports it as `:derived`
-with no supports.
+`Rete.Session.retract/2` cannot reach. `Rete.Inspect.explain/2` reports one activation for
+the rule, with no matches behind it.
 
 Salience applies as usual. So a rule with no conditions can run before the rest of the
 ruleset, and seed a fact the other rules match on.
@@ -600,7 +600,7 @@ end
 ```
 
 **A query is a function in its own module.** `defquery large_orders(...)` defines
-`large_orders/1` and `large_orders/2`, so you run it by calling it:
+`large_orders/1`, so you run it by calling it:
 
 ```elixir
 MyRuleset.large_orders(session)  #=> [{1, 250}, {1, 900}, {2, 30}]
@@ -612,10 +612,10 @@ session |> MyRuleset.large_orders()  # a plain function, so it pipes
 A query written in this way takes no parameters. It answers with every match that it
 holds.
 
-### Parameters
+### The head
 
 To read a query *by* a value, give the query a **head**. A head is a second argument list,
-before the conditions. It names bindings of the left hand side.
+before the conditions. **It is the argument list of the function that the query becomes.**
 
 ```elixir
 defquery orders_for(cid)({:large_order, cid, amt}) do
@@ -628,51 +628,152 @@ end
 ```
 
 ```elixir
-MyRuleset.orders_for(session, cid: 1)          #=> [{1, 250}, {1, 900}]
-MyRuleset.orders_for(session, %{cid: 2})       #=> [{2, 30}]
-MyRuleset.one_order(session, cid: 1, amt: 250) #=> [{1, 250}]
+MyRuleset.orders_for(session, 1)       #=> [{1, 250}, {1, 900}]
+MyRuleset.orders_for(session, 2)       #=> [{2, 30}]
+MyRuleset.one_order(session, 1, 250)   #=> [{1, 250}]
 ```
 
-The engine **keys** the matches of the query on its parameters. A read is thus a map
-lookup, and not a scan. It costs what it returns, and not what the query holds.
-
-The order of the head does not change the key. The order of the call does not change it
-either, because the key is a map. The engine keeps the order of the head for one purpose:
-each message about the query then names the parameters in the order that you wrote them.
-
-A call must name **every** parameter, and no other name. A partial set is not a more narrow
-lookup. It is a different key, and the engine stores no match under it. An answer of `[]`
-would thus be incorrect. Each of these calls raises an error:
+A head of N patterns gives `name/(N+1)`. The session is the first argument, so a query
+pipes. A head is **not** a list of names. Every entry is an ordinary Elixir pattern, and a
+call matches it. So you choose the shape that a caller writes:
 
 ```elixir
-MyRuleset.one_order(session, cid: 1)
-#=> ** (ArgumentError) the query MyRuleset.one_order takes parameters [:cid, :amt],
-#     and was given [:cid]. The engine keys its matches on its parameters, so a call
-#     must name every one of them, and no other name.
-
-MyRuleset.large_orders(session, cid: 1)
-#=> ** (ArgumentError) the query MyRuleset.large_orders takes no parameters, and was
-#     given [:cid]. It binds [:amt, :cid]. Declare what you read by in the head:
-#     `defquery large_orders(cid)(...)`. Or filter the rows that this returns.
+defquery by_pair(cid, tid)(...)             #=> by_pair(session, 1, 2)
+defquery by_tuple({cid, tid})(...)          #=> by_tuple(session, {1, 2})
+defquery by_map(%{cid: cid, tid: tid})(...) #=> by_map(session, %{cid: 1, tid: 2})
+defquery by_list(cid: cid, tid: tid)(...)   #=> by_list(session, cid: 1, tid: 2)
 ```
 
-A query has one parameter list. Thus two ways to read the same conditions are two queries.
-Together they cost one network: the engine matches the conditions above them one time,
-whether you write one query or four.
+The variables a head binds are what the engine **keys** the matches on. A read is thus a
+map lookup, and not a scan. It costs what it returns, and not what the query holds. Four
+heads over one set of conditions key the same way, and answer the same rows. They differ
+only in what the caller writes.
 
-A parameter must be a variable that the left hand side binds. **Every** match must also
-carry that variable. The engine rejects a variable that only some branches of a disjunction
-bind, because you could never name the matches from the other branches. A rule cannot take
-parameters.
-
-A parameter matches by **term equality**, in the same way as a map key. `cid: 1` and
-`cid: 1.0` are different parameter values, but `==` reports that they are equal.
-
-The engine also checks every other name:
+The head is a pattern, so it behaves like one. A keyword head matches in the order that
+you declared. A map head accepts a call that carries more keys. A repeated variable means
+that the two values have to be equal, and it contributes one key:
 
 ```elixir
-MyRuleset.orders_for(session, nope: 1)
-#=> ** (ArgumentError) the query MyRuleset.orders_for takes parameters [:cid], and was given [:nope]
+MyRuleset.by_list(session, tid: 2, cid: 1)
+#=> ** (FunctionClauseError) no function clause matching in MyRuleset.by_list/2
+
+defquery same(cid, cid)({:rec, cid, tid}), do: tid
+MyRuleset.same(session, 1, 1)  #=> the matches keyed on %{cid: 1}
+MyRuleset.same(session, 1, 2)  #=> ** (FunctionClauseError)
+```
+
+A call that does not match raises `FunctionClauseError`. A call of the wrong arity warns at
+compile time, and the warning names the arity the query has. It raises
+`UndefinedFunctionError` when it runs. Each is reported at the line that you wrote, and an
+editor completes the call, because the query is an ordinary function.
+
+A head may bind nothing. `defquery ping(:tick)(...)` keys on nothing and answers with
+every match. The argument is then an assertion at the call site, and nothing more.
+
+A `_`-prefixed name in a head behaves as it does in any `def`. It labels a position that
+the query accepts and ignores, and it keys nothing:
+
+```elixir
+defquery rows({_cid, tid})({:rec, cid, tid, amt}), do: {cid, tid, amt}
+
+MyRuleset.rows(session, {1, 5})  # keyed on tid alone, so `1` is a label and not a key
+```
+
+Rename it to `cid` to key on it. A guard cannot read it, because the pattern discards it.
+
+A head pattern cannot carry a **default**, although an argument of any `def` may. A default
+applies at the call site, and `Rete.Session.query/3` never reaches that call site. It takes
+the bindings, so it could not honour the default, and one query would then read two ways.
+Write a second query for the common value, or a wrapper function that supplies it.
+
+A query has one head. Thus two ways to read the same conditions are two queries. Together
+they cost one network: the engine matches the conditions above them one time, whether you
+write one query or four.
+
+Every variable a head binds must be a variable that the left hand side binds. **Every**
+match must also carry it. The engine rejects a variable that only some branches of a
+disjunction bind, because you could never name the matches from the other branches. A rule
+cannot take a head.
+
+A parameter matches by **term equality**, in the same way as a map key. `1` and `1.0` are
+different parameter values, but `==` reports that they are equal.
+
+### A guard on the head
+
+A head pattern may carry a guard:
+
+```elixir
+defquery big_sales(cid, amt when amt > 1000)({:sale, cid, amt}) do
+  {cid, amt}
+end
+```
+
+```elixir
+MyRuleset.big_sales(session, 1, 5_000)  #=> [{1, 5000}]
+MyRuleset.big_sales(session, 1, 5)      #=> []
+```
+
+The guard becomes a **test on the left hand side**, so the query holds no match that fails
+it, and a call naming a rejected value finds nothing. `[]` is the true answer, and it is
+what `big_sales(session, 99, 5_000)` gets for a customer that does not exist.
+
+Two things follow from the guard being a test and not a clause guard. It may be any
+expression a rule body may call, and not only a valid Elixir guard:
+
+```elixir
+defquery named(name when String.length(name) > 3)({:user, name, id}), do: {name, id}
+```
+
+And it runs **when a match propagates, not when you call**. The guard runs one time for
+each match, during `fire_rules/2`, and a call reads the store that recorded the answer. So
+write a head guard as a function of its arguments. One that reads the clock fixes its
+answer at the time of the match. `docs/design/ir.md` §2 has the argument for why the store
+is the only place the guard can act.
+
+A head guard reads only what the head binds. Every head variable is in scope for it,
+whichever pattern you wrote it after. So `(cid, tid when cid < tid)` compares the two, and
+two guards both apply:
+
+```elixir
+defquery ordered(cid, tid when cid < tid)(...)
+defquery checked(cid when is_integer(cid), tid when tid > 0)(...)
+```
+
+Each pattern takes **one** `when`. Join the conditions with `and`, as you would in any
+guard. A `def` head accepts more than one `when`, and a head pattern does not. The error
+counts what you wrote and names the guard to write in its place:
+
+```elixir
+defquery ok(amt when amt > 1 and amt < 5)(...)   # one guard, two conditions
+
+defquery no(amt when amt > 1 when amt < 5)(...)
+#=> ** (ArgumentError) no writes 2 guards where one `when` is all that a head pattern
+#     takes. Elixir nests each `when` after the first inside the one before it. A guard
+#     here becomes a compiled function, and `when` is not an expression, so the nested
+#     ones would reach it as a call. Join them with `and`:
+#     `when amt > 1 and amt < 5`.
+```
+
+A chain of any length reports the same way, so four `when`s report four guards. This holds
+wherever you write a guard. A condition, a collection and the rule level guard each take
+one `when`, because each compiles a guard the same way.
+
+Write a guard over the **other** bindings as a rule level guard instead, after the
+conditions:
+
+```elixir
+defquery rows(cid when amt > 1)({:rec, cid, amt}), do: {cid, amt}
+#=> ** (ArgumentError) the head guard of rows reads [:amt], which the head does not
+#     bind. A head guard constrains the call, so it reads only what its own patterns
+#     bind, which is [:cid]. To filter the matches instead, write a rule level guard:
+#     `defquery rows(cid)(...) when amt > 1`.
+```
+
+The two can be written together. The head guard filters on what the head binds, and the
+rule level guard filters on the rest:
+
+```elixir
+defquery rows(cid when cid > 0)({:rec, cid, amt}) when amt > 1, do: {cid, amt}
 ```
 
 ### Two rulesets may use the same query name
@@ -680,7 +781,8 @@ MyRuleset.orders_for(session, nope: 1)
 A query is identified by **module and name together**, never by the name alone. Because of
 this, two rulesets that each define a `:summary` compose into one session without
 collision. `MyRuleset.summary(session)` is unambiguous by construction, since it is an
-ordinary function call. A typo here is a compile error, not an empty result at runtime.
+ordinary function call. A typo here warns at compile time, and it is never an empty result
+at runtime.
 
 When the query is not known until it runs, name it with the pair:
 
@@ -694,16 +796,33 @@ That is the whole addressing scheme: **call the query, or name it with `{module,
 name}`.** A bare `:large_orders` is rejected. The error points at both forms. The same
 `{module, name}` pair also names a rule for `Rete.Inspect.why_not/2`.
 
+`Rete.Session.query/3` takes the **bindings**, and not the head. It is dispatched by
+`{module, name}` while the program runs, so it cannot know the head pattern. For a head of
+`({cid, tid})`, the function takes `{1, 2}` and this call takes `%{cid: 1, tid: 2}`. It
+keeps the check that the generated function no longer needs: a partial key, an extra key
+or an unknown key raises an error, and it does not answer `[]`.
+
+```elixir
+MyRuleset.by_tuple(session, {1, 2})
+Rete.Session.query(session, {MyRuleset, :by_tuple}, cid: 1, tid: 2)   # the same rows
+
+Rete.Session.query(session, {MyRuleset, :by_tuple}, cid: 1)
+#=> ** (ArgumentError) the query MyRuleset.by_tuple takes parameters [:cid, :tid], and
+#     was given [:cid]. The engine keys its matches on its parameters, so a call must
+#     name every one of them, and no other name.
+```
+
 This engine uses the Clara model of query parameters. You declare the parameters first,
 and they key the memory of the query node. A read is thus a hash lookup. This engine
 differs in two ways: where you write the parameters, and how you address a query.
 
-1. The parameters are the head of the declaration, `orders_for(cid)(...)`. They are thus
-   the variables themselves, and not a separate list of names. The compiler checks each
-   parameter against the bindings of the left hand side. It reports an error at the line
-   that you wrote.
+1. The parameters are the head of the declaration, `orders_for(cid)(...)`. The head is a
+   list of patterns, so the parameters are the variables themselves, and not a separate
+   list of names. The compiler checks each one against the bindings of the left hand side.
+   It reports an error at the line that you wrote.
 2. The `defquery` of Clara binds a variable that you give to `query`. The module system of
-   Elixir already gives each query a module and a name. Here the query *is* the function.
+   Elixir already gives each query a module and a name. Here the query *is* the function,
+   and the head is its argument list.
 
 Two more points:
 
@@ -1032,7 +1151,7 @@ defrule flag({:or, [{:order, cid, amt}, {:ticket, cid}]}) do
 end
 ```
 
-If you wanted the rules scheduled separately, or told apart in `Rete.Inspect.fired/2`,
+If you wanted the rules scheduled separately, or told apart in `Rete.Inspect.explain/1`,
 give them different names instead. That is what a name is for.
 
 ### Others worth knowing
@@ -1043,7 +1162,12 @@ give them different names instead. That is what a name is for.
 | `{:order, _amt} when _amt > 0` | an error saying to rename it to `amt`; `_`-prefixed names are discarded |
 | `[f = {:order, cid}]` | an error: bind the whole collection, not an element of it |
 | `defquery q(%{params: [:cid]}, {:a, cid})` | an error: `params` is not a known option. Write it as the head instead: `defquery q(cid)({:a, cid})` |
-| `defquery q(cid)(...)` then `q(session)` | an error: a call must name every parameter, and `q` has one |
-| `defquery q({:a, cid})` then `q(session, cid: 1)` | an error: `q` has no head, so it takes no parameters |
+| `defquery q(cid)(...)` then `q(session)` | a compile warning, then an `UndefinedFunctionError`: the head gives `q/2`, so `q/1` is undefined |
+| `defquery q({:a, cid})` then `q(session, cid: 1)` | the same: `q` has no head, so it is `q/1` |
+| `defquery q(cid: cid, tid: tid)(...)` then `q(session, tid: 2, cid: 1)` | a `FunctionClauseError`: a keyword head matches in the order you declared |
+| `defquery q(cid when amt > 1)({:a, cid, amt})` | an error: a head guard reads only what the head binds. Write it after the conditions |
+| `defquery q(cid when cid > 1 when cid < 5)({:a, cid})` | an error: one `when` is all a head pattern takes. Join them with `and`. A condition, a collection and a rule level guard are the same |
+| `defquery q(cid \\ 1)({:a, cid})` | an error: a head pattern takes no default, because `Rete.Session.query/3` could not honour one |
+| `defrule r({:order, cid \\ 1})` | an error: a condition matches a fact that is already there, so it has no call to default |
 | `defrule r(cid)({:a, cid})` | an error: only a query is read, so only a query takes parameters |
 | `@limit 5` … rule … `@limit 100` … same condition | an error: two conditions that read the same attribute at different values cannot share one compiled function |

@@ -28,7 +28,7 @@ becomes dormant again. You do no bookkeeping yourself.
 ```elixir
 def deps do
   [
-    {:rete, "~> 0.7.0"}
+    {:rete, "~> 0.8.0"}
   ]
 end
 ```
@@ -138,7 +138,7 @@ session =
 Rete.Session.facts(session)
 #=> the six facts above, and nothing else
 
-Retail.large_orders(session, cid: 1)
+Retail.large_orders(session, 1)
 #=> [] — nothing has matched yet
 ```
 
@@ -161,6 +161,7 @@ session = Rete.Session.fire_rules(session)
 
 Rete.Session.facts(session) |> Enum.sort()
 #=> [
+#     {:threshold, 100},
 #     {:customer, 1, "Ada"},
 #     {:customer, 2, "Bo"},
 #     {:large_order, 1, 250},
@@ -168,8 +169,7 @@ Rete.Session.facts(session) |> Enum.sort()
 #     {:order, 1, 40},
 #     {:order, 1, 250},
 #     {:spend, "Ada", 290},
-#     {:spend, "Bo", 30},
-#     {:threshold, 100}
+#     {:spend, "Bo", 30}
 #   ]
 ```
 
@@ -190,22 +190,40 @@ A query has the same left hand side as a rule, but it never fires. It holds the 
 that reached it. **It is a function in its own module**, so you read it back by calling it.
 
 ```elixir
-Retail.large_orders(session, cid: 1)
+Retail.large_orders(session, 1)
 #=> [{1, 250}]
 ```
 
 A query returns **what its body computes**, one result per match. It answers in whatever
 shape suits the caller, instead of handing back raw bindings.
 
-The `(cid)` before the conditions is the **head** of the query. It declares the parameters.
-The engine keys the matches on those parameters, so a read is a map lookup and not a scan.
-A call must name every parameter, and no other name. Write no head for a query that takes
-no parameters and answers with every match that it holds.
+The `(cid)` before the conditions is the **head** of the query, and it is the argument list
+of the function. A head is a list of ordinary Elixir patterns, so you choose the shape a
+caller writes:
+
+```elixir
+defquery by_pair(cid, tid)(...)             #=> by_pair(session, 1, 2)
+defquery by_tuple({cid, tid})(...)          #=> by_tuple(session, {1, 2})
+defquery by_map(%{cid: cid, tid: tid})(...) #=> by_map(session, %{cid: 1, tid: 2})
+defquery big(cid, amt when amt > 1000)(...) #=> big(session, 1, 5_000)
+```
+
+What the patterns bind is what the engine keys the matches on, so a read is a map lookup
+and not a scan. A call that does not match raises `FunctionClauseError`. A call of the
+wrong arity warns at compile time, and raises `UndefinedFunctionError` when it runs. Each
+is reported at the line you wrote, and an editor completes the call. Write no head for a
+query that answers with every match that it holds.
+
+A guard on the head is a test on the left hand side. The query thus holds no match that
+fails it, and a call naming a rejected value answers `[]`. The guard is not on the generated
+clause, so it may call anything a rule body may call, and not only what an Elixir guard
+allows.
 
 A query is identified by `{module, name}`, never by a bare name. Because of this, two
 rulesets that each define a `:summary` compose into one session without collision.
 
-When you choose the query at runtime, name the pair:
+When you choose the query at runtime, name the pair. That call takes the **bindings**, and
+not the head, because it cannot know the pattern:
 `Rete.Session.query(session, {Retail, :large_orders}, cid: 1)`.
 
 ### Retract
@@ -218,13 +236,13 @@ session =
 
 Rete.Session.facts(session) |> Enum.sort()
 #=> [
+#     {:threshold, 100},
 #     {:customer, 1, "Ada"},
 #     {:customer, 2, "Bo"},
 #     {:online_order, 2, 30},
 #     {:order, 1, 40},
 #     {:spend, "Ada", 40},
-#     {:spend, "Bo", 30},
-#     {:threshold, 100}
+#     {:spend, "Bo", 30}
 #   ]
 ```
 
@@ -243,13 +261,13 @@ session =
 
 Rete.Session.facts(session) |> Enum.sort()
 #=> [
-#     {:customer, 1, "Ada"},
-#     {:customer, 2, "Bo"},
 #     {:dormant, "Ada"},
 #     {:dormant, "Bo"},
+#     {:threshold, 100},
+#     {:customer, 1, "Ada"},
+#     {:customer, 2, "Bo"},
 #     {:spend, "Ada", 0},
-#     {:spend, "Bo", 0},
-#     {:threshold, 100}
+#     {:spend, "Bo", 0}
 #   ]
 ```
 
@@ -261,26 +279,45 @@ its own. See the empty-collection rule in [docs/dsl.md](docs/dsl.md) for why.
 ### Ask why
 
 ```elixir
-Rete.Inspect.explain(session, {:dormant, "Ada"})
-#=> [
-#     %{
-#       fact: {:dormant, "Ada"},
-#       rule: :dormant,
-#       origin: :derived,
-#       bindings: %{cid: 1, name: "Ada"},
-#       supports: [%{fact: {:customer, 1, "Ada"}, rule: nil}]
-#     }
-#   ]
+Rete.Inspect.explain(session, {Retail, :dormant})
+#=> %{
+#     rule: :dormant,
+#     module: Retail,
+#     type: :rule,
+#     activations: [
+#       %{
+#         bindings: %{cid: 1, name: "Ada"},
+#         matches: [
+#           %{fact: {:customer, 1, "Ada"}, origin: :asserted, from: [], members: nil}
+#         ],
+#         inserted: [{:dormant, "Ada"}]
+#       },
+#       %{
+#         bindings: %{cid: 2, name: "Bo"},
+#         matches: [
+#           %{fact: {:customer, 2, "Bo"}, origin: :asserted, from: [], members: nil}
+#         ],
+#         inserted: [{:dormant, "Bo"}]
+#       }
+#     ]
+#   }
 ```
 
-Each entry is one independent support. A fact concluded twice needs both supports to go
-before the fact itself goes.
+One activation is one match the rule fired on, so two dormant customers give two. Each
+entry of `:matches` says where its fact came from. `:from` names the rules that concluded
+it, so you read a chain by following that pair to its own entry. It is a list, because a
+fact concluded twice has two independent supports, and both must go before the fact itself
+goes.
 
-`Rete.Inspect` also has:
+A collection reports the gathered list under `origin: :gathered`, with each member described
+in `:members`. That is what the rule received.
 
-* `fired/2` — what has concluded something
-* `why_not/2` — how far a rule got, condition by condition
-* `collection/3`
+`Rete.Inspect` has one other function:
+
+* `why_not/1,2` — how far a rule got, condition by condition
+
+Both take a `{module, name}` pair for one rule or query. Call either with the session alone
+for every rule and query at once. Both need a session you have fired.
 
 For history instead of a snapshot, attach `Rete.Listener.Collect` or `Rete.Listener.Trace`.
 
@@ -309,7 +346,7 @@ Seven modules are public. They are the ones the examples above use:
 | `Rete` | aggregating rule, expression and taxonomy data across ruleset modules |
 | `Rete.Ruleset` | `defrule`, `defquery`, `derive`, `underive` |
 | `Rete.Session` | building a session, inserting, retracting, firing, querying |
-| `Rete.Inspect` | `explain/2`, `fired/2`, `why_not/2`, `collection/3` |
+| `Rete.Inspect` | `explain/1,2`, `why_not/1,2` |
 | `Rete.Listener` (+ `.Collect`, `.Trace`) | watching what a session does |
 
 **Everything else is internal**: the DSL front end, the IR, the compiler, the network, the
@@ -356,7 +393,7 @@ docs under `docs/design/` record why.
   one: alpha and beta node sharing across modules as well as within one, hash joins,
   incremental retraction. Two profiling passes have run, and `mix bench` keeps their
   results honest by reporting the empirical exponent of each scenario rather than a
-  wall-clock figure. All eighteen scenarios are linear.
+  wall-clock figure. Every scenario is linear.
   [docs/design/engine.md](docs/design/engine.md) §12 lists the known gaps that remain, and
   what each would take to close. What has *not* been done is tuning for absolute
   throughput, or measuring wide disjunctions or memory rather than time.
@@ -386,24 +423,42 @@ mix credo --strict
 mix dialyzer
 ```
 
-CI runs exactly those, on the declared floor (Elixir 1.18) and on the current release.
+CI runs exactly those, on the declared floor (Elixir 1.18) and on the current release. It
+also runs the command below, once, on the current release.
 
 ```bash
 mix bench
 ```
 
-Scaling benchmarks report the **empirical exponent**: the k in O(n^k), read from the growth
-between one size and the next. This is more useful than a wall-clock figure, since nobody
-has a baseline for that.
+Scaling benchmarks report the **empirical exponent**: the k in O(n^k). This is more useful
+than a wall-clock figure, since nobody has a baseline for that.
 
 This engine's real failure mode is not a slow function. It is an operation that proves
 quadratic in something a session accumulates. A single-size measurement cannot show this.
 
-Around `~n^1` is fine. `~n^2` is a bug, unless `docs/design/` already lists it as a known
-gap.
+Each scenario runs at three or four sizes and reports two numbers. The **fit** is k over
+every size at once, by least squares, and it is the verdict. The gate on it is `n^1.5`. The
+**worst pair** is the steepest step between two sizes, and it is printed to be read.
 
-Wall-clock thresholds are not in CI. On shared runners, they fail for reasons that mean
-nothing.
+The *last* step is gated on as well, against a looser bound of `n^1.8`. A fit is an
+average, so on its own it would dilute a scenario that stays linear until the largest size
+and turns quadratic there. That is the failure this file exists to catch.
+
+Around `~n^1` is fine. `~n^2` is a bug. There is no way to exempt a scenario from either
+bound, so one that cannot hold the line is one to fix or to delete.
+
+**The exponent gates CI.** A run that finds a superlinear scenario exits non-zero and names
+it. This is safe to gate on because an exponent is a ratio between two timings. The speed of
+the machine thus has no effect on it. Run `mix bench` under `ELIXIR_ERL_OPTIONS="+S 2:2"`, or
+on a loaded machine, and it reports the same numbers.
+
+CI runs the benchmark **once**, and it does not retry. A scenario that fails now and then
+is a scenario sitting too near the gate. Move it away from the gate, or record why it
+belongs there.
+
+**Wall-clock thresholds are asserted on nowhere.** On shared runners they fail for reasons
+that mean nothing. Every duration `mix bench` prints is there to be read, and not to be
+compared against a bound.
 
 ## Acknowledgments
 

@@ -17,6 +17,27 @@ and no semicolons. Keep it that way.
 To check after an edit, count the words in each sentence of the prose you changed. A
 sentence above 30 words needs to be two sentences.
 
+## Comment density
+
+The section above says how a comment reads. This one says whether to write it at all.
+
+A comment carries the reason behind a decision. It does not restate the line below it.
+`timeout-minutes: 15` explains itself, so a comment on it is noise, and noise dilutes the
+comments that do carry a reason.
+
+Density varies by file, and it varies a lot. `lib/**/*.ex` comments heavily, because the
+engine holds decisions the code cannot show. Why a memory is indexed the other way is one.
+Config and infra files hold almost none. `.github/workflows/ci.yml`, `mix.exs` and
+`.formatter.exs` take a comment only where a choice is invisible, such as why
+`cache/restore` replaces `cache`.
+
+Match the file you are in. Heavy commenting in the source is not a licence to comment at
+that density everywhere. A mechanical change applied across several places takes no block
+comment to introduce it.
+
+To check after an edit, read each comment you added without the code under it. One that
+tells you nothing new is one to delete.
+
 ## Performance figures
 
 A figure in the prose comes from a scenario in `bench/run.exs`, which `mix bench` runs.

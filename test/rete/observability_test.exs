@@ -27,6 +27,13 @@ defmodule Rete.ObservabilityTest do
       {:vip, cid}
     end
 
+    # Reads the fact those two both conclude, so its match names both as the source.
+    defrule vip_reader({:vip, cid}) do
+      {:vip_seen, cid}
+    end
+
+    defquery flagged_rows({:flagged, cid}), do: cid
+
     defrule dormant({:cust, cid}, {:not, [{:order, cid, _a}]}) do
       {:dormant, cid}
     end
@@ -36,10 +43,66 @@ defmodule Rete.ObservabilityTest do
     end
   end
 
+  # The two shapes a collection compiles to. A token carries the list each of them handed
+  # the rule, so `explain/2` reports both the same way. See `Rete.Memory.groups/3`.
+  defmodule Collections do
+    use Rete.Ruleset
+
+    # No cross-condition guard, so this compiles to an Accumulate, which stores facts.
+    defrule spend({:customer, cid, _name}, orders = [{:order, cid, _amt}]) do
+      {:spend, cid, length(orders)}
+    end
+
+    # The guard reads `limit` from another condition, so this compiles to an
+    # AccumulateJoin, which stores elements and decides membership for each token.
+    defrule big(
+              {:threshold, limit},
+              {:vip, cid, _name},
+              orders = [{:sale, cid, amt} when amt > limit]
+            ) do
+      {:big, cid, length(orders)}
+    end
+  end
+
   @facts [{:order, 1, 250}, {:gold, 2}, {:spender, 2}, {:cust, 3}]
 
   defp session(facts \\ @facts) do
     [Rules] |> Session.new() |> Session.insert(facts) |> Session.fire_rules()
+  end
+
+  defp plain_collection do
+    [Collections]
+    |> Session.new()
+    |> Session.insert([{:customer, 1, "Ada"}, {:order, 1, 250}, {:order, 1, 40}])
+    |> Session.fire_rules()
+  end
+
+  defp filtered_collection do
+    [Collections]
+    |> Session.new()
+    |> Session.insert([{:threshold, 100}, {:vip, 1, "Ada"}, {:sale, 1, 250}, {:sale, 1, 40}])
+    |> Session.fire_rules()
+  end
+
+  # The one match of a rule that fired exactly once.
+  defp only_activation(session, ref) do
+    %{activations: [activation]} = Inspect.explain(session, ref)
+    activation
+  end
+
+  # The `{module, name}` of the helper a compound negation generates. `explain/1` leaves it
+  # out, so a test that wants it has to read it off the network.
+  defp generated_ref(session) do
+    session
+    |> Session.network()
+    |> Rete.Network.beta_nodes()
+    |> Enum.find_value(fn node ->
+      name = Map.get(node, :name)
+
+      if is_atom(name) and name != nil and to_string(name) =~ "__neg_" do
+        {node.module, name}
+      end
+    end)
   end
 
   defp observed(facts \\ @facts) do
@@ -181,115 +244,143 @@ defmodule Rete.ObservabilityTest do
   # --- explanations ------------------------------------------------------------------
 
   describe "explain/2" do
-    test "walks a derivation chain down to the asserted facts" do
-      assert [%{fact: {:escalated, 1}, origin: :derived, rule: :escalate, supports: [flagged]}] =
-               Inspect.explain(session(), {:escalated, 1})
+    test "reports the match a rule fired on and what it concluded" do
+      assert %{rule: :flag, module: Rules, type: :rule, activations: [activation]} =
+               Inspect.explain(session(), {Rules, :flag})
 
-      assert %{fact: {:flagged, 1}, origin: :derived, rule: :flag, supports: [order]} = flagged
-      assert %{fact: {:order, 1, 250}, origin: :asserted, supports: []} = order
+      assert %{bindings: %{cid: 1, amt: 250}, inserted: [{:flagged, 1}]} = activation
+      assert [%{fact: {:order, 1, 250}, origin: :asserted, from: []}] = activation.matches
     end
 
-    # The case a lookup that returns the *first* support gets wrong, and the
-    # reason this returns a list at all.
-    test "reports every independent support separately" do
-      supports = Inspect.explain(session(), {:vip, 2})
+    # One level of provenance. `:from` names the rule, and you follow that pair to its own
+    # entry rather than reading a tree that repeats under everything resting on it.
+    test "a derived fact names the rule that concluded it" do
+      assert %{activations: [%{matches: [match]}]} =
+               Inspect.explain(session(), {Rules, :escalate})
 
-      assert [:vip_gold, :vip_spend] == supports |> Enum.map(& &1.rule) |> Enum.sort()
-
-      assert [{:gold, 2}, {:spender, 2}] ==
-               supports |> Enum.flat_map(& &1.supports) |> Enum.map(& &1.fact) |> Enum.sort()
+      assert %{fact: {:flagged, 1}, origin: :derived, from: [{Rules, :flag}]} = match
     end
 
-    test "an asserted fact has no supports" do
-      assert [%{origin: :asserted, rule: nil, supports: []}] =
-               Inspect.explain(session(), {:order, 1, 250})
+    # The case a lookup returning the *first* support gets wrong, and the reason `:from` is
+    # a list rather than one pair.
+    test "a fact with two independent supports names both rules" do
+      %{activations: activations} = Inspect.explain(session(), {Rules, :vip_gold})
+      %{activations: spend} = Inspect.explain(session(), {Rules, :vip_spend})
+
+      assert [{:vip, 2}] == Enum.flat_map(activations, & &1.inserted)
+      assert [{:vip, 2}] == Enum.flat_map(spend, & &1.inserted)
+
+      # Read from the other side: whatever matches {:vip, 2} sees both as its source.
+      assert %{activations: [%{matches: [match]}]} =
+               Inspect.explain(session(), {Rules, :vip_reader})
+
+      assert :derived == match.origin
+      assert [{Rules, :vip_gold}, {Rules, :vip_spend}] == Enum.sort(match.from)
     end
 
-    test "a fact the session does not hold is reported as unknown" do
-      assert [%{origin: :unknown}] = Inspect.explain(session(), {:nope, 99})
+    test "a rule that never fired reports no activations" do
+      assert %{rule: :flag, activations: []} = Inspect.explain(session([]), {Rules, :flag})
     end
 
-    test "a retracted conclusion stops being explainable" do
-      session = session() |> Session.retract({:order, 1, 250}) |> Session.fire_rules()
-      assert [%{origin: :unknown}] = Inspect.explain(session, {:escalated, 1})
-    end
-
-    # A compound negation is implemented with a generated marker fact. It has to
-    # be a real fact for the negation to match on, but it is not something the
-    # user's rules concluded and must not appear in an explanation.
-    test "internal negation markers never appear in an explanation" do
-      assert [%{fact: {:clean, 3}, rule: :clean, supports: supports}] =
-               Inspect.explain(session(), {:clean, 3})
-
-      assert [{:cust, 3}] == Enum.map(supports, & &1.fact)
-    end
-
-    test "a collection contributes its members, not the list" do
-      defmodule Coll do
+    # The documented limit of reading truth maintenance. A body returning `nil` concludes
+    # nothing, so no match rests on a conclusion, and a production keeps no tokens of its
+    # own. The firing leaves nothing in memory to report. A listener is what sees it, so
+    # this pins both halves: what `explain` cannot say, and what does say it.
+    test "a rule that fired and concluded nothing is indistinguishable from one that did not" do
+      defmodule Silent do
         use Rete.Ruleset
 
-        defrule tally({:cust, cid}, os = [{:order, cid, _a}]) do
-          {:tally, cid, length(os)}
+        defrule quiet({:ping, id}) do
+          _ = id
+          nil
         end
+
+        defrule loud({:ping, id}), do: {:pong, id}
       end
 
       session =
-        [Coll]
+        [Silent]
         |> Session.new()
-        |> Session.insert([{:cust, 1}, {:order, 1, 10}, {:order, 1, 20}])
+        |> Session.with_listener(Listener.Collect, [])
+        |> Session.insert({:ping, 1})
         |> Session.fire_rules()
 
-      assert [%{supports: supports}] = Inspect.explain(session, {:tally, 1, 2})
+      assert %{activations: []} = Inspect.explain(session, {Silent, :quiet})
+      assert %{activations: [_]} = Inspect.explain(session, {Silent, :loud})
 
-      assert [{:cust, 1}, {:order, 1, 10}, {:order, 1, 20}] ==
-               supports |> Enum.map(& &1.fact) |> Enum.sort()
+      # It did fire, and the listener is the thing that knows.
+      fired =
+        session
+        |> Listener.Collect.by_tag(:activation_fired)
+        |> Enum.map(fn {:activation_fired, source, _token, facts} -> {source.rule, facts} end)
+
+      assert {{Silent, :quiet}, []} in fired
+      assert {{Silent, :loud}, [{:pong, 1}]} in fired
+    end
+
+    test "a retracted conclusion stops being reported" do
+      session = session() |> Session.retract({:order, 1, 250}) |> Session.fire_rules()
+
+      assert %{activations: []} = Inspect.explain(session, {Rules, :flag})
+    end
+
+    # A compound negation is implemented with a generated marker fact. It has to be a real
+    # fact for the negation to match on, but it is not something the user's rules concluded
+    # and must not appear in an explanation.
+    test "internal negation markers never appear in an explanation" do
+      assert %{activations: [%{matches: matches, inserted: [{:clean, 3}]}]} =
+               Inspect.explain(session(), {Rules, :clean})
+
+      assert [{:cust, 3}] == Enum.map(matches, & &1.fact)
+    end
+
+    # A generated helper is left out of `explain/1`, and named explicitly it still answers.
+    test "a generated helper is reachable by name" do
+      session = session([{:cust, 1}, {:order, 1, 10}, {:refund, 1}])
+
+      refute Enum.any?(Inspect.explain(session), &(to_string(&1.rule) =~ "__neg_"))
+
+      assert %{activations: [_ | _]} = Inspect.explain(session, generated_ref(session))
+    end
+
+    test "a query reports the matches it holds, and concludes nothing" do
+      assert %{type: :query, activations: [activation]} =
+               Inspect.explain(session(), {Rules, :flagged_rows})
+
+      assert [] == activation.inserted
+
+      assert [%{fact: {:flagged, 1}, origin: :derived, from: [{Rules, :flag}]}] =
+               activation.matches
     end
   end
 
-  # --- fired ------------------------------------------------------------------------
+  # --- explain over the whole session ------------------------------------------------
 
-  describe "fired/2" do
-    test "reports the rule, its match and what it inserted" do
-      fired = Inspect.fired(session())
+  describe "explain/1" do
+    test "covers every rule and query, sorted, with generated helpers left out" do
+      explained = Inspect.explain(session())
 
-      assert %{
-               rule: :flag,
-               module: Rules,
-               bindings: %{cid: 1, amt: 250},
-               inserted: [{:flagged, 1}]
-             } in fired
+      assert Enum.map(explained, & &1.rule) == explained |> Enum.map(& &1.rule) |> Enum.sort()
+      assert :flag in Enum.map(explained, & &1.rule)
+      assert {:flagged_rows, :query} in Enum.map(explained, &{&1.rule, &1.type})
+      refute Enum.any?(explained, &(to_string(&1.rule) =~ "__neg_"))
     end
 
-    # Two rulesets may each define a :flag. The bare name stays, so a caller
-    # matching on it still works, and the module says which one this was.
-    test "reports the module the rule was defined in" do
-      assert Enum.all?(Inspect.fired(session()), &(&1.module == Rules))
-    end
+    test "each entry carries the same shape explain/2 gives for it" do
+      session = session()
 
-    test "generated negation helpers are hidden unless asked for" do
-      # The helper only inserts its marker when the negated conjunction actually
-      # matches, so this needs a customer with both an order and a refund.
-      session = session([{:cust, 1}, {:order, 1, 10}, {:refund, 1}])
-
-      refute Enum.any?(Inspect.fired(session), &(to_string(&1.rule) =~ "__neg_"))
-
-      assert Enum.any?(
-               Inspect.fired(session, generated: true),
-               &(to_string(&1.rule) =~ "__neg_")
-             )
-    end
-
-    test "a rule whose conclusion was retracted no longer appears" do
-      session = session() |> Session.retract({:order, 1, 250}) |> Session.fire_rules()
-      refute Enum.any?(Inspect.fired(session), &(&1.rule == :flag))
+      for %{rule: rule, module: module} = entry <- Inspect.explain(session) do
+        assert entry == Inspect.explain(session, {module, rule})
+      end
     end
   end
 
   # --- why_not -------------------------------------------------------------------------
 
   describe "why_not/2" do
-    test "reports the chain a rule's conditions form" do
-      steps = Inspect.why_not(session(), {Rules, :dormant})
+    test "reports the rule it is about, and the chain its conditions form" do
+      assert %{rule: :dormant, module: Rules, chain: steps} =
+               Inspect.why_not(session(), {Rules, :dormant})
 
       assert ["root_join", "negation", "production"] == Enum.map(steps, & &1.kind)
       assert [:cust, :order, nil] == Enum.map(steps, & &1.type)
@@ -297,7 +388,7 @@ defmodule Rete.ObservabilityTest do
 
     # The diagnostic: the left side matched and the right side found nothing.
     test "shows where the chain broke" do
-      steps = Inspect.why_not(session([{:cust, 7}]), {Rules, :dormant})
+      %{chain: steps} = Inspect.why_not(session([{:cust, 7}]), {Rules, :dormant})
       negation = Enum.find(steps, &(&1.kind == "negation"))
 
       assert negation.tokens == 1, "the customer condition matched"
@@ -305,7 +396,7 @@ defmodule Rete.ObservabilityTest do
     end
 
     test "a terminal reports how many matches it concluded from" do
-      steps = Inspect.why_not(session(), {Rules, :flag})
+      %{chain: steps} = Inspect.why_not(session(), {Rules, :flag})
       terminal = List.last(steps)
 
       assert "production" == terminal.kind
@@ -325,6 +416,35 @@ defmodule Rete.ObservabilityTest do
 
       assert error.message =~ "a rule is named by {module, name}"
       assert error.message =~ "Rete.ObservabilityTest.Rules.flag"
+    end
+
+    # Both functions refuse the same two mistakes, in the same words.
+    test "explain/2 refuses an unknown rule and a bare name the same way" do
+      unknown = assert_raise ArgumentError, fn -> Inspect.explain(session(), {Rules, :nope}) end
+      bare = assert_raise ArgumentError, fn -> Inspect.explain(session(), :flag) end
+
+      assert unknown.message =~ "no rule or query Rete.ObservabilityTest.Rules.nope"
+      assert bare.message =~ "a rule is named by {module, name}"
+    end
+  end
+
+  # --- why_not over the whole session -------------------------------------------------
+
+  describe "why_not/1" do
+    test "covers every rule and query, sorted, with generated helpers left out" do
+      chains = Inspect.why_not(session())
+
+      assert Enum.map(chains, & &1.rule) == chains |> Enum.map(& &1.rule) |> Enum.sort()
+      assert :dormant in Enum.map(chains, & &1.rule)
+      refute Enum.any?(chains, &(to_string(&1.rule) =~ "__neg_"))
+    end
+
+    test "each entry carries the same chain why_not/2 gives for it" do
+      session = session()
+
+      for %{rule: rule, module: module} = entry <- Inspect.why_not(session) do
+        assert entry == Inspect.why_not(session, {module, rule})
+      end
     end
   end
 
@@ -378,9 +498,9 @@ defmodule Rete.ObservabilityTest do
   describe "the tools that need a settled session" do
     defp unfired, do: [Rules] |> Session.new() |> Session.insert(@facts)
 
-    # These two read what propagation built. On a session with work still queued that is
-    # zero of everything. It reads as "nothing matched" when the truth is "nothing has been
-    # matched yet". A diagnostic that lies is worse than one that refuses.
+    # Both read what propagation built. On a session with work still queued that is zero of
+    # everything. It reads as "nothing matched" when the truth is "nothing has been matched
+    # yet". A diagnostic that lies is worse than one that refuses.
     test "why_not/2 refuses a session with propagation queued" do
       error = assert_raise ArgumentError, fn -> Inspect.why_not(unfired(), {Rules, :flag}) end
 
@@ -389,10 +509,19 @@ defmodule Rete.ObservabilityTest do
       assert error.message =~ "fire_rules/2"
     end
 
-    test "collection/3 refuses a session with propagation queued" do
-      error = assert_raise ArgumentError, fn -> Inspect.collection(unfired(), 1, %{}) end
-
-      assert error.message =~ "collection/3 needs a session that you fired"
+    # `explain/2` used to answer here, because it read memories that `insert/2` updates at
+    # once. It reports activations now, and an activation is something propagation built,
+    # so it answers the same way `why_not/2` does.
+    test "every arity refuses a session with propagation queued, and names itself" do
+      for {called, call} <- [
+            {"explain/1", fn -> Inspect.explain(unfired()) end},
+            {"explain/2", fn -> Inspect.explain(unfired(), {Rules, :flag}) end},
+            {"why_not/1", fn -> Inspect.why_not(unfired()) end},
+            {"why_not/2", fn -> Inspect.why_not(unfired(), {Rules, :flag}) end}
+          ] do
+        error = assert_raise ArgumentError, call
+        assert error.message =~ "#{called} needs a session that you fired"
+      end
     end
 
     # A session that fired and was then inserted into is refused too. Its counts are real,
@@ -418,45 +547,116 @@ defmodule Rete.ObservabilityTest do
       refute error.message =~ "needs a session that you fired"
     end
 
-    # The control, and the reason the split is deliberate rather than blanket. Both read
-    # memories that `insert/2` updates at once, so both are already correct here.
-    test "explain/2 and fired/2 answer on an unfired session" do
-      session = unfired()
+    test "explain/2 checks the name before the fire in the same way" do
+      error = assert_raise ArgumentError, fn -> Inspect.explain(unfired(), {Rules, :typoo}) end
 
-      assert [%{origin: :asserted}] = Inspect.explain(session, {:order, 1, 250})
-      assert [] == Inspect.fired(session)
-    end
-
-    # What "answer at any point" does and does not promise. A queued retract takes the
-    # fact out of working memory and leaves the conclusion resting on it, so `explain/2`
-    # names a support the session no longer holds. `origin: :unknown` is the documented
-    # word for exactly that, so the answer is true of the session as it stands. It stops
-    # being true on the next fire, which is why the moduledoc says to fire first for a
-    # settled provenance graph.
-    test "explain/2 reports a support that a queued retract already removed" do
-      queued =
-        [Rules]
-        |> Session.new()
-        |> Session.insert(@facts)
-        |> Session.fire_rules()
-        |> Session.retract({:order, 1, 250})
-
-      assert {:flagged, 1} in Session.facts(queued)
-      refute {:order, 1, 250} in Session.facts(queued)
-
-      assert [%{origin: :derived, supports: [%{fact: {:order, 1, 250}, origin: :unknown}]}] =
-               Inspect.explain(queued, {:flagged, 1})
-
-      # And the next fire settles it: the conclusion goes with its support.
-      settled = Session.fire_rules(queued)
-      refute {:flagged, 1} in Session.facts(settled)
+      assert error.message =~ "no rule or query"
+      refute error.message =~ "needs a session that you fired"
     end
 
     test "both answer once the session is fired" do
       session = Session.fire_rules(unfired())
 
-      assert [_ | _] = Inspect.why_not(session, {Rules, :flag})
-      assert [] == Inspect.collection(session, 1, %{})
+      assert %{chain: [_ | _]} = Inspect.why_not(session, {Rules, :flag})
+      assert %{activations: [_ | _]} = Inspect.explain(session, {Rules, :flag})
+    end
+  end
+
+  # --- what a collection gathered ----------------------------------------------------------
+
+  # A token records the list the accumulate node handed the rule, so `explain/2` reports a
+  # collection per activation. The caller names the rule, and never a node id or a join key.
+  describe "a collection in an explanation" do
+    # A plain collection stores facts, and a filtered one stores candidates its filter
+    # decides per token. The token carries the result either way, so both read alike here.
+    test "a plain collection reports the facts it gathered" do
+      session = plain_collection()
+      activation = only_activation(session, {Collections, :spend})
+
+      assert [%{fact: {:customer, 1, "Ada"}, origin: :asserted}, collection] =
+               activation.matches
+
+      assert :gathered == collection.origin
+      assert [{:order, 1, 40}, {:order, 1, 250}] == Enum.sort(collection.fact)
+
+      assert [{:order, 1, 40}, {:order, 1, 250}] ==
+               collection.members |> Enum.map(& &1.fact) |> Enum.sort()
+
+      assert [{:spend, 1, 2}] == activation.inserted
+    end
+
+    # The fact the filter kept out must not appear. Reporting the stored candidates would
+    # describe a larger collection than the rule received.
+    test "a filtered collection reports only what passed its filter" do
+      session = filtered_collection()
+      activation = only_activation(session, {Collections, :big})
+
+      collection = Enum.find(activation.matches, &(&1.origin == :gathered))
+
+      assert [{:sale, 1, 250}] == collection.fact
+      assert [{:big, 1, 1}] == activation.inserted
+    end
+
+    # The case the old node-and-join-key call could not answer. Two thresholds over one
+    # customer give two activations under one join key, each seeing a different set. Keyed
+    # by the activation, each one reports its own collection instead of their union.
+    test "two activations over one join key each report their own collection" do
+      session =
+        [Collections]
+        |> Session.new()
+        |> Session.insert([
+          {:threshold, 100},
+          {:threshold, 200},
+          {:vip, 1, "Ada"},
+          {:sale, 1, 250},
+          {:sale, 1, 150},
+          {:sale, 1, 40}
+        ])
+        |> Session.fire_rules()
+
+      %{activations: activations} = Inspect.explain(session, {Collections, :big})
+
+      gathered =
+        for activation <- activations,
+            match <- activation.matches,
+            match.origin == :gathered,
+            do: {activation.bindings.limit, Enum.sort(match.fact)}
+
+      # The activation for 100 gathered 250 and 150. The one for 200 gathered 250 alone.
+      # Neither gathered 40, and neither is reported holding the other's members.
+      assert [{100, [{:sale, 1, 150}, {:sale, 1, 250}]}, {200, [{:sale, 1, 250}]}] ==
+               Enum.sort(gathered)
+    end
+
+    # A gathered fact carries its own provenance, so a collection over conclusions reads as
+    # a collection over conclusions.
+    test "a gathered fact that a rule concluded names that rule" do
+      defmodule Gathered do
+        use Rete.Ruleset
+
+        defrule flag_it({:raw, cid, amt}) do
+          {:big, cid, amt}
+        end
+
+        defrule tally({:cust, cid}, bigs = [{:big, cid, _amt}]) do
+          {:tally, cid, length(bigs)}
+        end
+      end
+
+      session =
+        [Gathered]
+        |> Session.new()
+        |> Session.insert([{:cust, 1}, {:raw, 1, 10}, {:raw, 1, 20}])
+        |> Session.fire_rules()
+
+      collection =
+        session
+        |> only_activation({Gathered, :tally})
+        |> Map.fetch!(:matches)
+        |> Enum.find(&(&1.origin == :gathered))
+
+      assert Enum.all?(collection.members, &(&1.origin == :derived))
+      assert [[{Gathered, :flag_it}]] == collection.members |> Enum.map(& &1.from) |> Enum.uniq()
     end
   end
 

@@ -225,10 +225,18 @@ defmodule Rete.Network.Node do
     A terminal node for a query. Holds the tokens that reached it, to be read back by
     name.
 
-    `:params` is the head of the query. These are the bindings that key its tokens, and
+    `:params` is what the head of the query binds. These are the keys of its tokens, and
     they are the only way to read it. `Rete.Engine.query/3` takes exactly these, so a read
-    is one map lookup. An empty list is a query with no parameters. Its tokens all key on
-    `%{}`, and they come back in arrival order.
+    is one map lookup. An empty list is a query with no parameters, or one whose head binds
+    nothing. Its tokens all key on `%{}`, and they come back in arrival order.
+
+    The patterns of the head do not reach here. The generated function matches them, and
+    hands this node the bindings it took out. See `Rete.DSL.Codegen.query_def/1`.
+
+    `:head` is those patterns rendered as source, one string each, and `[]` for a query
+    with no head. Nothing matches on it. It is here for one message: a bare name given to
+    `Rete.Engine.query/3` names the call to write in its place. Without this the message
+    would print a placeholder, because nothing else here knows the head.
     """
     @type t :: %__MODULE__{
             id: non_neg_integer() | nil,
@@ -237,9 +245,10 @@ defmodule Rete.Network.Node do
             hash: integer(),
             rhs: fun(),
             bind: [atom()],
-            params: [atom()]
+            params: [atom()],
+            head: [String.t()]
           }
-    defstruct [:id, :name, :module, :hash, :rhs, bind: [], params: []]
+    defstruct [:id, :name, :module, :hash, :rhs, bind: [], params: [], head: []]
   end
 
   @type t ::

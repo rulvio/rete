@@ -47,19 +47,10 @@ value: no processes, no ETS, no side channel.
 
 ### Events
 
-| event | when |
-|---|---|
-| `{:fire_started, opts}` | `fire_rules/2` begins |
-| `{:fire_finished, fired}` | the agenda is empty |
-| `{:fact_inserted, fact, origin}` | a fact enters working memory |
-| `{:fact_retracted, fact, origin}` | a fact leaves it |
-| `{:fact_duplicated, fact}` | an equal fact was present, so nothing entered the queue |
-| `{:propagated, op, node_id, count}` | a node consumed `count` items |
-| `{:activation_added, source, token}` | a production's LHS became satisfied |
-| `{:activation_removed, source, token}` | a pending activation was cancelled |
-| `{:activation_fired, source, token, facts}` | a rule ran |
+`Rete.Listener` lists the events and the shape of each. What matters here is **when** they
+reach a listener, which follows from the two loops rather than from the list.
 
-Only three of these reach a listener outside a fire. `insert/2` and `retract/2` emit
+Only three of them reach a listener outside a fire. `insert/2` and `retract/2` emit
 `:fact_inserted`, `:fact_retracted` and `:fact_duplicated`, because they update working
 memory at once. Everything else happens inside `fire_rules/2`, which is the only call that
 propagates. That covers every `:propagated` event and every `:activation_*` one. See
@@ -96,64 +87,99 @@ event, with propagation events behind `verbose: true`.
 `Rete.Inspect` needs **no listener and no setup**, because truth maintenance already
 records what it needs. `memory.insertions` is `node_id => token => [[facts]]`: "this match
 at this production inserted these facts". Read backwards, this is exactly a provenance
-edge. A token's `:matches` is the ordered list of facts behind it. `explain/2` just walks
+edge. A token's `:matches` is the ordered list of facts behind it. `explain/1,2` just walks
 these two structures.
 
 Prefer the memory-derived answer wherever one exists. It needs no setup, and it cannot
 drift from reality. Listeners add only what memory cannot know: history, ordering, and
 activations that fired and were later retracted.
 
-| function | question | needs a settled session |
-|---|---|---|
-| `explain/2` | why does this fact exist? | no |
-| `fired/2` | which rules have concluded something? | no |
-| `why_not/2` | how far did this rule get? | **yes** |
-| `collection/3` | what did this collection gather? | **yes** |
+| function | question |
+|---|---|
+| `explain/1,2` | what did this rule do, and what is behind each match? |
+| `why_not/1,2` | how far did this rule get? |
 
-The last column follows from §1's split, not from a preference. `explain/2` and `fired/2`
-read memories that `insert/2` and `retract/2` update at once, so they answer about the
-session as it stands at any point. The other two read what propagation built, and
-propagation waits for `fire_rules/2`. On a session with work queued they would report zero
-of everything, which reads as "nothing matched" when the truth is "nothing has been matched
-yet". They raise instead, and name the pending count. A diagnostic that lies is worse than
-one that refuses. `Rete.Session.query/3` is deliberately not guarded this way: it is asked
-what matched, and `[]` is a true answer. See `engine.md` §2.
+Both are addressed the same way. A `{module, name}` pair asks about one rule or query. No
+pair asks about every rule and query in the session. That pair is the only address either
+one takes, and it is the pair you wrote in `defrule`.
 
-### `explain/2` returns a list
+### Both need a settled session
 
-Each entry is one **independent support**. A fact concluded by two rules, or by one rule
-through two matches, has two supports, and it needs both to go before the fact itself
-goes. Reporting only the first support would be exactly the kind of lie that makes
+Both read what propagation built, and propagation waits for `fire_rules/2`. On a session
+with work queued they would report zero of everything, which reads as "nothing matched"
+when the truth is "nothing has been matched yet". They raise instead, and name the pending
+count. A diagnostic that lies is worse than one that refuses.
+
+A session that fired and was then inserted into is refused too. Its counts are real, and
+they describe a network the newest facts have not reached. That is the same failure wearing
+plausible numbers.
+
+`Rete.Session.query/3` is deliberately not guarded this way: it is asked what matched, and
+`[]` is a true answer. See `engine.md` §2.
+
+### Provenance is one level deep
+
+Each entry of an activation's `:matches` says where its fact came from. `:from` is the list
+of rules that concluded it, and you follow one of those pairs to its own entry in the same
+result. A tree instead would repeat the same subtree under everything resting on it, and it
+would need a cycle guard for a conclusion that supports itself.
+
+`:from` is a **list**, and that is not incidental. A fact concluded by two rules, or by one
+rule through two matches, has two independent supports, and it needs both to go before the
+fact itself goes. Reporting only the first would be exactly the kind of lie that makes
 retraction look broken.
+
+### There is no separate reader for collections
+
+A collection propagates only its result, so its members would be invisible once a token has
+moved on. They are not, because `Rete.Engine.Nodes` extends the token with the gathered list
+itself, and for a filtered collection that list is already what the filter kept. So an
+activation carries the collection the rule received, and `explain/2` reports it under
+`origin: :gathered` with each member described in `:members`.
+
+This used to be `collection/3`, which took a node id and a **join key**. The join key is
+whatever `Rete.DSL.Bindings` classified as `join_bind` for that node, and nothing public
+reports it, so a caller had to guess. A wrong guess answered `[]`, which is what "gathered
+nothing" also answers. Keyed by the activation, there is nothing left to guess.
 
 ### What is translated rather than leaked
 
 * **Marker facts.** A compound negation compiles to a generated helper that inserts a
   marker. The marker must be a real fact, for the negation to match on it. But it is not a
-  user conclusion: `Session.facts/1` hides it, and `explain/2` skips it when walking
-  supports.
+  user conclusion: `Session.facts/1` hides it, and `explain/2` skips it when reading a
+  token's matches.
 * **The root token.** A rule opening with a negation or collection is anchored on a seeded
-  empty token. It is not a matched fact, and it is never presented as one.
-* **Generated helpers.** `fired/2` hides them, unless you pass `generated: true`.
-  `why_not/2` never suggests them in its "no such rule" error.
-* **Collections.** A token records the gathered *list*. `explain/2` expands it into its
-  members instead, since that is what the user recognizes.
+  empty token. It is not a matched fact, and it is never presented as one. A rule with no
+  conditions therefore reports one activation with no matches.
+* **Generated helpers.** The arity-1 forms leave them out, and `why_not/2` never suggests
+  them in its "no such rule" error. Name one explicitly and either function answers.
+* **Collections.** A token records the gathered *list*, and that list is reported whole
+  under `origin: :gathered`, because it is what the rule received. `:members` describes
+  each fact in it, so a gathered fact a rule concluded still names that rule.
 
-### Reading `why_not/2`
+### Reading `why_not/1,2`
 
-It reports `:elements` (facts matching this condition alone) and `:tokens` (partial
-matches arriving from the left) as separate numbers, plus `:activations` on a terminal. It
-deliberately avoids one "matches" number. A root join holds elements and emits tokens
-without storing them. A production holds neither. A single column would mean something
-different at every node, and it would read as `0` where nothing is actually wrong.
+The `:chain` reports `:elements` (facts matching this condition alone) and `:tokens`
+(partial matches arriving from the left) as separate numbers, plus `:activations` on a
+terminal. It deliberately avoids one "matches" number. A root join holds elements and emits
+tokens without storing them. A production holds neither. A single column would mean
+something different at every node, and it would read as `0` where nothing is actually wrong.
 
-Read it left to right and find the first node where the two disagree:
+Read the chain in order and find the first node where the two disagree:
 
 ```
 node 9  root_join  :cust   elements=2 tokens=0     two customers matched
 node 10 negation   :order  elements=1 tokens=2     both reached here; one order suppressed one
 node 11 production         elements=0 tokens=0 activations=1
 ```
+
+### Why these two, and not more
+
+`explain` and `fired` were once separate, and both read `memory.insertions`: `fired`
+forwards, `explain` backwards through the `inserters` index. One rule-keyed report answers
+both questions, which is the shape Clara's `clara.tools.inspect/inspect` returns. Every
+address either function takes is now a `{module, name}` pair the caller wrote. No function
+here asks for a node id or a join key that only the compiler knows.
 
 ---
 
@@ -234,13 +260,19 @@ just catch the error.
 
 ## 4. Known gaps
 
-* **`why_not/2` follows one parent.** A node reached through a disjunction has several
+* **`why_not/1,2` follows one parent.** A node reached through a disjunction has several
   parents. The first is enough to show where a chain broke, without turning the output
   into a tree. But a rule whose branches fail differently will show only one of them.
-* **`fired/2` is a snapshot, not a history.** It reads truth maintenance, so a rule that
-  fired and was later retracted does not appear. Attach `Rete.Listener.Collect`, and read
-  `:activation_fired` events for that instead.
-* **No "why did this fact *not* get concluded".** `why_not/2` answers that for a named
+* **`explain/1,2` is a snapshot, not a history.** It reads truth maintenance, so a rule
+  that fired and was later retracted reports no activation for that match. Attach
+  `Rete.Listener.Collect`, and read `:activation_fired` events for that instead.
+* **A rule that concludes nothing reports no activation.** Truth maintenance records a
+  match only where a conclusion rests on it, and a production keeps no tokens of its own.
+  So a body returning `nil` or `[]` fires and leaves nothing behind to read, and
+  `activations: []` cannot be told apart from a rule that never matched. Clara splits the
+  same way: its `:rule-matches` holds only the matches with a logical insertion. A listener
+  sees these firings, as an `:activation_fired` event carrying no facts.
+* **No "why did this fact *not* get concluded".** `why_not/1,2` answers that for a named
   rule. Nothing starts from a hypothetical fact and works backwards.
 * **`Listener.Collect` grows without bound.** Fine for a test or a debugging session, not
   for a long-lived one.

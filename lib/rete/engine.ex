@@ -115,54 +115,28 @@ defmodule Rete.Engine do
     batches |> Enum.reverse() |> Enum.concat() |> coalesce()
   end
 
-  # Merges across calls, once, before a fire drains anything. `insert/3` coalesces the ops
-  # of its own call, and nothing used to span calls because each call drained. Now they
-  # queue, so a caller that inserts one fact at a time hands a node one item per call
-  # instead of one batch. This puts those back together.
+  # Merges across calls, once, before a fire drains anything, so a caller feeding one fact
+  # at a time still hands a node one batch.
   #
-  # Safe to run over the whole queue only here. `new/1`, `insert/3` and `retract/3` enqueue
-  # nothing but `{direction, node, items}`, and a fire drains to empty, so the queue holds
-  # no `{:event, ...}` or `{:retract_facts, ...}` at this point. Nodes produce both during
-  # the drain. `coalesce/1` rejects both rather than trusting this argument, whenever the
-  # queue holds more than one op. A lone op is returned as it stands, and one op cannot be
-  # merged with anything, so nothing can go wrong there either.
-  #
-  # That is the argument about op **shape**. The argument about **direction** is the merge
-  # window in `coalesce/1`, and this is the call that needs it. A queue built by one call
-  # carries one direction. A queue built by several carries both, for the same node.
+  # Safe over the whole queue only here: a fire drains to empty, so the queue holds nothing
+  # but `{direction, node, items}` at this point. `coalesce/1` re-checks rather than trust
+  # that. It is also the call that needs the merge window, because a queue built by several
+  # calls carries both directions for one node. See `docs/design/engine.md` §2.
   defp coalesce_queue(%State{queue: queue} = state) do
     %State{state | queue: queue |> :queue.to_list() |> coalesce() |> :queue.from_list()}
   end
 
-  # Merges ops that go the same way to the same node, so a node is handed a batch instead of
-  # one element per call. A node's per-call work is not all per item. It dispatches, groups
-  # by join key, and at a negation or a collection reads back what it already holds. Paying
-  # that once per fact is what made an unkeyed negation quadratic.
+  # Merges ops that go the same way to the same node. A node's per-call work is not all per
+  # item, so paying it once per fact is what made an unkeyed negation quadratic.
   #
-  # **This decides an order.** A rule's own matches still arrive in fact order. A rule
-  # reached by two routes now sees all of one route's matches before the other's. See
-  # `docs/design/engine.md` §7, "what arrival order does not promise".
+  # **A node's merge window closes when the opposite direction reaches it.** The two
+  # directions do not commute, so an op moved back past its own inverse can lose a
+  # retraction. `docs/design/engine.md` §2 works the case through, and §7 covers the arrival
+  # order this decides.
   #
-  # **A node's merge window closes when the opposite direction reaches that node.** Merging
-  # moves an op back to where its target first appeared, and an op must never move back past
-  # its own inverse. The two directions do not commute: `Rete.Memory.remove_elements/4`
-  # removes only what it holds, and drops the rest, while `add_elements/4` keeps a duplicate.
-  # So `right[f], right_retract[f], right[f]` merged into `right[f, f], right_retract[f]`
-  # still settles right, and `right_retract[f], right[f], right_retract[f]` merged the same
-  # way loses the second retraction and strands the element for good. See §5, "the retraction
-  # rule". The window rule refuses both, and asks nothing of how the queue was built.
-  #
-  # A rule that only moves inserts back, and never retractions, would keep the first of those
-  # merges. It was rejected. Whether it is sound depends on what the rest of the engine can
-  # put in the queue, and this function cannot see that. The window rule is safe to read on
-  # its own.
-  #
-  # Nothing is lost where it matters. One `insert/3` or `retract/3` call queues one
-  # direction, so no window closes and a batch of any size still merges to one op.
-  #
-  # Only a direction merges. `{:retract_facts, node, facts}` is a 3-tuple too, so without
-  # the check it would merge as though `:retract_facts` were a direction, silently and in a
-  # changed order. `merge_op/2` refuses it, and says so. See `Rete.Engine.State.op/0`.
+  # Only a direction merges. `{:retract_facts, node, facts}` is a 3-tuple too, so without the
+  # check it would merge as though `:retract_facts` were a direction. `merge_op/2` refuses
+  # it, and says so.
   @mergeable [:left, :left_retract, :right, :right_retract]
 
   defp coalesce([]), do: []
@@ -279,12 +253,17 @@ defmodule Rete.Engine do
   Runs a query: one result per match, computed by the query's body.
 
   A query is named by the `{module, name}` pair it was defined under. `defquery
-  summary(...)` also defines `summary/2` in its own module. `MyRuleset.summary(session,
-  params)` is the readable form of this call.
+  summary(...)` also defines `summary` in its own module, and calling that is the readable
+  form of this call.
 
-  `params` gives a value for every parameter of the head of the query, and for no other
-  name. The engine keys the matches on those parameters, so this is a map lookup and not a
-  scan. A query with no head takes no parameters, and it answers with every match.
+  `params` gives a value for every binding that the head of the query makes, and for no
+  other name. The engine keys the matches on those bindings, so this is a map lookup and
+  not a scan. A query with no head takes no parameters, and it answers with every match.
+
+  **This takes the bindings, and not the head.** The head of a query is a list of patterns,
+  and the generated function matches them. This call is dispatched by `{module, name}` at
+  run time, so it cannot know those patterns. For a head of `({cid, tid})`, the generated
+  function takes `{1, 2}` and this one takes `%{cid: 1, tid: 2}`.
 
   A parameter matches a binding by **term equality**, in the same way as a map key. `1` and
   `1.0` are therefore different parameter values, but `==` reports that they are equal.
@@ -312,19 +291,34 @@ defmodule Rete.Engine do
   defp bare_name_message(state, name) do
     suggestions =
       for {module, ^name} = ref <- Network.query_refs(state.network),
+          node = Network.query(state.network, ref),
           do:
-            "    #{inspect(module)}.#{name}(session, params)\n" <>
-              "    Rete.Session.query(session, #{inspect(ref)}, params)"
+            "    #{inspect(module)}.#{name}(#{call_args(node)})\n" <>
+              "    Rete.Session.query(session, #{inspect(ref)}, #{param_args(node)})"
 
     detail =
       case suggestions do
-        [] -> "No query of that name is defined here. " <> defined(state)
-        _ -> "Did you mean:\n\n" <> Enum.join(suggestions, "\n")
+        [] ->
+          "No query of that name is defined here. " <> defined(state)
+
+        _ ->
+          "Did you mean one of these, with your own values in place of the names:\n\n" <>
+            Enum.join(suggestions, "\n")
       end
 
     "a query is named by {module, name}, not by #{inspect(name)} alone — " <>
       "two rulesets may each define one. " <> detail
   end
+
+  # The two calls differ in what they take, so the suggestion spells out both. The head
+  # decides the arguments of the generated function, and `Rete.Network.Node.Query` carries
+  # it as source for this. `:params` decides the keys this call wants. Neither line stands
+  # a placeholder in for the other, and the lead-in says the names are not values.
+  defp call_args(%{head: [_ | _] = head}), do: Enum.join(["session" | head], ", ")
+  defp call_args(_node), do: "session"
+
+  defp param_args(%{params: [_ | _] = params}), do: Enum.map_join(params, ", ", &"#{&1}: ...")
+  defp param_args(_node), do: "[]"
 
   defp query_node!(state, {module, _name} = ref) do
     case Network.query(state.network, ref) do

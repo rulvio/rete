@@ -64,7 +64,7 @@ one that catches people out, because an empty result at least looks wrong.
 
 `Rete.Session.settled?/1` reports an empty queue. A query does not raise on a full one,
 because the last settled answer is a true answer about some state of the session.
-`Rete.Inspect.why_not/2` and `collection/3` do raise, because they answer *why* a rule did
+`Rete.Inspect.why_not/1,2` and `explain/1,2` do raise. They answer *why* a rule did or did
 not match, and an answer about the wrong state of the session is false to that question.
 See `observability.md` §2 for the split, and §12 for why the query side answers `[]`
 rather than raising.
@@ -87,6 +87,14 @@ refuses that move, and asks nothing of how the queue was built. One `insert/3` o
 `retract/3` call queues one direction, so a batch of any size still merges to one op. Only a
 caller that alternates the two directions on one node across calls gets more than one, and
 it gets one per run.
+
+Concretely: `right[f], right_retract[f], right[f]` merged into `right[f, f],
+right_retract[f]` still settles right. `right_retract[f], right[f], right_retract[f]`
+merged the same way loses the second retraction, and strands the element for good.
+
+A narrower rule, moving inserts back but never retractions, would keep the first of those
+merges. It was rejected. Whether it is sound depends on what the rest of the engine can put
+in the queue, and the merge cannot see that. The window rule is safe to read on its own.
 
 Where the caller put its call boundaries is therefore not part of what a session means. Any
 sequence of inserts and retractions batched before one fire settles where firing after every
@@ -157,12 +165,13 @@ invalidating one of them does not make the fact false. `elements` and `tokens` a
 for the same reason. The engine retracts them one occurrence at a time.
 
 **`insertions` is the provenance graph.** "This match at this production inserted these
-facts" — read backwards, this is exactly the edge that `Rete.Inspect.explain/2` walks. No
+facts" — read backwards, this is exactly the edge that `Rete.Inspect.explain/1,2` walks. No
 separate bookkeeping exists for explanation.
 
 `inserters` is that same relation indexed the other way, and the one derived thing in here.
 Both its readers ask "which matches inserted *this fact*". `well_founded/3` asks on every
-conclusion already present, and `Rete.Inspect.derivations/2` asks per fact. Answering from
+conclusion already present, and `Rete.Inspect` asks per matched fact when it names where
+that fact came from. Answering from
 `insertions` costs a pass over every insertion record, which made two rules concluding one
 fact quadratic. Two rules concluding one fact is the ordinary shape of truth maintenance,
 not a pathology.
@@ -391,7 +400,7 @@ nor a call that names it.
 A query reads propagated state, so it answers **as of the most recent fire**. Nothing
 propagates before `fire_rules/2`, so a session nobody fired answers `[]`, and a session
 fired and then inserted into answers from before that insert. A query does not raise on
-either. `Rete.Inspect.why_not/2` does. See §2.
+either. `Rete.Inspect.why_not/1,2` does. See §2.
 
 ## 10. What is asserted about all of this
 
@@ -647,7 +656,7 @@ the rule instead.
   So the engine reports two things instead, and neither costs anything.
   `Rete.Session.settled?/1` says that work is waiting, and not what it is.
   `Rete.Listener` reports each activation as it is added and as it fires, which is the same
-  information at the moment it stops being a guess. `Rete.Inspect.why_not/2` answers the
+  information at the moment it stops being a guess. `Rete.Inspect.why_not/1,2` answers the
   question after the fact, on a settled session.
 
   `Rete.Session.pending/1` was the function that tried the other way, and 0.5.0 removed it.
@@ -828,15 +837,32 @@ every alpha its type routes to. `BetaGraph` found a shareable node by scanning e
 of every parent, and r rules that share nothing all hang off the root. `link/3` then
 appended to that child list, which is O(children) per node added. Sharing is an index now,
 and children are stored newest first and reversed by `children/2`. Compiling 1,024 rules
-over one fact type went from an extrapolated ~225 ms to 7.7 ms.
+over one fact type went from an extrapolated ~225 ms to 3.2 ms.
+
+`mix bench` measures that scenario on a **fresh process**, which is what `isolate: true`
+asks for. A build allocates a whole network, so five builds in one process grow its heap
+with the rule count. Collection then costs more at every later size. The measurement read
+~n^1.34 that way, and it reads ~n^1.05 on a fresh heap. An application builds its network
+one time at start, so the isolated figure is the one that describes it.
 
 ### Queries
 
-The **parameters** of a query are its head, and they key its matches. `Rete.Engine.Nodes`
-stores each token under `Token.join_key(token, node.params)`, in the store of the query
-node. `Rete.Engine.query/3` then uses the parameters of a call as that key. There is one
-store and one keying. A read is thus a map fetch, and it costs what it returns, not what
-the query holds.
+The **parameters** of a query are what its head binds, and they key its matches.
+`Rete.Engine.Nodes` stores each token under `Token.join_key(token, node.params)`, in the
+store of the query node. `Rete.Engine.query/3` then uses the parameters of a call as that
+key. There is one store and one keying. A read is thus a map fetch, and it costs what it
+returns, not what the query holds.
+
+The patterns of the head do not reach the network. They are Elixir patterns, and they are
+the argument list of the function the query generates. That function matches the call
+against them, takes out the bindings, and hands this node the same map it always took. So
+the calling convention is a compile-time matter, and the store is unchanged by it. The node
+does carry the head rendered as source, so that a message can name the call to write, and
+nothing matches on that.
+
+A guard on the head is the one part of it that changes what the network holds. It becomes a
+`Rete.IR.Test` on the left hand side, so the query node never stores a match it rejects.
+See `ir.md` §2.
 
 | 200 reads, 4,000 matches, one row returned | |
 |---|---|
@@ -902,7 +928,7 @@ out of 4,000:
 | | |
 |---|---|
 | `rows(session) \|> Enum.filter(...)` | 18 ms |
-| `defquery rows(a)(...)` then `rows(session, a: 1)` | **0.01 ms** |
+| `defquery rows(a)(...)` then `rows(session, 1)` | **0.01 ms** |
 
 That is a factor of approximately 1,600, and the body is what makes it so large. A head
 keys on the bindings, so the body runs for the one row that comes back. A filter on the
@@ -913,8 +939,9 @@ so it did not read like a head. But it ran on the bindings, and called the body 
 the rows it kept, so it did not pay the body cost that `Enum.filter/2` pays. That filter is
 deleted, so `mix bench` cannot measure it and no row here stands for it.
 
-You cannot reach for it by accident. The old call raises an error, and the message names
-the head to write.
+You cannot reach for it by accident. A query with no head is `name/1`, so the old call
+does not compile. `Rete.Session.query/3` reaches the same query at run time, and it
+raises an error whose message names the head to write.
 
 In one case you must use the first row. This is a binding that **cannot** become a
 parameter. If only some branches of a disjunction bind a variable, that variable is

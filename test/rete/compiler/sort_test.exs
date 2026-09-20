@@ -280,6 +280,39 @@ defmodule Rete.Compiler.SortTest do
       assert error.message =~ "[{:item, id} when id > n] - needs `n`"
     end
 
+    # A gate is spelled back out the way it was written, so the reader can find it. Each
+    # shape has its own clause, and a missing one would render the IR struct instead.
+    test "reports a negation, a compound negation and a disjunction the same way" do
+      negation =
+        assert_raise ArgumentError, fn -> sort("r({:not, [{:order, c, amt} when amt > t]})") end
+
+      assert negation.message =~ "not {:order, c, amt} when amt > t - needs `t`"
+
+      compound =
+        assert_raise ArgumentError, fn ->
+          sort("r({:nand, [{:order, c, amt} when amt > t, {:refund, c}]})")
+        end
+
+      assert compound.message =~
+               "not ({:order, c, amt} when amt > t and {:refund, c}) - needs `t`"
+
+      disjunction =
+        assert_raise ArgumentError, fn ->
+          sort("r({:or, [{:a, x} when x > t, {:b, x} when x > t]})")
+        end
+
+      assert disjunction.message =~ "({:a, x} when x > t or {:b, x} when x > t) - needs `t`"
+    end
+
+    # A fact with no guard of its own still reaches `describe/1` when a condition beside it
+    # cannot be placed, and it must not render as the IR struct.
+    test "reports an unguarded fact by its source" do
+      error = assert_raise ArgumentError, fn -> sort("r({:order, c}, {:note, n} when n > t)") end
+
+      assert error.message =~ "{:note, n} when n > t - needs `t`"
+      refute error.message =~ "%Rete.IR"
+    end
+
     test "a gate that was never normalized raises" do
       production =
         Parser.parse_production(__ENV__, quote(do: r({:or, [{:a, x}, {:b, x}]})), nil, :rule)

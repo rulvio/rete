@@ -175,14 +175,12 @@ defmodule Rete.DSL.Codegen do
   # Whether two modules that produce this code may be put on one node.
   #
   # Read over the same `{args, body}` pair `expr_hash/2` consumes, so the answer covers
-  # exactly what the code commits to. Most of the ways an expression could depend on the
-  # module that wrote it are already closed before this runs: `Rete.DSL.Parser` resolves
-  # aliases to the module they name, rewrites `@x` to carry its defining module, and
-  # unwraps pins. See `docs/design/ir.md` §5.
+  # exactly what the code commits to. `Rete.DSL.Parser` has already closed the other ways an
+  # expression could depend on its module. See `docs/design/ir.md` §5.
   #
-  # What is left is the unqualified call. `ok?(amt)` hashes as the bare name, whether it
-  # resolves to an import or to a function of the calling module, so two modules produce
-  # one code for two functions. One such call is enough to refuse the share.
+  # What is left is the unqualified call. `ok?(amt)` hashes as the bare name whether it is an
+  # import or a local, so two modules produce one code for two functions. One refuses the
+  # share.
   @spec share?(Macro.Env.t(), Macro.t(), Macro.t()) :: boolean()
   defp share?(env, args, body) do
     {_ast, blocked?} =
@@ -229,10 +227,8 @@ defmodule Rete.DSL.Codegen do
       end
   end
 
-  # Sorted, always. `Map.to_list/1` on an atom-keyed map iterates in atom-table
-  # *interning* order. So the same source text used to hash to different codes,
-  # depending on whether the build was incremental. Codes are the node-sharing key, so
-  # that silently duplicated alpha nodes on every rebuild.
+  # Sorted, always. An unsorted map in a hashed AST makes the code depend on atom interning
+  # order, which duplicated alpha nodes on a rebuild. See `docs/design/ir.md` §5.
   defp bind_pattern(bind), do: {:%{}, [], Enum.sort_by(bind, &elem(&1, 0))}
 
   # --------------------------------------------------------------------------
@@ -307,21 +303,11 @@ defmodule Rete.DSL.Codegen do
   @doc """
   The stable hash of an AST fragment.
 
-  Two normalizations run first. Both exist so the hash is a function of what the code
-  *means*, not of how it was typed:
-
-    * metadata is stripped, so a rule keeps its hash when it moves down a file.
-    * discarded variables are canonicalized to `_`. So `{:order, _x}` and
-      `{:order, _y}` — byte-identical once compiled, since a `_`-prefixed name is never
-      a binding — share one expression, and therefore one alpha node.
-
-  A module attribute hashes as its *name*, because its value cannot be known here.
-  `@limit` expands to a hidden `Module.__get_attribute__` call, and that call only runs
-  once the module body is evaluated — after every macro in the body has already
-  expanded. So two conditions over the same pattern share a code, whatever the attribute
-  is currently worth. This is what keeps them sharing an alpha node, in the ordinary case
-  where the value has not changed. `check_attr_values!/3` catches the case where the
-  value *has* changed, when the body runs.
+  Metadata is stripped and discarded variables are canonicalized to `_`, so the hash is a
+  function of what the code means rather than how it was typed. A module attribute hashes
+  as its *name*, because its value is not knowable at expansion time.
+  `check_attr_values!/3` covers the case where that value changed. See
+  `docs/design/ir.md` §5.
   """
   @spec ast_hash(Macro.t()) :: non_neg_integer()
   def ast_hash(ast) do
@@ -369,26 +355,43 @@ defmodule Rete.DSL.Codegen do
   @doc """
   The quoted definition of a query's own function, or `nil` for a rule.
 
-  `defquery summary(...)` defines `summary/1` and `summary/2`, so you run a query by
-  calling it:
+  The head of the query is the argument list, so you run a query by calling it in the shape
+  that you declared:
 
-      MyRuleset.summary(session)
-      MyRuleset.summary(session, cid: 1)
+      defquery summary({:total, cid, n})           #=> MyRuleset.summary(session)
+      defquery by_customer(cid)({:total, cid, n})  #=> MyRuleset.by_customer(session, 1)
+      defquery pair({cid, n})({:total, cid, n})    #=> MyRuleset.pair(session, {1, 2})
 
-  It delegates to `Rete.Session.query/3`, with `{__MODULE__, name}`. This is what lets
-  two rulesets use the same query name. The pair is the identity, and the caller writes
-  the module. The caller does not depend on a bare name being unique.
+  A head of N patterns gives `name/(N+1)`. The session is the first argument, so a query
+  pipes. A call that does not match the head raises `FunctionClauseError`, in the way that
+  any other function does.
+
+  **A head guard does not reach the clause.** It is a `Rete.IR.Test` on the left hand side
+  instead, so nothing here carries it. See `docs/design/ir.md` §2.
+
+  The body builds the key map from the variables the head bound, and hands it to
+  `Rete.Session.query/3` with `{__MODULE__, name}`. This is what lets two rulesets use the
+  same query name. The pair is the identity, and the caller writes the module. The caller
+  does not depend on a bare name being unique.
   """
   @spec query_def(IR.Production.t()) :: Macro.t() | nil
-  def query_def(%IR.Production{type: :query, name: name}) do
+  def query_def(%IR.Production{type: :query, name: name, __ast__: ast}) do
+    head = Map.get(ast, :head, [])
+    key_map = key_map(Map.get(ast, :head_bind, %{}))
+    call = quote(do: Rete.Session.query(session, {__MODULE__, unquote(name)}, unquote(key_map)))
+
     quote do
-      Kernel.def unquote(name)(session, params \\ []) do
-        Rete.Session.query(session, {__MODULE__, unquote(name)}, params)
-      end
+      Kernel.def(unquote(name)(session, unquote_splicing(head)), do: unquote(call))
     end
   end
 
   def query_def(%IR.Production{}), do: nil
+
+  # The map the engine keys on, built from the variables the head patterns bound. Sorted by
+  # name, so that one declaration always generates one piece of code.
+  defp key_map(head_bind) do
+    {:%{}, [], Enum.sort_by(head_bind, &elem(&1, 0))}
+  end
 
   @doc """
   The quoted definitions of every expression function of a production.

@@ -175,8 +175,12 @@ defmodule Rete.FactShapesTest do
       order = %{__type__: :order, id: 1, cid: 1, amount: 250}
       session = run(Maps, [order])
 
-      assert [%{origin: :derived, rule: :large, supports: [%{fact: ^order}]}] =
-               Inspect.explain(session, %{__type__: :large, id: 1})
+      assert %{
+               activations: [%{matches: [%{fact: ^order, origin: :asserted}], inserted: inserted}]
+             } =
+               Inspect.explain(session, {Maps, :large})
+
+      assert [%{__type__: :large, id: 1}] == inserted
     end
 
     # The tuple original is test/rete/behavior_test.exs:180. Facts are a multiset whatever
@@ -327,8 +331,12 @@ defmodule Rete.FactShapesTest do
       order = %Order{id: 1, cid: 1, amount: 250}
       session = run(Structs, [order])
 
-      assert [%{origin: :derived, rule: :rebate, supports: [%{fact: ^order}]}] =
-               Inspect.explain(session, %Refund{id: 1, amount: 25})
+      assert %{
+               activations: [%{matches: [%{fact: ^order, origin: :asserted}], inserted: inserted}]
+             } =
+               Inspect.explain(session, {Structs, :rebate})
+
+      assert [%Refund{id: 1, amount: 25}] == inserted
     end
 
     test "an equal struct inserted twice needs two retractions" do
@@ -418,19 +426,23 @@ defmodule Rete.FactShapesTest do
 
       for cid <- [0, 1, 2, 3, 99] do
         assert Enum.filter(Plain.map_rows(plain), &(elem(&1, 0) == cid)) ==
-                 Keyed.map_rows(keyed, cid: cid),
+                 Keyed.map_rows(keyed, cid),
                "map_rows disagreed on cid: #{cid}"
 
         assert Enum.filter(Plain.struct_rows(plain), &(elem(&1, 0) == cid)) ==
-                 Keyed.struct_rows(keyed, cid: cid),
+                 Keyed.struct_rows(keyed, cid),
                "struct_rows disagreed on cid: #{cid}"
       end
     end
 
+    # The head names `cid`, so `cid` is the one key. `Rete.Session.query/3` is the path
+    # that can be handed another name, and it refuses one.
     test "a binding the head does not name cannot be read by" do
       keyed = run(Keyed, rec_facts() ++ order_facts())
 
-      assert_raise ArgumentError, fn -> Keyed.map_rows(keyed, tid: 1) end
+      assert_raise ArgumentError, fn ->
+        Rete.Session.query(keyed, {Keyed, :map_rows}, tid: 1)
+      end
     end
   end
 

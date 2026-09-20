@@ -382,6 +382,24 @@ defmodule Rete.DSL.ParserTest do
       end
     end
 
+    # A condition matches a fact that is already there, so it has no call to default.
+    # Elixir reports `\\` in a match as "undefined function \\/2", which names nothing the
+    # author wrote. The check runs over the whole element, so a nested one is caught too.
+    test "a condition cannot carry a default" do
+      for source <- [
+            "r({:order, cid \\\\ 1})",
+            "r({:cust, c}, os = [{:order, c, _a \\\\ 1}])"
+          ] do
+        error =
+          assert_raise ArgumentError, fn ->
+            Parser.parse_production(__ENV__, Code.string_to_quoted!(source), nil, :rule)
+          end
+
+        assert error.message =~ "gives a condition a default"
+        assert error.message =~ "Remove the default"
+      end
+    end
+
     test "expressions are shared by code and every one is captured" do
       expr_data = Rules.get_expr_data()
 

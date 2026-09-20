@@ -163,15 +163,27 @@ defmodule Rete.IR do
     A rule-level guard produces this — `defrule r(...) when <guard> do` — and so do
     guards lifted out of a condition, when they only reference variables bound upstream.
     `:bind` is what the guard **reads**, not what it introduces.
+
+    `:source` records which of the two the author wrote, so that a message about the guard
+    names the construct they can find in their file. The advice differs as well. A head
+    guard reads only what the head binds, so it cannot move onto a condition the way a rule
+    level guard can. It is compile-time only, in the way `:__ast__` is, and
+    `Rete.IR.escape/1` drops it.
+
+    It has no default, for the same reason `:__ast__` has none. A default of `:rule` would
+    survive `escape/1` and read as a claim about what the author wrote, which the escaped
+    struct cannot make. `nil` records that nobody asked. `Rete.DSL.Parser` sets it at both
+    places that build a test.
     """
 
     @type t :: %__MODULE__{
             bind: [atom()],
             expr: Rete.IR.Expr.t(),
+            source: :rule | :head | nil,
             __ast__: %{guard: Macro.t(), bind: %{atom() => Macro.t()}} | nil
           }
 
-    defstruct [:bind, :expr, :__ast__]
+    defstruct [:bind, :expr, :__ast__, :source]
   end
 
   defmodule Gate do
@@ -245,10 +257,14 @@ defmodule Rete.IR do
         negation's variables, and it is the *union* over a disjunction's branches. A
         variable only some branches bind is not in every token, so the RHS reads it
         defensively.
-      * `:params` is the head of a query: the bindings that key its matches. It is always
+      * `:params` is what the head of a query binds: the keys of its matches. It is always
         `[]` on a rule. Unlike `:bind`, it holds only *guaranteed* bindings, which are the
-        keys that every match carries. It keeps declaration order, because that is the
-        order in which an error message about a call names the parameters.
+        keys that every match carries. It is sorted.
+      * `:head` is the head of a query **as it was written**, one string per pattern. The
+        patterns themselves are AST, so they stay in `__ast__.head` for the code generator
+        and go no further. Only a message needs them after that, and a message needs the
+        source rather than the AST. So this is what survives `escape/1` and reaches the
+        network.
       * `:rhs` is `nil` until the production is escaped. The engine logically inserts
         and truth-maintains its return value. `nil` or `[]` inserts nothing.
     """
@@ -260,13 +276,26 @@ defmodule Rete.IR do
             opts: keyword(),
             bind: [atom()],
             params: [atom()],
+            head: [String.t()],
             lhs: Rete.IR.lhs(),
             rhs: (integer(), map() -> any()) | nil,
             module: module(),
             __ast__: map() | nil
           }
 
-    defstruct [:name, :type, :hash, :opts, :bind, :lhs, :rhs, :module, :__ast__, params: []]
+    defstruct [
+      :name,
+      :type,
+      :hash,
+      :opts,
+      :bind,
+      :lhs,
+      :rhs,
+      :module,
+      :__ast__,
+      params: [],
+      head: []
+    ]
   end
 
   @doc """
@@ -424,6 +453,7 @@ defmodule Rete.IR do
       opts: opts,
       bind: Macro.escape(bind),
       params: Macro.escape(production.params),
+      head: Macro.escape(production.head),
       lhs: Enum.map(lhs, &escape_condition/1),
       rhs: quote(do: Function.capture(__MODULE__, unquote(rhs_name(name)), 2)),
       module: quote(do: __MODULE__)
