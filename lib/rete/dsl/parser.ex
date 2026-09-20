@@ -205,19 +205,9 @@ defmodule Rete.DSL.Parser do
     end
   end
 
-  # A head guard is a test over the bindings, and that is all it is. A query is read by term
-  # equality, so the guard holds of an argument exactly when it holds of the binding that
-  # argument matches. Testing it here thus removes exactly the matches that no call could
-  # reach, and a call that names a rejected value finds nothing and answers `[]`.
-  #
-  # A guard on the generated clause would reject those same calls, so it would add no answer
-  # that this one gets wrong. It would cost the guard its language. A test is a compiled
-  # function and may call anything, where a guard on a clause may not.
-  #
-  # It also could not hold for both ways of reading a query. `Rete.Engine.query/3` is
-  # dispatched by `{module, name}` while the program runs, so it never sees the head. The
-  # store is the one place the two paths meet, so the store is where the guard has to act.
-  # See `docs/dsl.md`.
+  # A head guard is a test over the bindings, and that is all it is. It prunes the store,
+  # which is the one place both ways of reading a query meet. `docs/design/ir.md` §2 has why
+  # a guard on the generated clause would add nothing and cost the guard its language.
   defp head_test(_env, nil), do: []
 
   defp head_test(env, guard) do

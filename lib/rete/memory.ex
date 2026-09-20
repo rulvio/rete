@@ -16,27 +16,15 @@ defmodule Rete.Memory do
 
       inserters   fact => {node_id, token} => count          `insertions`, reversed
 
-  `inserters` is not a memory. It holds nothing `insertions` does not, indexed the other way,
-  for the two readers that ask "which matches inserted *this fact*":
-  `Rete.Engine.well_founded/3` on a conclusion already present, and `Rete.Inspect.explain/1,2`
-  when it names where a matched fact came from. Answering from `insertions` costs a pass over
-  every insertion record, which made two rules concluding one fact quadratic.
+  `inserters` is not a memory. It is `insertions` indexed by fact, for the readers that ask
+  "which matches inserted *this fact*". It stays `nil` until `index_inserters/1` builds it,
+  and it is left out of `dump/1`, being a cache.
 
-  **It is `nil` until something needs it.** A ruleset where no rule re-concludes never
-  consults it, so `index_inserters/1` builds it on first use and everything after is
-  maintained in step. It is a multiset keyed on `{node_id, token}`, so it does not depend on
-  the order the session reached it in. Being a cache, it is left out of `dump/1`.
+  **Arrival order is load-bearing.** A bucket decides the order tokens propagate, so it
+  decides the order two matches of one rule fire. One that gave items back in a different
+  order would reorder every `:activation_fired` event.
 
-  Three properties are load-bearing. See `docs/design/engine.md` §4.
-
-    * **Arrival order.** It decides the order tokens propagate, and so the order two
-      matches of one rule fire. A bucket that gave items back in a different order would
-      reorder every `:activation_fired` event.
-    * **Removal collapses the level above.** Every key above the leaf is a value, so an
-      entry pointing at an empty leaf leaks. `Rete.Engine.Nodes` also needs "no group" and
-      "an empty group" to stay different answers.
-    * **Multisets, not sets.** Inserting a fact twice, then retracting once, must leave it
-      present. Two rules may each have concluded it.
+  `docs/design/engine.md` §4 has the other two properties, and why the index is built late.
 
   `root_seeded?` is not a memory. It records that the beta root's empty token has been
   planted. This must happen exactly once per session. See `docs/design/engine.md` §6.

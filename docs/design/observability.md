@@ -47,19 +47,10 @@ value: no processes, no ETS, no side channel.
 
 ### Events
 
-| event | when |
-|---|---|
-| `{:fire_started, opts}` | `fire_rules/2` begins |
-| `{:fire_finished, fired}` | the agenda is empty |
-| `{:fact_inserted, fact, origin}` | a fact enters working memory |
-| `{:fact_retracted, fact, origin}` | a fact leaves it |
-| `{:fact_duplicated, fact}` | an equal fact was present, so nothing entered the queue |
-| `{:propagated, op, node_id, count}` | a node consumed `count` items |
-| `{:activation_added, source, token}` | a production's LHS became satisfied |
-| `{:activation_removed, source, token}` | a pending activation was cancelled |
-| `{:activation_fired, source, token, facts}` | a rule ran |
+`Rete.Listener` lists the events and the shape of each. What matters here is **when** they
+reach a listener, which follows from the two loops rather than from the list.
 
-Only three of these reach a listener outside a fire. `insert/2` and `retract/2` emit
+Only three of them reach a listener outside a fire. `insert/2` and `retract/2` emit
 `:fact_inserted`, `:fact_retracted` and `:fact_duplicated`, because they update working
 memory at once. Everything else happens inside `fire_rules/2`, which is the only call that
 propagates. That covers every `:propagated` event and every `:activation_*` one. See
@@ -187,8 +178,8 @@ node 11 production         elements=0 tokens=0 activations=1
 `explain` and `fired` were once separate, and both read `memory.insertions`: `fired`
 forwards, `explain` backwards through the `inserters` index. One rule-keyed report answers
 both questions, which is the shape Clara's `clara.tools.inspect/inspect` returns. Every
-address either function takes is now a `{module, name}` pair the caller wrote, and no
-function here asks for a node id or a join key that only the compiler knows.
+address either function takes is now a `{module, name}` pair the caller wrote. No function
+here asks for a node id or a join key that only the compiler knows.
 
 ---
 

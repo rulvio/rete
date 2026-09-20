@@ -113,10 +113,8 @@ defmodule Rete.Inspect do
 
   `activations: []` means the rule concluded nothing. That is usually a rule that never
   matched, and `why_not/2` then says where it stopped. A rule whose body returns `nil` or
-  `[]` reports the same. It fired, and it concluded nothing, so truth maintenance recorded
-  no match for it. A production keeps no tokens of its own, so nothing in memory holds that
-  match. `Rete.Listener` reports such a firing as an `:activation_fired` event with no
-  facts.
+  `[]` reports the same, because nothing in memory records a match no conclusion rests on.
+  `Rete.Listener` sees that firing where this cannot.
 
   Each entry of `:matches` says where its fact came from. `:from` names the rules that
   concluded it, so you read a chain by following that pair to its own entry in the same

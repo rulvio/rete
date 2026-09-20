@@ -175,14 +175,12 @@ defmodule Rete.DSL.Codegen do
   # Whether two modules that produce this code may be put on one node.
   #
   # Read over the same `{args, body}` pair `expr_hash/2` consumes, so the answer covers
-  # exactly what the code commits to. Most of the ways an expression could depend on the
-  # module that wrote it are already closed before this runs: `Rete.DSL.Parser` resolves
-  # aliases to the module they name, rewrites `@x` to carry its defining module, and
-  # unwraps pins. See `docs/design/ir.md` §5.
+  # exactly what the code commits to. `Rete.DSL.Parser` has already closed the other ways an
+  # expression could depend on its module. See `docs/design/ir.md` §5.
   #
-  # What is left is the unqualified call. `ok?(amt)` hashes as the bare name, whether it
-  # resolves to an import or to a function of the calling module, so two modules produce
-  # one code for two functions. One such call is enough to refuse the share.
+  # What is left is the unqualified call. `ok?(amt)` hashes as the bare name whether it is an
+  # import or a local, so two modules produce one code for two functions. One refuses the
+  # share.
   @spec share?(Macro.Env.t(), Macro.t(), Macro.t()) :: boolean()
   defp share?(env, args, body) do
     {_ast, blocked?} =
@@ -229,10 +227,8 @@ defmodule Rete.DSL.Codegen do
       end
   end
 
-  # Sorted, always. `Map.to_list/1` on an atom-keyed map iterates in atom-table
-  # *interning* order. So the same source text used to hash to different codes,
-  # depending on whether the build was incremental. Codes are the node-sharing key, so
-  # that silently duplicated alpha nodes on every rebuild.
+  # Sorted, always. An unsorted map in a hashed AST makes the code depend on atom interning
+  # order, which duplicated alpha nodes on a rebuild. See `docs/design/ir.md` §5.
   defp bind_pattern(bind), do: {:%{}, [], Enum.sort_by(bind, &elem(&1, 0))}
 
   # --------------------------------------------------------------------------
@@ -307,21 +303,11 @@ defmodule Rete.DSL.Codegen do
   @doc """
   The stable hash of an AST fragment.
 
-  Two normalizations run first. Both exist so the hash is a function of what the code
-  *means*, not of how it was typed:
-
-    * metadata is stripped, so a rule keeps its hash when it moves down a file.
-    * discarded variables are canonicalized to `_`. So `{:order, _x}` and
-      `{:order, _y}` — byte-identical once compiled, since a `_`-prefixed name is never
-      a binding — share one expression, and therefore one alpha node.
-
-  A module attribute hashes as its *name*, because its value cannot be known here.
-  `@limit` expands to a hidden `Module.__get_attribute__` call, and that call only runs
-  once the module body is evaluated — after every macro in the body has already
-  expanded. So two conditions over the same pattern share a code, whatever the attribute
-  is currently worth. This is what keeps them sharing an alpha node, in the ordinary case
-  where the value has not changed. `check_attr_values!/3` catches the case where the
-  value *has* changed, when the body runs.
+  Metadata is stripped and discarded variables are canonicalized to `_`, so the hash is a
+  function of what the code means rather than how it was typed. A module attribute hashes
+  as its *name*, because its value is not knowable at expansion time.
+  `check_attr_values!/3` covers the case where that value changed. See
+  `docs/design/ir.md` §5.
   """
   @spec ast_hash(Macro.t()) :: non_neg_integer()
   def ast_hash(ast) do
@@ -380,12 +366,8 @@ defmodule Rete.DSL.Codegen do
   pipes. A call that does not match the head raises `FunctionClauseError`, in the way that
   any other function does.
 
-  **A head guard does not reach the clause.** It is a `Rete.IR.Test` on the left hand side,
-  so the query node holds no match that fails it, and a call that names a rejected value
-  finds nothing and answers `[]`. A guard on the clause would reject the same calls, so it
-  would add no answer that this one gets wrong. It would cost the guard its language: a
-  test on the left hand side is a compiled function and may call anything, where a guard on
-  a clause may not. See `Rete.DSL.Parser` and `docs/design/ir.md` §2.
+  **A head guard does not reach the clause.** It is a `Rete.IR.Test` on the left hand side
+  instead, so nothing here carries it. See `docs/design/ir.md` §2.
 
   The body builds the key map from the variables the head bound, and hands it to
   `Rete.Session.query/3` with `{__MODULE__, name}`. This is what lets two rulesets use the

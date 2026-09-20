@@ -292,13 +292,9 @@ defmodule Rete.Ruleset do
       end
 
   The guard becomes a test on the left hand side, and nothing else. So the query holds no
-  match that it rejects, and `big_sales(session, 1, 5)` answers `[]`. This is sound because
-  a query is read by term equality: the guard holds of an argument exactly when it holds of
-  the binding that the argument matches.
-
-  The guard is **not** on the generated clause. It would reject the same calls, so it would
-  add nothing, and it would have to be a valid Elixir guard. As a test it may call anything
-  a rule body may call, such as `name when String.length(name) > 3`.
+  match that it rejects, and `big_sales(session, 1, 5)` answers `[]`. It is not on the
+  generated clause, so it may call anything a rule body may call, such as
+  `name when String.length(name) > 3`.
 
   A head guard reads only what the head binds. Write a guard over the other bindings as a
   rule level guard instead, after the conditions.
@@ -311,12 +307,10 @@ defmodule Rete.Ruleset do
       end
       #=> MyRuleset.all_users(session)  [{1, "Ada"}, {2, "Grace"}]
 
-  Every variable a head binds must be a variable that the left hand side binds, and
-  **every** match must carry it. Thus you cannot use a variable that only some branches of
-  a disjunction bind. A head that binds nothing, such as `(:tick)`, is allowed: it keys on
-  nothing, and the argument is an assertion at the call site. A `_`-prefixed name labels a
-  position and keys nothing, in the way that it does in any `def`. A rule cannot take
-  parameters, because you never read a rule. See `docs/dsl.md`.
+  Every variable a head binds must be one the left hand side binds on **every** match, so a
+  variable that only some branches of a disjunction bind is refused. A head may bind
+  nothing: `(:tick)` asserts at the call site, and a `_`-prefixed name labels a position, as
+  in any `def`. A rule cannot take a head, because you never read a rule. See `docs/dsl.md`.
   """
   defmacro defquery(decl, body) do
     defproduction(__CALLER__, decl, body, :query)

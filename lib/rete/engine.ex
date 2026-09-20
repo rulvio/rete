@@ -115,54 +115,28 @@ defmodule Rete.Engine do
     batches |> Enum.reverse() |> Enum.concat() |> coalesce()
   end
 
-  # Merges across calls, once, before a fire drains anything. `insert/3` coalesces the ops
-  # of its own call, and nothing used to span calls because each call drained. Now they
-  # queue, so a caller that inserts one fact at a time hands a node one item per call
-  # instead of one batch. This puts those back together.
+  # Merges across calls, once, before a fire drains anything, so a caller feeding one fact
+  # at a time still hands a node one batch.
   #
-  # Safe to run over the whole queue only here. `new/1`, `insert/3` and `retract/3` enqueue
-  # nothing but `{direction, node, items}`, and a fire drains to empty, so the queue holds
-  # no `{:event, ...}` or `{:retract_facts, ...}` at this point. Nodes produce both during
-  # the drain. `coalesce/1` rejects both rather than trusting this argument, whenever the
-  # queue holds more than one op. A lone op is returned as it stands, and one op cannot be
-  # merged with anything, so nothing can go wrong there either.
-  #
-  # That is the argument about op **shape**. The argument about **direction** is the merge
-  # window in `coalesce/1`, and this is the call that needs it. A queue built by one call
-  # carries one direction. A queue built by several carries both, for the same node.
+  # Safe over the whole queue only here: a fire drains to empty, so the queue holds nothing
+  # but `{direction, node, items}` at this point. `coalesce/1` re-checks rather than trust
+  # that. It is also the call that needs the merge window, because a queue built by several
+  # calls carries both directions for one node. See `docs/design/engine.md` §2.
   defp coalesce_queue(%State{queue: queue} = state) do
     %State{state | queue: queue |> :queue.to_list() |> coalesce() |> :queue.from_list()}
   end
 
-  # Merges ops that go the same way to the same node, so a node is handed a batch instead of
-  # one element per call. A node's per-call work is not all per item. It dispatches, groups
-  # by join key, and at a negation or a collection reads back what it already holds. Paying
-  # that once per fact is what made an unkeyed negation quadratic.
+  # Merges ops that go the same way to the same node. A node's per-call work is not all per
+  # item, so paying it once per fact is what made an unkeyed negation quadratic.
   #
-  # **This decides an order.** A rule's own matches still arrive in fact order. A rule
-  # reached by two routes now sees all of one route's matches before the other's. See
-  # `docs/design/engine.md` §7, "what arrival order does not promise".
+  # **A node's merge window closes when the opposite direction reaches it.** The two
+  # directions do not commute, so an op moved back past its own inverse can lose a
+  # retraction. `docs/design/engine.md` §2 works the case through, and §7 covers the arrival
+  # order this decides.
   #
-  # **A node's merge window closes when the opposite direction reaches that node.** Merging
-  # moves an op back to where its target first appeared, and an op must never move back past
-  # its own inverse. The two directions do not commute: `Rete.Memory.remove_elements/4`
-  # removes only what it holds, and drops the rest, while `add_elements/4` keeps a duplicate.
-  # So `right[f], right_retract[f], right[f]` merged into `right[f, f], right_retract[f]`
-  # still settles right, and `right_retract[f], right[f], right_retract[f]` merged the same
-  # way loses the second retraction and strands the element for good. See §5, "the retraction
-  # rule". The window rule refuses both, and asks nothing of how the queue was built.
-  #
-  # A rule that only moves inserts back, and never retractions, would keep the first of those
-  # merges. It was rejected. Whether it is sound depends on what the rest of the engine can
-  # put in the queue, and this function cannot see that. The window rule is safe to read on
-  # its own.
-  #
-  # Nothing is lost where it matters. One `insert/3` or `retract/3` call queues one
-  # direction, so no window closes and a batch of any size still merges to one op.
-  #
-  # Only a direction merges. `{:retract_facts, node, facts}` is a 3-tuple too, so without
-  # the check it would merge as though `:retract_facts` were a direction, silently and in a
-  # changed order. `merge_op/2` refuses it, and says so. See `Rete.Engine.State.op/0`.
+  # Only a direction merges. `{:retract_facts, node, facts}` is a 3-tuple too, so without the
+  # check it would merge as though `:retract_facts` were a direction. `merge_op/2` refuses
+  # it, and says so.
   @mergeable [:left, :left_retract, :right, :right_retract]
 
   defp coalesce([]), do: []

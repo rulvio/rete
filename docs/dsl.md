@@ -707,38 +707,22 @@ MyRuleset.big_sales(session, 1, 5_000)  #=> [{1, 5000}]
 MyRuleset.big_sales(session, 1, 5)      #=> []
 ```
 
-A head guard is a **test on the left hand side**, and that is all it is. The query thus
-holds no match that fails it, and a call that names a rejected value finds nothing. `[]` is
-the true answer, and it is the same answer `big_sales(session, 99, 5_000)` gets for a
-customer that does not exist.
+The guard becomes a **test on the left hand side**, so the query holds no match that fails
+it, and a call naming a rejected value finds nothing. `[]` is the true answer, and it is
+what `big_sales(session, 99, 5_000)` gets for a customer that does not exist.
 
-This is sound because a query is read by term equality. The guard holds of an argument
-exactly when it holds of the binding that the argument matches. So it removes exactly the
-matches that no call could reach, and `Rete.Session.query/3` answers the same way.
-
-**The guard is not on the generated clause.** It would reject the same calls, so it would
-add no answer that the test gets wrong. It would cost the guard its language. A test is a
-compiled function and may call anything a rule body may call:
+Two things follow from the guard being a test and not a clause guard. It may be any
+expression a rule body may call, and not only a valid Elixir guard:
 
 ```elixir
 defquery named(name when String.length(name) > 3)({:user, name, id}), do: {name, id}
 ```
 
-`String.length/1` is not allowed in an Elixir guard. It is allowed here, in the way that it
-is allowed in a condition guard.
-
-**A head guard runs when a match propagates, and not when you call.** It uses the syntax of
-an Elixir clause guard, so this is worth saying. The guard runs one time for each match,
-during `fire_rules/2`, and the store records the answer. A call reads that store.
-
-This is not a choice. `Rete.Session.query/3` reads the same query and never sees the head,
-so it could not run a guard at call time. A guard that ran on one path and not the other
-would give two answers to one question. Evaluating it once, into the store, is what keeps
-the two paths equal.
-
-So write a head guard as a function of its arguments, in the way that every other guard
-here is one. One that reads the clock fixes its answer at the time of the match, and not at
-the time of the call.
+And it runs **when a match propagates, not when you call**. The guard runs one time for
+each match, during `fire_rules/2`, and a call reads the store that recorded the answer. So
+write a head guard as a function of its arguments. One that reads the clock fixes its
+answer at the time of the match. `docs/design/ir.md` §2 has the argument for why the store
+is the only place the guard can act.
 
 A head guard reads only what the head binds. Every head variable is in scope for it,
 whichever pattern you wrote it after. So `(cid, tid when cid < tid)` compares the two, and
@@ -750,8 +734,7 @@ defquery checked(cid when is_integer(cid), tid when tid > 0)(...)
 ```
 
 Write a guard over the **other** bindings as a rule level guard instead, after the
-conditions. The head guard constrains the call, so letting it read the rest would make it
-the trailing `when` under a second spelling:
+conditions:
 
 ```elixir
 defquery rows(cid when amt > 1)({:rec, cid, amt}), do: {cid, amt}

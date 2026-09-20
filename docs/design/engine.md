@@ -64,9 +64,8 @@ one that catches people out, because an empty result at least looks wrong.
 
 `Rete.Session.settled?/1` reports an empty queue. A query does not raise on a full one,
 because the last settled answer is a true answer about some state of the session.
-`Rete.Inspect.why_not/1,2` and `explain/1,2` do raise, because they answer *why* a rule did
-or did not match, and an answer about the wrong state of the session is false to that
-question.
+`Rete.Inspect.why_not/1,2` and `explain/1,2` do raise. They answer *why* a rule did or did
+not match, and an answer about the wrong state of the session is false to that question.
 See `observability.md` §2 for the split, and §12 for why the query side answers `[]`
 rather than raising.
 
@@ -88,6 +87,14 @@ refuses that move, and asks nothing of how the queue was built. One `insert/3` o
 `retract/3` call queues one direction, so a batch of any size still merges to one op. Only a
 caller that alternates the two directions on one node across calls gets more than one, and
 it gets one per run.
+
+Concretely: `right[f], right_retract[f], right[f]` merged into `right[f, f],
+right_retract[f]` still settles right. `right_retract[f], right[f], right_retract[f]`
+merged the same way loses the second retraction, and strands the element for good.
+
+A narrower rule, moving inserts back but never retractions, would keep the first of those
+merges. It was rejected. Whether it is sound depends on what the rest of the engine can put
+in the queue, and the merge cannot see that. The window rule is safe to read on its own.
 
 Where the caller put its call boundaries is therefore not part of what a session means. Any
 sequence of inserts and retractions batched before one fire settles where firing after every
@@ -851,11 +858,9 @@ argument list of the function the query generates. That function matches the cal
 it, takes out the bindings, and hands this node the same map it always took. So the
 calling convention is a compile-time matter, and the store is unchanged by it.
 
-A guard on the head is the one part of it that the network does see, and the network is
-the only place it acts. It becomes a `Rete.IR.Test` on the left hand side, so the query
-node never stores a match the guard rejects, and a call that names a rejected value finds
-nothing. A query is read by term equality, so this removes exactly the matches that no
-call could reach. See `ir.md` §2.
+A guard on the head is the one part of it that the network sees. It becomes a
+`Rete.IR.Test` on the left hand side, so the query node never stores a match it rejects.
+See `ir.md` §2.
 
 | 200 reads, 4,000 matches, one row returned | |
 |---|---|

@@ -178,9 +178,6 @@ defmodule Rete.Session do
   `Rete.Doc.Orders.flagged_for(session, 1)`, which the compiler checks. Use this form
   when the query is decided at runtime.
 
-  A query is addressed by module and name together because two rulesets composed into one
-  session may each define a `:summary`.
-
   `params` gives a value for every binding that the head of the query makes, and for no
   other name. Write it as a keyword list or a map. A query with no head takes no
   parameters. A partial key, an extra key or an unknown key raises an error. It does not
@@ -190,30 +187,21 @@ defmodule Rete.Session do
   generated function matches it. This call is dispatched by `{module, name}` at run time,
   so it cannot know that pattern. It takes the names the pattern binds instead. For a head
   of `({cid, tid})`, the generated function takes `{1, 2}` and this one takes
-  `%{cid: 1, tid: 2}`.
-
-  A head guard holds here too. The guard is a test on the left hand side, and the store is
-  the only thing it acts on, so the query holds no match that fails it. A call that names a
-  value the guard rejects thus answers `[]`, here and through the generated function alike.
+  `%{cid: 1, tid: 2}`. A head guard holds here too, so a value it rejects answers `[]`.
   See `Rete.Ruleset.defquery/2`.
 
   **A query answers as of the most recent fire.** On a session you never fired that is
   `[]`. On one you fired and then inserted into, it is the answer from before that insert,
   which is stale rather than empty. A query reads propagated state either way, and it does
-  not raise. `Rete.Inspect.why_not/2` raises in the same position, because a diagnostic
-  that reports "nothing matched" is misleading when the truth is "nothing has been matched
-  yet". A result set is not. Call `settled?/1` to tell the two cases apart.
+  not raise, where `Rete.Inspect.why_not/2` does. Call `settled?/1` to tell the two cases
+  apart.
 
   Row order is **unspecified**. Rows come back in the order the facts arrived, so the same
-  facts fed in a different order answer in a different order. Sort the result yourself if
-  order matters to you.
+  facts fed in a different order answer in a different order. The *set* of rows never
+  varies. Sort the result yourself if order matters to you.
 
-  The *set* of rows never varies, and one feed always answers the same way.
-
-  The engine keys the matches of a query on its parameters. A read is thus a map lookup,
-  and not a scan of every match. A parameter matches a binding by **term equality**, in the
-  same way as a map key. `1` and `1.0` are therefore different parameter values, but `==`
-  reports that they are equal.
+  A parameter matches a binding by **term equality**, in the same way as a map key. `1` and
+  `1.0` are therefore different parameter values, but `==` reports that they are equal.
 
       iex> alias Rete.Session
       iex> session =
