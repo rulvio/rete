@@ -113,6 +113,46 @@ This applies to what a rule concludes as well. Two matches that conclude the sam
 conclude it twice, so a query over that fact returns two rows. Write the values that tell
 the matches apart into the fact if you need to read them back.
 
+### A rule that reads what it writes does not settle
+
+The engine inserts what a rule returns, and it never drops a conclusion. So a rule whose
+left hand side matches the type its own body concludes feeds itself forever:
+
+```elixir
+defrule symmetric({:edge, a, b}), do: {:edge, b, a}   # never settles
+```
+
+Every occurrence it concludes is a new match, which concludes another occurrence.
+`fire_rules(session, max_cycles: n)` is how to catch this. It raises, and names the rules
+that fired most. The default is `:infinity`, which spins instead.
+
+`derive/2` can create this where the two types do not look alike. A derived type reaches a
+condition written against its ancestor. So under `derive :premium, :customer`, a rule that
+matches `{:customer, id}` and concludes `{:premium, id}` reads what it writes.
+
+To repeat one fact a bounded number of times, carry the bound in a **different** fact and
+rest the rule on that one:
+
+```elixir
+defrule fill({:n, i} when i < 5), do: [{:x}, {:n, i + 1}]
+```
+
+This settles, holding `{:x}` five times. The rule never reads `{:x}`, so the occurrences it
+inserts make no new match, and the counter is what stops it. Adding `{:x}` to the left hand
+side breaks that, whatever the guard says.
+
+A recursive rule has to read its own type, so it takes the other form. Put the bound **in
+the fact**. A further step is then a different fact, and not another occurrence of the
+same one.
+
+```elixir
+defrule base({:edge, x, y}), do: {:path, x, y, 1}
+defrule step({:path, x, y, n} when n < 4, {:edge, ^y, z}), do: {:path, x, z, n + 1}
+```
+
+Reachability over a graph with a cycle in it needs this. Without the hop count, one
+`{:edge, 1, 1}` is enough to keep the rule going forever.
+
 ## Left hand side elements
 
 | form | meaning |

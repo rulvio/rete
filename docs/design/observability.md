@@ -121,8 +121,8 @@ plausible numbers.
 
 Each entry of an activation's `:matches` says where its fact came from. `:from` is the list
 of rules that concluded it, and you follow one of those pairs to its own entry in the same
-result. A tree instead would repeat the same subtree under everything resting on it, and it
-would need a cycle guard for a conclusion that supports itself.
+result. A tree instead would repeat the same subtree under everything resting on it. It
+would then grow with the depth of a derivation chain, and not with the number of matches.
 
 `:from` is a **list**, and that is not incidental. A fact concluded by two rules, or by one
 rule through two matches, has two independent supports, and it needs both to go before the

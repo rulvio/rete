@@ -28,7 +28,6 @@ defmodule Rete.Engine do
   alias Rete.Network
   alias Rete.Network.Node
   alias Rete.Taxonomy
-  alias Rete.Token
 
   @default_max_cycles :infinity
   @default_concurrency 1
@@ -536,10 +535,10 @@ defmodule Rete.Engine do
   end
 
   # A rule body is a pure function of its hash and its already frozen bindings. So the
-  # bodies of a group may run at once. Everything after them threads state instead —
-  # `well_founded` reads memory, and one conclusion can retract the support of a later
-  # activation in the same group. So the engine applies conclusions in group order, with a
-  # drain between each.
+  # bodies of a group may run at once. Applying what they returned is not parallel: one
+  # conclusion can retract the support of a later activation in the same group, and that
+  # activation must then not fire. So the engine applies conclusions in group order, with a
+  # drain between each, and `Rete.Agenda.remove/2` reports which case each one is.
   #
   # Only `{rhs, hash, bindings}` is captured, never the state or the network. A closure
   # over either would copy the whole compiled network into every task.
@@ -599,11 +598,7 @@ defmodule Rete.Engine do
   # The engine records facts against the token before inserting them. So retracting the
   # token later finds them, even if the insertion cascades.
   defp conclude(%State{} = state, %Activation{token: token}, node, result) do
-    {state, facts} =
-      result
-      |> unwrap!(node, token)
-      |> check_facts!(state, node, token)
-      |> well_founded(state, token)
+    facts = result |> unwrap!(node, token) |> check_facts!(state, node, token)
 
     case facts do
       [] ->
@@ -636,61 +631,6 @@ defmodule Rete.Engine do
             "#{inspect(reason)}. It fired on #{inspect(token.bindings)}. " <>
             "Raise :timeout, or remove it to wait indefinitely."
   end
-
-  # Drops a conclusion the match already rests on, so it cannot support itself. This runs
-  # only when the fact is already present, since that is the only way the cycle can
-  # close. See `docs/design/engine.md` §8.
-  #
-  # Returns the state, because reaching the support index is what builds it. A ruleset
-  # where no rule ever re-concludes never gets here, and so never pays for it.
-  defp well_founded(facts, %State{} = state, token) do
-    if Enum.any?(facts, &Map.has_key?(state.memory.facts, &1)) do
-      state = %State{state | memory: Memory.index_support(state.memory)}
-      rests_on = MapSet.new(Token.rests_on(token))
-
-      {state, Enum.reject(facts, &supports?(state.memory, &1, rests_on))}
-    else
-      {state, facts}
-    end
-  end
-
-  # Whether `fact` is something the match rests on, directly or through the facts it
-  # supports. If it is, concluding it here would close a cycle: the fact would end up
-  # holding itself up, and its count could never reach zero.
-  #
-  # **This walks down from the conclusion, not up from the match.** Both answer the same
-  # question. The provenance graph read backwards from the match is the graph read forwards
-  # from the fact. They cost very different amounts.
-  #
-  # A fact with `k` supports has `k` ancestors. Working memory is a multiset, so that fact
-  # is `k` occurrences, and a rule below it fires `k` times. Walking up would visit those
-  # `k` ancestors on every one of those firings. A conclusion's descendants do not grow
-  # that way. A fact reaches `d` of them only because `d` matches concluded them, which is
-  # work the engine already did. See `docs/design/engine.md` §8.
-  defp supports?(memory, fact, rests_on) do
-    descend(memory, [fact], MapSet.new(), rests_on)
-  end
-
-  @spec descend(Memory.t(), [term()], MapSet.t(), MapSet.t()) :: boolean()
-  defp descend(_memory, [], _seen, _rests_on), do: false
-
-  defp descend(memory, [fact | rest], seen, rests_on) do
-    cond do
-      MapSet.member?(rests_on, fact) ->
-        true
-
-      MapSet.member?(seen, fact) ->
-        descend(memory, rest, seen, rests_on)
-
-      true ->
-        descend(memory, Memory.dependents(memory, fact) ++ rest, MapSet.put(seen, fact), rests_on)
-    end
-  end
-
-  # `MapSet.t()` is opaque, with two internal representations. Dialyzer loses track of
-  # which one a set threaded through a local recursion holds. This set never leaves these
-  # two functions, and only `MapSet.new/0` and `MapSet.put/2` build it.
-  @dialyzer {:no_opaque, descend: 4, well_founded: 3}
 
   # A rule may return one fact, a list of them, or nothing.
   defp normalize_facts(nil), do: []

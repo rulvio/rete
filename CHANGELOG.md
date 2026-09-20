@@ -6,10 +6,10 @@ All notable changes to `rete` are recorded here. The format follows
 
 ## 0.9.0
 
-**This release has a breaking change**, and it is one change: every occurrence of a fact now
-propagates. Working memory was always a multiset, and it counted occurrences, but it
-collapsed them at the network boundary. A second occurrence bumped a count and the rules
-never saw it.
+**This release has breaking changes**, and they follow from one decision: an occurrence of a
+fact is a thing in its own right. Working memory was always a multiset, and it counted
+occurrences, but it collapsed them at the network boundary and the engine second-guessed
+them at the truth-maintenance boundary. Both are gone.
 
 That lost conclusions. Two matches of one rule that agree on their answer are two
 conclusions, and only one of them reached the network:
@@ -44,14 +44,32 @@ Multiplicity thus means one thing everywhere. `n` occurrences of a fact are `n` 
   `:fact_inserted` and every retraction of a fact the session holds emits `:fact_retracted`,
   so there is no longer a case where nothing propagates.
 
+### Removed
+
+* **The well-founded support check.** The engine no longer weighs a conclusion against the
+  match that produced it, and it never discards one. A rule that reads the type its own body
+  concludes therefore does not settle:
+
+  ```elixir
+  defrule symmetric({:edge, a, b}), do: {:edge, b, a}   # used to settle, now spins
+  ```
+
+  Nothing needs weighing, because a record holds up an **occurrence** and not a fact. A match
+  that rests on occurrence 1 and concludes occurrence 2 grounds occurrence 2 on occurrence 1,
+  and retracting occurrence 1 unwinds the chain. No count is ever held up by itself.
+
+  What the check did instead was truncate. The rule above settled on one `{:edge, 2, 1}`, and
+  a rule asking for five occurrences of a fact got one. No event said so. The check also
+  never reconsidered what it dropped, so a fact could vanish on a retraction that left a
+  second route to it intact.
+
+  **A ruleset that settles today is unaffected.** The check only ever fired where the
+  conclusion was in its own support closure, and re-driving that closure is what keeps a
+  ruleset from settling. Use `fire_rules(session, max_cycles: n)` to catch one that does not,
+  and see `docs/dsl.md` for how to repeat a fact a bounded number of times.
+
 ### Fixed
 
-* Well-founded support walks **down** from the conclusion instead of up from the match. Both
-  read the same provenance graph and give the same answer, and they do not cost the same. A
-  fact with `k` supports is `k` occurrences now, so a rule below it fires `k` times. Walking
-  up would visit that fact's `k` ancestors on each of those firings. The new `dependents`
-  index makes the walk down a map lookup. `bench/run.exs` covers the shape as "n matches
-  concluding one fact, read by another rule", and it reads linear.
 * An activation's insertion record is prepended rather than appended. Equal tokens reaching
   one production share a key in the truth-maintenance store, which two occurrences of a fact
   now make routine. Appending cost a pass over that list per activation. `bench/run.exs`
@@ -59,15 +77,9 @@ Multiplicity thus means one thing everywhere. `n` occurrences of a fact are `n` 
 
 ### Internal
 
-* `Rete.Memory.index_inserters/1` is now `index_support/1`, and it builds two indexes:
-  `inserters`, unchanged, and `dependents`, which maps a fact to the facts concluded by
-  matches resting on it. Both are caches over `insertions`, both build on first use, and
-  both are left out of `dump/1`.
 * `Rete.Memory.add_fact/2` returns the memory. `remove_fact/2` returns `:removed` or
   `:absent`. The `:new`/`:duplicate` and `:gone`/`:remaining` distinctions decided whether to
   propagate, and nothing decides that any more.
-* `Rete.Token.rests_on/1` is the facts behind a match with collections opened out. The engine
-  and working memory both need it now, so it is no longer private to the engine.
 
 ## 0.8.0
 

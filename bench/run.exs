@@ -495,8 +495,8 @@ defmodule Bench.Shared do
   use Rete.Ruleset
 
   # Two rules concluding the same fact: the textbook truth-maintenance shape.
-  # Whichever fires second finds its conclusion already present, which is the
-  # only thing that sends `well_founded/3` looking for the support closure.
+  # Each of the two matches holds its own occurrence, so the conclusion is held
+  # twice and needs two retractions.
   defrule from_x({:x, i}), do: {:derived, i}
   defrule from_y({:y, i}), do: {:derived, i}
 end
@@ -506,12 +506,12 @@ defmodule Bench.FanIn do
   use Rete.Ruleset
 
   # n matches concluding one fact, and a second rule downstream of it. Working
-  # memory is a multiset, so `{:total}` is held n times and `tally` fires n
-  # times, each firing re-concluding a fact that is already there.
+  # memory is a multiset, so `{:total}` is held n times, and `tally` therefore
+  # fires n times and concludes n occurrences of its own.
   #
-  # This is the shape that decides whether `well_founded/3` walks the cheap way.
-  # `{:total}` has n supports, so its ancestors number n. Its descendants number
-  # one. A walk up from the match would cost O(n) on each of the n firings.
+  # The cost per firing must not grow with the supports already recorded. Every
+  # firing writes one insertion record, and they all share a key, because the n
+  # tokens reaching `tally` are equal. See `Rete.Memory.add_insertion/4`.
   defrule total({:m, _i}), do: {:total}
   defrule tally({:total}), do: {:tallied}
 end
@@ -788,8 +788,8 @@ Bench.scenario(
     shared |> Bench.session() |> Rete.Session.insert(facts) |> Rete.Session.fire_rules()
   end,
   note:
-    "whichever rule fires second re-concludes a fact that is already present, " <>
-      "which is the only thing that consults the support index"
+    "each conclusion is held twice, by two matches at two different productions, " <>
+      "so every fact here carries two truth-maintenance records"
 )
 
 Bench.scenario(
@@ -812,8 +812,8 @@ Bench.scenario(
     fan_in |> Bench.session() |> Rete.Session.insert(facts) |> Rete.Session.fire_rules()
   end,
   note:
-    "one fact with n supports, so the rule below it fires n times and re-concludes " <>
-      "n times — the shape that makes the direction of the support walk decide the exponent"
+    "one fact with n supports, so the rule below it fires n times — every one of those " <>
+      "firings shares an insertion key, and none may cost more than the one before it"
 )
 
 Bench.scenario(

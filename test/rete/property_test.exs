@@ -504,57 +504,59 @@ defmodule Rete.PropertyTest do
     property "the inserters index says exactly what the insertion records say" do
       # `inserters` is `insertions` turned around. It is built on first use and
       # maintained in step after that, which means it can drift in a way nothing
-      # else notices: the engine reads it only for a conclusion that is already
-      # present, so a stale entry stays invisible until the one ruleset that
-      # re-concludes something trips over it. Rebuild it the slow way and compare,
-      # after retractions have had a chance to leave one behind.
+      # else notices: only `Rete.Inspect` reads it, so a stale entry stays
+      # invisible until somebody explains a session a second time. Rebuild it the
+      # slow way and compare, after retractions have had a chance to leave one
+      # behind.
       #
-      # `index_support/1` returns the memory unchanged when the session already
-      # built one, so this checks the *maintained* index wherever the run reached
-      # for it, and a fresh build where it never did. `Everything` re-concludes —
-      # two thresholds under one order flag the same fact twice — so the
-      # maintained path is the usual one here.
+      # Both lifecycles, because they run different code. `:fresh` never builds
+      # until the end, so every insert and retract before that is a no-op against
+      # a `nil` index and the whole thing comes from one pass over the records.
+      # `:maintained` builds first, exactly as reading a session with
+      # `Rete.Inspect` does, so the retraction below goes through `index_drop/3`
+      # instead. Only `:maintained` can drift.
       check all(facts <- multiset(), facts != [], max_runs: 60) do
-        session = build(facts)
-
-        for dropped <- Enum.uniq(facts) do
+        for lifecycle <- [:fresh, :maintained], dropped <- Enum.uniq(facts) do
           memory =
-            session
+            facts
+            |> build()
+            |> then(&if lifecycle == :maintained, do: explained(&1), else: &1)
             |> Session.retract(dropped)
             |> Session.fire_rules()
             |> Map.fetch!(:state)
             |> Map.fetch!(:memory)
-            |> Rete.Memory.index_support()
+            |> Rete.Memory.index_inserters()
 
           assert rebuilt_inserters(memory) == memory.inserters,
-                 "the index disagrees with the records after retracting #{inspect(dropped)}"
-
-          assert rebuilt_dependents(memory) == memory.dependents,
-                 "dependents disagrees with the records after retracting #{inspect(dropped)}"
+                 "the #{lifecycle} index disagrees with the records after " <>
+                   "retracting #{inspect(dropped)}"
         end
       end
     end
 
+    # A session whose index is built, which is what a session somebody has read
+    # with `Rete.Inspect` is. Everything after this maintains the index rather
+    # than leaving it `nil`.
+    defp explained(%Session{state: %{memory: %Rete.Memory{} = memory} = state} = session) do
+      %Session{session | state: %{state | memory: Rete.Memory.index_inserters(memory)}}
+    end
+
     property "an unbuilt index answers the same as a built one" do
-      # The fallback paths in `Rete.Memory.inserters/2` and `dependents/2`, which
-      # scan `insertions` rather than forcing a build. No caller takes them now,
-      # so this property is what holds them to agreeing with the indexes.
+      # The fallback path in `Rete.Memory.inserters/2`, which scans `insertions`
+      # rather than forcing a build. No caller takes it now, so this property is
+      # what holds it to agreeing with the index.
       check all(facts <- multiset(), facts != [], max_runs: 40) do
         # Matched out rather than fetched, so the struct update below is one the
         # compiler can check: `Map.fetch!/2` gives back `dynamic()`, and
         # `%Rete.Memory{memory | ...}` needs to know it is updating a memory.
         %Session{state: %{memory: %Rete.Memory{} = memory}} = build(facts)
-        unbuilt = %Rete.Memory{memory | inserters: nil, dependents: nil}
-        built = Rete.Memory.index_support(unbuilt)
+        unbuilt = %Rete.Memory{memory | inserters: nil}
+        built = Rete.Memory.index_inserters(unbuilt)
 
         for fact <- Rete.Memory.facts(memory) do
           assert Enum.sort(Rete.Memory.inserters(unbuilt, fact)) ==
                    Enum.sort(Rete.Memory.inserters(built, fact)),
                  "the scan and the index disagree about who inserted #{inspect(fact)}"
-
-          assert Enum.sort(Rete.Memory.dependents(unbuilt, fact)) ==
-                   Enum.sort(Rete.Memory.dependents(built, fact)),
-                 "the scan and the index disagree about what rests on #{inspect(fact)}"
         end
       end
     end
@@ -571,30 +573,6 @@ defmodule Rete.PropertyTest do
         acc ->
           Map.update(acc, fact, %{{node_id, token} => 1}, fn refs ->
             Map.update(refs, {node_id, token}, 1, &(&1 + 1))
-          end)
-      end
-    end
-
-    # The same records read as fact edges: one entry per (fact a match rested on,
-    # fact that match concluded). A match resting on three facts and concluding two
-    # writes six of them, and taking its batch back must leave none.
-    #
-    # `nil` when there is nothing to index, and an empty map when the records that
-    # exist write no edge — which is what a rule anchored on the root token does,
-    # resting on nothing. Reading that emptiness as "not built" is the bug this
-    # rebuild is here to catch. See `Rete.Memory.index_support/1`.
-    defp rebuilt_dependents(%{insertions: insertions}) when insertions == %{}, do: nil
-
-    defp rebuilt_dependents(memory) do
-      for {_node_id, by_token} <- memory.insertions,
-          {token, batches} <- by_token,
-          rested <- Rete.Token.rests_on(token),
-          batch <- batches,
-          derived <- batch,
-          reduce: %{} do
-        acc ->
-          Map.update(acc, rested, %{derived => 1}, fn edges ->
-            Map.update(edges, derived, 1, &(&1 + 1))
           end)
       end
     end

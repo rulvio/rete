@@ -174,28 +174,21 @@ them, and `Rete.Session.facts/1` looked right while a query answered short.
 facts" — read backwards, this is exactly the edge that `Rete.Inspect.explain/1,2` walks. No
 separate bookkeeping exists for explanation.
 
-`inserters` and `dependents` are that same relation indexed the two other ways, and they are
-the only derived things in here.
+`inserters` is that same relation indexed the other way, and the one derived thing in here.
+It answers "which matches inserted *this fact*". `Rete.Inspect` asks it per matched fact when
+it names where that fact came from. Answering from `insertions` costs a pass over every
+insertion record, which made two rules concluding one fact quadratic. Two rules concluding
+one fact is the ordinary shape of truth maintenance, not a pathology.
 
-`inserters` answers "which matches inserted *this fact*". `Rete.Inspect` asks it per matched
-fact when it names where that fact came from. Answering from `insertions` costs a pass over
-every insertion record, which made two rules concluding one fact quadratic. Two rules
-concluding one fact is the ordinary shape of truth maintenance, not a pathology.
-
-`dependents` answers "which facts did a match resting on *this fact* conclude". That is the
-same graph as fact-to-fact edges, and it is what `well_founded/3` walks. §8 says why it
-walks that way round.
-
-**Both are built on first use.** A ruleset where no rule re-concludes never reaches for
-them, and maintaining them on every insertion would cost about 13% of a settling pass for
-nothing. So they stay `nil` until `Rete.Memory.index_support/1` builds both in one pass.
-After that `add_insertion/4` and `take_insertion/3` keep them in step, and a property
-rebuilds each the slow way and compares.
+**It is built on first use.** A session nobody explains never reaches for it, and maintaining
+it on every insertion would cost about 13% of a settling pass for nothing. So it stays `nil`
+until `Rete.Memory.index_inserters/1` builds it in one pass. After that `add_insertion/4` and
+`take_insertion/3` keep it in step, and a property rebuilds it the slow way and compares.
 
 `nil` also stands for "emptied", since an index and its absence are the same claim when it
 holds nothing. Collapsing them is what lets a fully drained session compare equal to a fresh
-one. Each is a multiset keyed on a term, so neither depends on the order the session reached
-it in. Being caches, both are left out of `dump/1`.
+one. It is a multiset keyed on `{node_id, token}`, so it does not depend on the order the
+session reached it in. Being a cache, it is left out of `dump/1`.
 
 `root_seeded?` is the one field that is not a memory — see §6.
 
@@ -276,9 +269,8 @@ hangs straight off the beta root, so the seeded token is its whole match. It the
 exactly one activation, on the first fire.
 
 Its conclusion rests on the root token, which no retraction reaches. So it is the one
-conclusion that survives retracting every fact the user asserted. That does not break the
-guarantee in §8. The conclusion is still well founded: the root token is its support, and
-that support never goes.
+conclusion that survives retracting every fact the user asserted. That is not a leak. §8
+records every insertion against the token behind it, and nothing ever retracts this token.
 
 A query written the same way holds that one token and answers one row, in every session
 after a fire. `docs/dsl.md` states both for rule authors, and `Rete.EngineTest` pins them
@@ -367,41 +359,45 @@ This is why the right hand side inserts, and never retracts. A rule says what fo
 a match. Keeping that true, as facts change, is the engine's job. With no unconditional
 insert, there is no way to leave behind a conclusion whose support is gone.
 
-### Support is well founded, not merely counted
+### Support is grounded by construction
 
-A match that rests on the very fact it concludes would support that fact with itself. Its
-count would never reach zero. The fact would survive the retraction of everything the user
-ever asserted, and the memories behind it would never drain.
+The engine inserts what a rule returns. It does not weigh the conclusion against the match
+that produced it, and it never discards one.
+
+Nothing needs weighing, because an **occurrence** is what a record holds up, and not a fact.
+A match that rests on occurrence 1 and concludes occurrence 2 grounds occurrence 2 on
+occurrence 1. Retracting occurrence 1 takes one insertion batch back, which retracts
+occurrence 2, and the chain unwinds to whatever the caller asserted. No count is ever held
+up by itself.
+
+A rule that reads what it writes therefore does not settle:
 
 ```elixir
 defrule symmetric({:edge, a, b}), do: {:edge, b, a}
 ```
 
-One `{:edge, 1, 2}` concludes `{:edge, 2, 1}`, which concludes `{:edge, 1, 2}` right back.
-So the engine **drops** a conclusion the match already depends on: it is not inserted, not
-recorded, and its count is not bumped. This check runs only when the fact is already
-present, since that is the only way the loop can close. It walks the insertion records,
-not the network.
+Each occurrence of `{:edge, 1, 2}` is a match, and every match concludes another occurrence
+of `{:edge, 2, 1}`, which concludes another `{:edge, 1, 2}`. That is what the ruleset says,
+so that is what the engine does. `:max_cycles` is how a caller catches it, and
+`docs/design/observability.md` §3 covers the error it raises.
 
-Deciding this at insertion time, instead of re-deriving it on every retraction, has one
-limit. The dropped support is never reconsidered later. If the grounded route to a fact
-goes away, while the circular one would still have held, the fact goes away with it.
+Until 0.9.0 the engine **dropped** a conclusion that was in the support closure of its own
+match. That check was never Clara's behavior, and `README.md` names Clara as the semantic
+reference here. It also truncated. The rule above settled on one `{:edge, 2, 1}`, and a rule
+asked for five occurrences of a fact got one. No event said so. The check never reconsidered
+what it dropped either, so a fact could vanish on a retraction that left a second route to
+it intact. All of it went together.
 
-### The walk goes down from the conclusion
+Write the bound in a **different** fact when a rule has to repeat one:
 
-"Does this match depend on the fact it just concluded" can be asked from either end. Walk
-**up** from the match, through everything it rests on, and see whether the conclusion is in
-there. Or walk **down** from the conclusion, through everything that rests on it, and see
-whether the match is in there. The provenance graph is the same graph, so both answers
-agree. They do not cost the same.
+```elixir
+defrule fill({:n, i} when i < 5), do: [{:x}, {:n, i + 1}]
+```
 
-The engine walks down, through `dependents`. Under a multiset working memory, a fact with
-`k` supports is `k` occurrences, so a rule below it fires `k` times and re-concludes `k`
-times. Walking up would visit that fact's `k` ancestors on each of those `k` firings, which
-is quadratic in the supports. Walking down visits the conclusion's descendants instead, and
-a conclusion reaches `d` of those only because `d` matches concluded them — work the engine
-already did. `bench/run.exs` measures the shape as "n matches concluding one fact, read by
-another rule".
+This settles, holding `{:x}` five times. The rule never reads `{:x}`, so a new occurrence of
+it makes no new match, and the counter is what stops the rule. Reading `{:x}` in the same
+left hand side does not settle, whatever the guard says. Each occurrence the rule inserts is
+then a match of its own, and those pair with every counter still live.
 
 ## 9. Queries
 
@@ -491,12 +487,11 @@ group order.
 node.rhs |> apply([node.hash, activation.token.bindings])  # pure: hash + frozen bindings
 |> normalize_facts()                                        # pure
 |> check_facts!(state, node, token)                         # reads the immutable taxonomy
-|> well_founded(state, token)                               # reads state.memory
 ```
 
-Only the first two lines run on a task. `well_founded/3` reads working memory, and one
-activation's conclusions can retract the support of another. `Rete.Agenda.remove/2`'s
-`:removed`/`:missing` split detects exactly that case. So the engine applies conclusions
+All three lines run on a task. Applying what they return does not, because one activation's
+conclusions can retract the support of another. `Rete.Agenda.remove/2`'s `:removed`/`:missing`
+split detects exactly that case. So the engine applies conclusions
 one at a time, with a `drain()` between each. A rule still sees a settled network this
 way.
 
@@ -651,7 +646,11 @@ the rule instead.
   the cycle, and cancel it if a rule concludes the same fact again. That is a change to
   truth maintenance, and not a local change. It is the largest unclaimed win left.
 
-* **A dropped circular support is not reconsidered.** See §8.
+* **A rule that reads the type its own body concludes does not settle.** Every occurrence it
+  inserts is a match of its own, and that match inserts another. The engine does not detect
+  this, and Clara does not either. `:max_cycles` is `:infinity` by default, so such a ruleset
+  spins rather than raising. See §8, and `docs/dsl.md` for how to bound a rule that has to
+  repeat a fact.
 * **The loop guard counts activations, not activation-group transitions.** Clara's signal
   is better in principle — a ruleset that legitimately fires 50,000 activations in one
   settling pass is fine. But Clara's signal misses a loop confined to a single salience
@@ -846,8 +845,8 @@ re-concludes. Making `Rete.Agenda.remove/2` O(1) cost about another 13% of one t
 cancels. Both were measured by disabling the maintenance and re-running, not inferred.
 
 Both are built on first use now. A session that only inserts never takes from a beta memory
-and never cancels an activation, so no `Rete.Bucket` builds its `:counts`. A ruleset where
-no rule re-concludes never reaches `well_founded/3`, so `inserters` stays `nil`. Neither is
+and never cancels an activation, so no `Rete.Bucket` builds its `:counts`. A session nobody
+explains never reaches `Rete.Inspect`, so `inserters` stays `nil`. Neither is
 asymptotically worse for a session that does retract.
 
 | insertion-only workload | eager indexes | built on first use |
@@ -1016,7 +1015,8 @@ honest measure for a structure that shares as heavily as this one.
 | one collection | 90 KB | 359 KB (4,001) | ~91 B |
 
 A session that inserts n facts and retracts them all comes back to **184 bytes**, whatever
-n was. `inserters` measures zero in both shapes, since neither ruleset re-concludes.
+n was. `inserters` measures zero in both shapes, because nothing asked to explain either
+session, and `Rete.Inspect` is what builds it.
 
 Two cautions. Per-field figures double-count, because a fact term is shared between
 `elements`, `tokens`, `insertions` and `facts`, so only the totals are honest. And cost
