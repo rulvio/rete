@@ -159,33 +159,43 @@ leak. That leak grows with the number of distinct entities the session has ever 
 `Rete.Engine.Nodes` depends on this collapse, because "no group" and "an empty group" are
 different answers. Only a level that really is gone may disappear.
 
-**Multisets, not sets.** `facts` counts occurrences. Inserting the same fact twice, then
-retracting once, must leave it present. Two rules may each have concluded it, and
-invalidating one of them does not make the fact false. `elements` and `tokens` are lists
-for the same reason. The engine retracts them one occurrence at a time.
+**Multisets, not sets, all the way down.** `facts` counts occurrences, and every occurrence
+propagates. `n` occurrences of a fact are `n` elements, `n` tokens below them and `n` rows
+from a query. Inserting the same fact twice, then retracting once, leaves it present *and*
+leaves one match of it standing. Two rules that conclude one fact conclude two occurrences
+of it, and invalidating one of them does not make the fact false. `elements` and `tokens`
+are lists for this reason. The engine retracts them one occurrence at a time.
+
+Before 0.9.0 the count was kept but not propagated: a second occurrence bumped the count and
+the network never saw it. A rule that concluded one value from two matches thus lost one of
+them, and `Rete.Session.facts/1` looked right while a query answered short.
 
 **`insertions` is the provenance graph.** "This match at this production inserted these
 facts" — read backwards, this is exactly the edge that `Rete.Inspect.explain/1,2` walks. No
 separate bookkeeping exists for explanation.
 
-`inserters` is that same relation indexed the other way, and the one derived thing in here.
-Both its readers ask "which matches inserted *this fact*". `well_founded/3` asks on every
-conclusion already present, and `Rete.Inspect` asks per matched fact when it names where
-that fact came from. Answering from
-`insertions` costs a pass over every insertion record, which made two rules concluding one
-fact quadratic. Two rules concluding one fact is the ordinary shape of truth maintenance,
-not a pathology.
+`inserters` and `dependents` are that same relation indexed the two other ways, and they are
+the only derived things in here.
 
-**It is built on first use.** A ruleset where no rule re-concludes never reaches for it, and
-maintaining it on every insertion would cost about 13% of a settling pass for nothing. So it
-stays `nil` until `Rete.Memory.index_inserters/1` builds it in one pass. After that
-`add_insertion/4` and `take_insertion/3` keep it in step, and a property rebuilds it the
-slow way and compares.
+`inserters` answers "which matches inserted *this fact*". `Rete.Inspect` asks it per matched
+fact when it names where that fact came from. Answering from `insertions` costs a pass over
+every insertion record, which made two rules concluding one fact quadratic. Two rules
+concluding one fact is the ordinary shape of truth maintenance, not a pathology.
+
+`dependents` answers "which facts did a match resting on *this fact* conclude". That is the
+same graph as fact-to-fact edges, and it is what `well_founded/3` walks. §8 says why it
+walks that way round.
+
+**Both are built on first use.** A ruleset where no rule re-concludes never reaches for
+them, and maintaining them on every insertion would cost about 13% of a settling pass for
+nothing. So they stay `nil` until `Rete.Memory.index_support/1` builds both in one pass.
+After that `add_insertion/4` and `take_insertion/3` keep them in step, and a property
+rebuilds each the slow way and compares.
 
 `nil` also stands for "emptied", since an index and its absence are the same claim when it
 holds nothing. Collapsing them is what lets a fully drained session compare equal to a fresh
-one. It is a multiset keyed on `{node_id, token}`, so it does not depend on the order the
-session reached it in. Being a cache, it is left out of `dump/1`.
+one. Each is a multiset keyed on a term, so neither depends on the order the session reached
+it in. Being caches, both are left out of `dump/1`.
 
 `root_seeded?` is the one field that is not a memory — see §6.
 
@@ -377,6 +387,22 @@ Deciding this at insertion time, instead of re-deriving it on every retraction, 
 limit. The dropped support is never reconsidered later. If the grounded route to a fact
 goes away, while the circular one would still have held, the fact goes away with it.
 
+### The walk goes down from the conclusion
+
+"Does this match depend on the fact it just concluded" can be asked from either end. Walk
+**up** from the match, through everything it rests on, and see whether the conclusion is in
+there. Or walk **down** from the conclusion, through everything that rests on it, and see
+whether the match is in there. The provenance graph is the same graph, so both answers
+agree. They do not cost the same.
+
+The engine walks down, through `dependents`. Under a multiset working memory, a fact with
+`k` supports is `k` occurrences, so a rule below it fires `k` times and re-concludes `k`
+times. Walking up would visit that fact's `k` ancestors on each of those `k` firings, which
+is quadratic in the supports. Walking down visits the conclusion's descendants instead, and
+a conclusion reaches `d` of those only because `d` matches concluded them — work the engine
+already did. `bench/run.exs` measures the shape as "n matches concluding one fact, read by
+another rule".
+
 ## 9. Queries
 
 A query terminal stores the tokens that reach it. It does not activate. It stores each
@@ -404,12 +430,12 @@ either. `Rete.Inspect.why_not/1,2` does. See §2.
 
 ## 10. What is asserted about all of this
 
-Facts alone are a weak lens for testing. If a node propagates a token it had already
-propagated, the duplicate fact just collapses into a count bump in the multiset.
-`Rete.Session.facts/1` still looks perfect. The corruption surfaces much later, as a fact
-that survives a retraction that should have removed it.
+Facts alone are a weak lens for testing. `Rete.Session.facts/1` says what a session holds,
+and not how it holds it. A node that propagates a token it had already propagated thus
+reads there as one more occurrence of an ordinary fact. The corruption surfaces much later,
+as a fact that survives a retraction that should have removed it.
 
-The test suite therefore asserts on `session.state.memory` instead. These five invariants
+The test suite therefore asserts on `session.state.memory` instead. These six invariants
 are the ones that actually catch engine bugs:
 
 * **full drain.** Retract everything. Every memory then equals that of an **empty session
@@ -419,7 +445,16 @@ are the ones that actually catch engine bugs:
   planting it, so an unfired session has no token to compare against. See §2.
 * **support counting.** A fact concluded by exactly one match is held exactly once. Two
   supports need two retractions, and the first retraction leaves the fact standing.
+* **one element per occurrence.** At every node and join key, a distinct element is held as
+  many times as working memory holds the fact behind it — no fewer, and not one more. A beta
+  node takes its elements from one alpha, so this is exact. It catches a node that
+  propagated an element twice and a node that dropped one, which is the failure the fact
+  counts alone are slowest to show.
 * **round trip.** Insert X, fire, retract X, fire, and compare against the state before.
+  Exact while the session holds nothing twice. Once something is held twice, the comparison
+  is up to arrival order. A bucket gives back the *oldest* occurrence of an equal value, so
+  a retraction rotates the bucket rather than undoing the append. Nothing can pick out the
+  occurrence that was added, because two occurrences of one fact are equal terms. See §7.
 * **order independence.** The same facts, in any order and any batching, give the same
   derived state. Any sequence of inserts and retracts leaves a session equal to one
   rebuilt from the surviving facts.

@@ -105,8 +105,13 @@ nothing, and it would do so silently. You could not tell that case apart from a 
 does not apply. Pass `:fact_type_fn` to `Rete.Session.new/2` if your facts use some other
 typing scheme.
 
-Facts form a **multiset**. Inserting the same fact twice needs two retractions to remove
-it. The second insert queues nothing, because the matches it would make already exist.
+Facts form a **multiset**, and every occurrence matches. Inserting the same fact twice
+gives the rules two matches of it, and it takes two retractions to remove it. A collection
+gathers two members, and a rule that reads the fact fires twice.
+
+This applies to what a rule concludes as well. Two matches that conclude the same value
+conclude it twice, so a query over that fact returns two rows. Write the values that tell
+the matches apart into the fact if you need to read them back.
 
 ## Left hand side elements
 

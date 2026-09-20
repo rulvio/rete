@@ -50,10 +50,10 @@ value: no processes, no ETS, no side channel.
 `Rete.Listener` lists the events and the shape of each. What matters here is **when** they
 reach a listener, which follows from the two loops rather than from the list.
 
-Only three of them reach a listener outside a fire. `insert/2` and `retract/2` emit
-`:fact_inserted`, `:fact_retracted` and `:fact_duplicated`, because they update working
-memory at once. Everything else happens inside `fire_rules/2`, which is the only call that
-propagates. That covers every `:propagated` event and every `:activation_*` one. See
+Only two of them reach a listener outside a fire. `insert/2` and `retract/2` emit
+`:fact_inserted` and `:fact_retracted`, because they update working memory at once. One
+event per occurrence: a fact inserted twice emits two. Everything else happens inside
+`fire_rules/2`, which is the only call that propagates. That covers every `:propagated` event and every `:activation_*` one. See
 `engine.md` §2.
 
 That is what lets a listener see a whole settle. Attach it to a fresh session. No matching

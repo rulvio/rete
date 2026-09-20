@@ -501,6 +501,21 @@ defmodule Bench.Shared do
   defrule from_y({:y, i}), do: {:derived, i}
 end
 
+defmodule Bench.FanIn do
+  @moduledoc false
+  use Rete.Ruleset
+
+  # n matches concluding one fact, and a second rule downstream of it. Working
+  # memory is a multiset, so `{:total}` is held n times and `tally` fires n
+  # times, each firing re-concluding a fact that is already there.
+  #
+  # This is the shape that decides whether `well_founded/3` walks the cheap way.
+  # `{:total}` has n supports, so its ancestors number n. Its descendants number
+  # one. A walk up from the match would cost O(n) on each of the n firings.
+  defrule total({:m, _i}), do: {:total}
+  defrule tally({:total}), do: {:tallied}
+end
+
 defmodule Bench.Width do
   @moduledoc false
 
@@ -645,7 +660,7 @@ end
 
 # --- the scenarios ---------------------------------------------------------------
 
-alias Bench.{Agenda, Blocking, Cascade, Chain, Collection, ManyKeys, Negation, OneKey}
+alias Bench.{Agenda, Blocking, Cascade, Chain, Collection, FanIn, ManyKeys, Negation, OneKey}
 alias Bench.{Shared, UnkeyedNegation}
 
 one_key = Bench.network(OneKey)
@@ -658,6 +673,7 @@ negation = Bench.network(Negation)
 unkeyed_negation = Bench.network(UnkeyedNegation)
 shared = Bench.network(Shared)
 blocking = Bench.network(Blocking)
+fan_in = Bench.network(FanIn)
 IO.puts("\n\e[1m\e[4mrete scaling\e[0m")
 
 Bench.scenario(
@@ -785,6 +801,30 @@ Bench.scenario(
     shared |> Bench.session() |> Rete.Session.insert(facts) |> Rete.Session.fire_rules()
   end,
   note: "the control for the scenario above — same rules, same fact count, no re-conclusion"
+)
+
+Bench.scenario(
+  "n matches concluding one fact, read by another rule",
+  [125, 250, 500, 1_000],
+  fn n ->
+    facts = for i <- 1..n, do: {:m, i}
+
+    fan_in |> Bench.session() |> Rete.Session.insert(facts) |> Rete.Session.fire_rules()
+  end,
+  note:
+    "one fact with n supports, so the rule below it fires n times and re-concludes " <>
+      "n times — the shape that makes the direction of the support walk decide the exponent"
+)
+
+Bench.scenario(
+  "inserting n occurrences of one fact",
+  [1_000, 2_000, 4_000],
+  fn n ->
+    facts = List.duplicate({:m, 1}, n)
+
+    fan_in |> Bench.session() |> Rete.Session.insert(facts) |> Rete.Session.fire_rules()
+  end,
+  note: "every occurrence is a match of its own, and they all land in one bucket"
 )
 
 Bench.scenario(

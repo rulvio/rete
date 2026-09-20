@@ -50,6 +50,25 @@ defmodule Rete.Token do
   """
   @spec facts(t()) :: [term()]
   def facts(%__MODULE__{matches: matches}), do: Enum.map(matches, &elem(&1, 0))
+
+  @doc """
+  Every fact the match rests on, with collections opened out.
+
+  `facts/1` gives a collection match the **list** it gathered, which is one match and not a
+  fact. Truth maintenance needs the members instead: a collection rests on every fact in
+  it, and losing any one of them invalidates the match.
+
+      iex> token = %Rete.Token{matches: [{{:batch, 1}, :n1}, {[{:item, 1}, {:item, 2}], :n2}]}
+      iex> Rete.Token.rests_on(token)
+      [{:batch, 1}, {:item, 1}, {:item, 2}]
+  """
+  @spec rests_on(t()) :: [term()]
+  def rests_on(%__MODULE__{} = token) do
+    Enum.flat_map(facts(token), fn
+      facts when is_list(facts) -> facts
+      fact -> [fact]
+    end)
+  end
 end
 
 defmodule Rete.Element do

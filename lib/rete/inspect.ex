@@ -312,8 +312,8 @@ defmodule Rete.Inspect do
   # re-concludes what another concluded, and there this is free.
   #
   # The memory this returns does not leave the call. Nothing here changes what the session
-  # holds, and `index_inserters/1` derives the index from `insertions` alone.
-  defp indexed(%State{} = state), do: %State{state | memory: Memory.index_inserters(state.memory)}
+  # holds, and `index_support/1` derives the index from `insertions` alone.
+  defp indexed(%State{} = state), do: %State{state | memory: Memory.index_support(state.memory)}
 
   # Truth maintenance records "this match at this production inserted these facts", which
   # read backwards is a provenance edge. `Rete.Memory.inserters/2` is that index, kept the

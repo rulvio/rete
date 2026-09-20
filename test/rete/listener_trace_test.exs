@@ -23,8 +23,8 @@ defmodule Rete.ListenerTraceTest do
     defrule escalate({:flagged, cid}), do: {:escalated, cid}
   end
 
-  # Inserts a duplicate, retracts both occurrences so the conclusion cascades, then queues
-  # an insert and its retraction so an activation is cancelled before it fires.
+  # Inserts one fact twice, retracts both occurrences so the conclusion cascades, then
+  # queues an insert and its retraction so an activation is cancelled before it fires.
   defp traced(opts) do
     {:ok, io} = StringIO.open("")
 
@@ -52,7 +52,6 @@ defmodule Rete.ListenerTraceTest do
             {"asserted insert", ~r/^\[rete\]   \+ \{:order/},
             {"derived insert",
              ~r/^\[rete\]   \+ .* \(from Rete\.ListenerTraceTest\.Rules\.flag\)/},
-            {"duplicate", ~r/\(already present\)/},
             {"asserted retract", ~r/^\[rete\]   - \{:order/},
             {"derived retract", ~r/\(support from .* gone\)/},
             {"activation added", ~r/^\[rete\]   ready  /},

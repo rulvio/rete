@@ -52,8 +52,8 @@ defmodule Rete.Engine do
   @doc """
   Records facts and queues their propagation.
 
-  A fact equal to one already present bumps its count and queues nothing. The matches it
-  would make already exist.
+  Every occurrence propagates. A fact equal to one already present is a second occurrence
+  of it, and the network gets a second element for it. See `docs/design/engine.md` §4.
 
   This does **not** propagate. `Rete.Memory` holds the fact at once, so `facts/1` sees it.
   The alpha work waits in the queue until `fire_rules/2` drains it. See
@@ -65,14 +65,11 @@ defmodule Rete.Engine do
   def insert(%State{} = state, facts, origin) do
     {state, batches} =
       Enum.reduce(facts, {state, []}, fn fact, {%State{} = state, batches} ->
-        case Memory.add_fact(state.memory, fact) do
-          {memory, :new} ->
-            state = emit(%State{state | memory: memory}, fn -> {:fact_inserted, fact, origin} end)
-            {state, [alpha_ops(state, fact, :right) | batches]}
+        state =
+          %State{state | memory: Memory.add_fact(state.memory, fact)}
+          |> emit(fn -> {:fact_inserted, fact, origin} end)
 
-          {memory, :duplicate} ->
-            {emit(%State{state | memory: memory}, fn -> {:fact_duplicated, fact} end), batches}
-        end
+        {state, [alpha_ops(state, fact, :right) | batches]}
       end)
 
     State.enqueue(state, ordered_ops(batches))
@@ -81,8 +78,9 @@ defmodule Rete.Engine do
   @doc """
   Removes facts and queues the retraction.
 
-  Only the last occurrence of a fact queues anything. The engine retracts anything
-  concluded from it in turn, once `fire_rules/2` drains the queue and the network settles.
+  Every occurrence a session holds queues a retraction of its own. A fact it never held
+  queues nothing. The engine retracts anything concluded from an occurrence in turn, once
+  `fire_rules/2` drains the queue and the network settles.
 
   This does **not** propagate, for the reason `insert/3` gives. Queuing an insert and then
   a retract of the same fact drains to a net no-op. The queued work for one node keeps the
@@ -95,13 +93,13 @@ defmodule Rete.Engine do
     {state, batches} =
       Enum.reduce(facts, {state, []}, fn fact, {%State{} = state, batches} ->
         case Memory.remove_fact(state.memory, fact) do
-          {memory, :gone} ->
+          {memory, :removed} ->
             state =
               emit(%State{state | memory: memory}, fn -> {:fact_retracted, fact, origin} end)
 
             {state, [alpha_ops(state, fact, :right_retract) | batches]}
 
-          {memory, _} ->
+          {memory, :absent} ->
             {%State{state | memory: memory}, batches}
         end
       end)
@@ -396,7 +394,7 @@ defmodule Rete.Engine do
   end
 
   @doc """
-  Every fact the session holds, inserted or concluded.
+  Every fact the session holds, inserted or concluded, one entry for each occurrence.
 
   This excludes the marker facts an extracted compound negation inserts. They express a
   negated conjunction to the network, and no rule of the user's concluded them. Everywhere
@@ -647,54 +645,52 @@ defmodule Rete.Engine do
   # where no rule ever re-concludes never gets here, and so never pays for it.
   defp well_founded(facts, %State{} = state, token) do
     if Enum.any?(facts, &Map.has_key?(state.memory.facts, &1)) do
-      state = %State{state | memory: Memory.index_inserters(state.memory)}
-      support = support_closure(state, token)
+      state = %State{state | memory: Memory.index_support(state.memory)}
+      rests_on = MapSet.new(Token.rests_on(token))
 
-      {state, Enum.reject(facts, &MapSet.member?(support, &1))}
+      {state, Enum.reject(facts, &supports?(state.memory, &1, rests_on))}
     else
       {state, facts}
     end
   end
 
-  # Every fact the match rests on. This is the facts it matched, plus what the match that
-  # concluded each of those rested on, down to what the user asserted.
+  # Whether `fact` is something the match rests on, directly or through the facts it
+  # supports. If it is, concluding it here would close a cycle: the fact would end up
+  # holding itself up, and its count could never reach zero.
   #
-  # Walks `Rete.Memory.inserters/2`, which is maintained as insertions are recorded. This
-  # used to build that index on the spot, from every insertion record in the session, on
-  # every conclusion that was already present — which made two rules concluding one fact
-  # quadratic in the number of conclusions.
-  defp support_closure(%State{memory: memory}, token) do
-    walk(MapSet.new(), matched_facts(token), memory)
+  # **This walks down from the conclusion, not up from the match.** Both answer the same
+  # question. The provenance graph read backwards from the match is the graph read forwards
+  # from the fact. They cost very different amounts.
+  #
+  # A fact with `k` supports has `k` ancestors. Working memory is a multiset, so that fact
+  # is `k` occurrences, and a rule below it fires `k` times. Walking up would visit those
+  # `k` ancestors on every one of those firings. A conclusion's descendants do not grow
+  # that way. A fact reaches `d` of them only because `d` matches concluded them, which is
+  # work the engine already did. See `docs/design/engine.md` §8.
+  defp supports?(memory, fact, rests_on) do
+    descend(memory, [fact], MapSet.new(), rests_on)
   end
 
-  @spec walk(MapSet.t(), [term()], Memory.t()) :: MapSet.t()
-  defp walk(seen, [], _memory), do: seen
+  @spec descend(Memory.t(), [term()], MapSet.t(), MapSet.t()) :: boolean()
+  defp descend(_memory, [], _seen, _rests_on), do: false
 
-  defp walk(seen, [fact | rest], memory) do
-    if MapSet.member?(seen, fact) do
-      walk(seen, rest, memory)
-    else
-      supports =
-        memory
-        |> Memory.inserters(fact)
-        |> Enum.flat_map(fn {_node_id, token} -> matched_facts(token) end)
+  defp descend(memory, [fact | rest], seen, rests_on) do
+    cond do
+      MapSet.member?(rests_on, fact) ->
+        true
 
-      walk(MapSet.put(seen, fact), supports ++ rest, memory)
+      MapSet.member?(seen, fact) ->
+        descend(memory, rest, seen, rests_on)
+
+      true ->
+        descend(memory, Memory.dependents(memory, fact) ++ rest, MapSet.put(seen, fact), rests_on)
     end
   end
 
   # `MapSet.t()` is opaque, with two internal representations. Dialyzer loses track of
   # which one a set threaded through a local recursion holds. This set never leaves these
   # two functions, and only `MapSet.new/0` and `MapSet.put/2` build it.
-  @dialyzer {:no_opaque, walk: 3, well_founded: 3}
-
-  # A collection match holds the list it gathered, and rests on every member of it.
-  defp matched_facts(%Token{} = token) do
-    Enum.flat_map(Token.facts(token), fn
-      facts when is_list(facts) -> facts
-      fact -> [fact]
-    end)
-  end
+  @dialyzer {:no_opaque, descend: 4, well_founded: 3}
 
   # A rule may return one fact, a list of them, or nothing.
   defp normalize_facts(nil), do: []

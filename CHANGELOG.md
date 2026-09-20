@@ -4,6 +4,71 @@ All notable changes to `rete` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.9.0
+
+**This release has a breaking change**, and it is one change: every occurrence of a fact now
+propagates. Working memory was always a multiset, and it counted occurrences, but it
+collapsed them at the network boundary. A second occurrence bumped a count and the rules
+never saw it.
+
+That lost conclusions. Two matches of one rule that agree on their answer are two
+conclusions, and only one of them reached the network:
+
+```elixir
+defrule foobar_rule({:foo, v1}, {:bar, v2}), do: {:foobar, v1 + v2}
+defquery get_foobar({:foobar, value}), do: %{foobar: value}
+
+Session.new([Rules])
+|> Session.insert([{:foo, 100}, {:bar, 100}, {:foo, 200}, {:bar, 200}])
+|> Session.fire_rules()
+|> Rules.get_foobar()
+```
+
+The join makes four matches and the rule fires four times, on `200`, `300`, `300` and `400`.
+The query used to answer three rows. It answers four now.
+
+Multiplicity thus means one thing everywhere. `n` occurrences of a fact are `n` elements,
+`n` tokens and `n` query rows.
+
+### Changed
+
+* Inserting a fact equal to one already present now propagates. The rules get a second
+  match of it, a collection gathers a second member, and a rule below it fires twice. It
+  still takes two retractions to remove, as before.
+* Retracting one occurrence of a fact held twice now propagates that one retraction. Before,
+  only the last occurrence propagated.
+* `Rete.Session.facts/1` returns one entry for each occurrence. A fact held twice appears
+  twice. Support counts in working memory are unchanged. A conclusion held twice was always
+  held twice, and what changed is that the second occurrence now reaches the network.
+* `Rete.Listener` no longer emits `{:fact_duplicated, fact}`. Every insert emits
+  `:fact_inserted` and every retraction of a fact the session holds emits `:fact_retracted`,
+  so there is no longer a case where nothing propagates.
+
+### Fixed
+
+* Well-founded support walks **down** from the conclusion instead of up from the match. Both
+  read the same provenance graph and give the same answer, and they do not cost the same. A
+  fact with `k` supports is `k` occurrences now, so a rule below it fires `k` times. Walking
+  up would visit that fact's `k` ancestors on each of those firings. The new `dependents`
+  index makes the walk down a map lookup. `bench/run.exs` covers the shape as "n matches
+  concluding one fact, read by another rule", and it reads linear.
+* An activation's insertion record is prepended rather than appended. Equal tokens reaching
+  one production share a key in the truth-maintenance store, which two occurrences of a fact
+  now make routine. Appending cost a pass over that list per activation. `bench/run.exs`
+  covers this as "inserting n occurrences of one fact", and it reads linear.
+
+### Internal
+
+* `Rete.Memory.index_inserters/1` is now `index_support/1`, and it builds two indexes:
+  `inserters`, unchanged, and `dependents`, which maps a fact to the facts concluded by
+  matches resting on it. Both are caches over `insertions`, both build on first use, and
+  both are left out of `dump/1`.
+* `Rete.Memory.add_fact/2` returns the memory. `remove_fact/2` returns `:removed` or
+  `:absent`. The `:new`/`:duplicate` and `:gone`/`:remaining` distinctions decided whether to
+  propagate, and nothing decides that any more.
+* `Rete.Token.rests_on/1` is the facts behind a match with collections opened out. The engine
+  and working memory both need it now, so it is no longer private to the engine.
+
 ## 0.8.0
 
 **This release has breaking changes**, and they fall in two places. The head of a query is

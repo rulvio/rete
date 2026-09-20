@@ -405,7 +405,7 @@ defmodule Rete.EngineTest do
 
     # Changing one group must leave the others untouched. A node that re-sends
     # every group on every change gives the unchanged ones a second support, and
-    # the facts look right until something is retracted and refuses to go.
+    # a third occurrence of the fact is what that would look like here.
     test "changing one group does not re-send the others" do
       session =
         run([Grouped], [
@@ -414,7 +414,8 @@ defmodule Rete.EngineTest do
           {:order, 1, :tue, 20}
         ])
 
-      assert [{:per_day, 1, 1, 0}] == derived(session, :per_day)
+      # Two groups of one order each, so two matches that agree on their answer.
+      assert [{:per_day, 1, 1, 0}, {:per_day, 1, 1, 0}] == derived(session, :per_day)
 
       session = session |> Session.insert({:order, 1, :mon, 30}) |> Session.fire_rules()
       assert [{:per_day, 1, 1, 0}, {:per_day, 1, 2, 0}] == derived(session, :per_day)
@@ -717,13 +718,15 @@ defmodule Rete.EngineTest do
       assert [{:tagged, 1, 10}, {:tagged, 2, 20}] == derived(session, :tagged)
     end
 
-    test "a fact matching both branches does not double the conclusion" do
+    test "a fact matching both branches is two matches, and two supports" do
       session = run([Or], [{:gold, 1}, {:silver, 1}, {:order, 1, 10}])
 
-      assert [{:tagged, 1, 10}] == derived(session, :tagged)
+      # Each branch is a match of its own, so the rule concludes the same fact
+      # twice. The two branches must not collapse into one match, and must not
+      # invent a third.
+      assert [{:tagged, 1, 10}, {:tagged, 1, 10}] == derived(session, :tagged)
 
-      # Two branches matched, so the conclusion has two supports and needs both
-      # to go before it does.
+      # Two supports, so the conclusion needs both to go before it does.
       session = session |> Session.retract({:gold, 1}) |> Session.fire_rules()
       assert [{:tagged, 1, 10}] == derived(session, :tagged)
 
@@ -774,14 +777,17 @@ defmodule Rete.EngineTest do
       assert Session.settled?(Session.fire_rules(retracted))
     end
 
-    # A duplicate bumps a count and queues nothing, so it cannot unsettle a session that
-    # was already settled. The `:fact_duplicated` event says the same thing to a listener.
-    test "settled?/1 stays true when an insert queues nothing" do
+    # An insert of a fact the session already holds is a second occurrence of it, and a
+    # second occurrence has matches of its own to make. So it unsettles a settled session
+    # in the same way a new fact does. Retracting one that is not there is the only call
+    # that queues nothing, and the test above it covers that.
+    test "settled?/1 goes false for a second occurrence, as for a new fact" do
       settled =
         Session.new([Deferred]) |> Session.insert({:cust, 1}) |> Session.fire_rules()
 
-      assert Session.settled?(Session.insert(settled, {:cust, 1}))
+      refute Session.settled?(Session.insert(settled, {:cust, 1}))
       refute Session.settled?(Session.insert(settled, {:cust, 2}))
+      assert Session.settled?(Session.retract(settled, {:cust, 99}))
     end
 
     # `docs/design/engine.md` §2 claims this. The queued insert and the queued retract keep
@@ -1408,11 +1414,11 @@ defmodule Rete.EngineTest do
       end
     end
 
-    # Two rules independently concluding the same thing is not the same as one
-    # rule concluding it twice. Removing one support must leave the fact standing.
+    # Two rules independently concluding the same thing. Each match holds its own
+    # occurrence, so removing one support must leave the fact standing.
     test "a fact with two supports survives losing one" do
       session = run([TwoSupports], [{:x, 1}, {:y, 1}])
-      assert [{:derived, 1}] == derived(session, :derived)
+      assert [{:derived, 1}, {:derived, 1}] == derived(session, :derived)
 
       session = session |> Session.retract({:x, 1}) |> Session.fire_rules()
       assert [{:derived, 1}] == derived(session, :derived)
@@ -1438,7 +1444,7 @@ defmodule Rete.EngineTest do
   describe "self supporting conclusions" do
     defp memories(session) do
       memory = session.state.memory
-      Map.take(memory, [:facts, :elements, :tokens, :accum, :insertions, :inserters])
+      Map.take(memory, [:facts, :elements, :tokens, :accum, :insertions, :inserters, :dependents])
     end
 
     defmodule Symmetric do
@@ -1471,7 +1477,8 @@ defmodule Rete.EngineTest do
                tokens: %{},
                accum: %{},
                insertions: %{},
-               inserters: nil
+               inserters: nil,
+               dependents: nil
              } ==
                memories(session)
     end
@@ -1527,7 +1534,8 @@ defmodule Rete.EngineTest do
                tokens: %{},
                accum: %{},
                insertions: %{},
-               inserters: nil
+               inserters: nil,
+               dependents: nil
              } ==
                memories(session)
     end
@@ -1577,7 +1585,8 @@ defmodule Rete.EngineTest do
                tokens: %{},
                accum: %{},
                insertions: %{},
-               inserters: nil
+               inserters: nil,
+               dependents: nil
              } ==
                memories(session)
     end
@@ -1784,12 +1793,14 @@ defmodule Rete.EngineTest do
       end
     end
 
-    test "inserting the same fact twice does not double its matches" do
+    test "inserting the same fact twice doubles its matches" do
       session = run([Dup], [{:thing, 1}, {:thing, 1}])
-      assert [{:seen, 1}] == derived(session, :seen)
+
+      assert [{:seen, 1}, {:seen, 1}] == derived(session, :seen)
+      assert 2 == session.state.memory.facts[{:seen, 1}]
     end
 
-    test "one retraction of a twice inserted fact leaves it present" do
+    test "one retraction of a twice inserted fact leaves one occurrence, and one match" do
       session = run([Dup], [{:thing, 1}, {:thing, 1}])
       session = session |> Session.retract({:thing, 1}) |> Session.fire_rules()
 
@@ -1804,6 +1815,64 @@ defmodule Rete.EngineTest do
 
       assert session |> Session.retract({:thing, 99}) |> Session.fire_rules() |> Session.facts() ==
                Session.facts(session)
+    end
+
+    defmodule Sums do
+      use Rete.Ruleset
+
+      defrule foobar_rule({:foo, val1}, {:bar, val2}) do
+        {:foobar, val1 + val2}
+      end
+
+      defquery get_foobar({:foobar, value}) do
+        %{foobar: value}
+      end
+    end
+
+    # The join makes four matches, and two of them agree on their answer. Both
+    # answers count. The engine used to propagate the first `{:foobar, 300}` and
+    # collapse the second into a support count, so the query lost a row that a
+    # rule had genuinely concluded.
+    test "two matches concluding one value give two occurrences, and two query rows" do
+      facts = [{:foo, 100}, {:bar, 100}, {:foo, 200}, {:bar, 200}]
+      session = [Sums] |> Session.new() |> Session.insert(facts) |> Session.fire_rules()
+
+      assert [%{foobar: 200}, %{foobar: 300}, %{foobar: 300}, %{foobar: 400}] ==
+               session |> Sums.get_foobar() |> Enum.sort()
+
+      assert 2 == session.state.memory.facts[{:foobar, 300}]
+
+      # `{:foo, 100}` supports the 200 and one of the 300s, and nothing else.
+      dropped = session |> Session.retract({:foo, 100}) |> Session.fire_rules()
+
+      assert [%{foobar: 300}, %{foobar: 400}] == dropped |> Sums.get_foobar() |> Enum.sort()
+      assert 1 == dropped.state.memory.facts[{:foobar, 300}]
+
+      # And the session drains to exactly a fresh one, so neither occurrence left
+      # anything behind.
+      drained = dropped |> Session.retract(tl(facts)) |> Session.fire_rules()
+
+      assert [Sums]
+             |> Session.new()
+             |> Session.fire_rules()
+             |> Map.fetch!(:state)
+             |> Map.get(:memory) ==
+               drained.state.memory
+    end
+
+    test "each match of the rule fires, however many agree on the answer" do
+      facts = [{:foo, 100}, {:bar, 100}, {:foo, 200}, {:bar, 200}]
+
+      fired =
+        [Sums]
+        |> Session.new()
+        |> Session.with_listener(Collect, [])
+        |> Session.insert(facts)
+        |> Session.fire_rules()
+        |> Collect.by_tag(:activation_fired)
+        |> Enum.map(fn {_tag, _source, _token, concluded} -> concluded end)
+
+      assert [[foobar: 200], [foobar: 300], [foobar: 300], [foobar: 400]] == Enum.sort(fired)
     end
   end
 

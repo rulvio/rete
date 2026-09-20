@@ -12,13 +12,20 @@ defmodule Rete.Memory do
       tokens      node_id => join_key => Bucket of Token     left of a beta node
       accum       node_id => join_key => group_key => [member] what a collection gathered
       insertions  node_id => token => [[fact]]               truth maintenance
-      facts       fact => count                              what it was told
+      facts       fact => occurrences                        what it was told
 
       inserters   fact => {node_id, token} => count          `insertions`, reversed
+      dependents  fact => derived fact => count              `insertions`, as fact edges
 
-  `inserters` is not a memory. It is `insertions` indexed by fact, for the readers that ask
-  "which matches inserted *this fact*". It stays `nil` until `index_inserters/1` builds it,
-  and it is left out of `dump/1`, being a cache.
+  Neither of the last two is a memory. Both are `insertions` read another way, and both
+  are left out of `dump/1`, being caches. `inserters` answers "which matches inserted *this
+  fact*". `dependents` answers "which facts were concluded by a match resting on *this
+  fact*", which is the same graph one step in the other direction.
+
+  Both are `nil` until `index_support/1` builds them, and they are `nil` or built
+  **together**. `nil` means "nothing is indexed", which is a claim about the records and
+  not about either map. `dependents` comes out empty on records that do exist, because a
+  rule anchored on the root token rests on nothing.
 
   **Arrival order is load-bearing.** A bucket decides the order tokens propagate, so it
   decides the order two matches of one rule fire. One that gave items back in a different
@@ -30,9 +37,11 @@ defmodule Rete.Memory do
   planted. This must happen exactly once per session. See `docs/design/engine.md` §6.
 
       iex> alias Rete.Memory
-      iex> {memory, :new} = Memory.add_fact(Memory.new(), {:order, 1})
-      iex> {memory, :duplicate} = Memory.add_fact(memory, {:order, 1})
-      iex> {memory, :remaining} = Memory.remove_fact(memory, {:order, 1})
+      iex> memory = Memory.add_fact(Memory.new(), {:order, 1})
+      iex> memory = Memory.add_fact(memory, {:order, 1})
+      iex> Memory.facts(memory)
+      [{:order, 1}, {:order, 1}]
+      iex> {memory, :removed} = Memory.remove_fact(memory, {:order, 1})
       iex> Memory.facts(memory)
       [{:order, 1}]
   """
@@ -53,6 +62,7 @@ defmodule Rete.Memory do
           accum: %{node_id() => %{key() => %{key() => [term()]}}},
           insertions: %{node_id() => %{Token.t() => [[term()]]}},
           inserters: %{term() => %{inserter() => pos_integer()}} | nil,
+          dependents: %{term() => %{term() => pos_integer()}} | nil,
           facts: %{term() => pos_integer()},
           root_seeded?: boolean()
         }
@@ -62,6 +72,7 @@ defmodule Rete.Memory do
             accum: %{},
             insertions: %{},
             inserters: nil,
+            dependents: nil,
             facts: %{},
             root_seeded?: false
 
@@ -254,7 +265,14 @@ defmodule Rete.Memory do
   Records the facts one activation of a production inserted.
 
   This is stored as a list of lists. The same token can activate a production more than
-  once, over a session's life, and each activation owns its own batch.
+  once, and each activation owns its own batch. Two equal facts do that on one fire: they
+  are two occurrences, so they make two matches that this store cannot tell apart.
+
+  **Newest first.** `take_insertion/3` therefore gives back the newest batch, and the order
+  is not observable. Every batch under one key is the conclusion of an equal match at one
+  node. A rule body is a pure function of its bindings, so those batches are equal. The
+  list used to be appended to, which cost a pass over it per activation — quadratic in the
+  occurrences of one fact.
   """
   @spec add_insertion(t(), node_id(), Token.t(), [term()]) :: t()
   def add_insertion(%__MODULE__{} = memory, node_id, token, facts) do
@@ -263,22 +281,23 @@ defmodule Rete.Memory do
         memory.insertions,
         node_id,
         %{token => [facts]},
-        &Map.update(&1, token, [facts], fn batches -> batches ++ [facts] end)
+        &Map.update(&1, token, [facts], fn batches -> [facts | batches] end)
       )
 
     %__MODULE__{
       memory
       | insertions: insertions,
-        inserters: index_add(memory.inserters, {node_id, token}, facts)
+        inserters: index_add(memory.inserters, {node_id, token}, facts),
+        dependents: edges_add(memory.dependents, token, facts)
     }
   end
 
   @doc """
-  Takes back one batch of facts a token's activation inserted.
+  Takes back the newest batch of facts a token's activation inserted.
 
   Returns `{memory, facts}`, or `{memory, []}` when the token never inserted anything.
   That case is a production retracted before it fired, or one whose body returned
-  nothing.
+  nothing. See `add_insertion/4` for why the newest is as good as any.
   """
   @spec take_insertion(t(), node_id(), Token.t()) :: {t(), [term()]}
   def take_insertion(%__MODULE__{} = memory, node_id, token) do
@@ -291,9 +310,23 @@ defmodule Rete.Memory do
       [batch | rest] ->
         by_token = store_at(by_token, token, rest)
         insertions = store_at(memory.insertions, node_id, by_token)
-        inserters = index_drop(memory.inserters, {node_id, token}, batch)
 
-        {%__MODULE__{memory | insertions: insertions, inserters: inserters}, batch}
+        {inserters, dependents} =
+          if insertions == %{} do
+            {nil, nil}
+          else
+            {index_drop(memory.inserters, {node_id, token}, batch),
+             edges_drop(memory.dependents, token, batch)}
+          end
+
+        memory = %__MODULE__{
+          memory
+          | insertions: insertions,
+            inserters: inserters,
+            dependents: dependents
+        }
+
+        {memory, batch}
     end
   end
 
@@ -309,7 +342,7 @@ defmodule Rete.Memory do
 
   This falls back to that recomputation when the index is not built, so a reader that asks
   one time gets a correct answer without forcing a build on a session that would never need
-  one. **A caller that asks repeatedly must call `index_inserters/1` first, and keep what it
+  one. **A caller that asks repeatedly must call `index_support/1` first, and keep what it
   returns.** The fallback is a pass over every insertion record, so asking per fact without
   the index is quadratic in the size of the session. `Rete.Inspect.explain/1,2` builds it
   for that reason.
@@ -327,64 +360,107 @@ defmodule Rete.Memory do
   end
 
   @doc """
-  Builds the `inserters` index if it is not built, and returns the memory holding it.
+  The facts that were concluded by a match resting on `fact`.
 
-  One pass over every insertion record. After this, `add_insertion/4` and
-  `take_insertion/3` keep it in step. The pass thus happens one time in a session at most.
-  It does not happen at all in a session where no rule concludes what another rule already
-  concluded, because only that consults the index.
+  Empty for a fact no rule has matched, and for one whose matches concluded nothing. This
+  is `inserters/2` pointed the other way, one step at a time: `inserters/2` asks what a
+  fact rests **on**, and this asks what rests **on it**.
+
+  `Rete.Engine` walks this to decide whether a conclusion supports itself. It walks down
+  from the conclusion rather than up from the match on purpose. A fact with `k` supports
+  has `k` ancestors to visit, and usually no descendants at all. It is also `k` occurrences,
+  so a rule below it fires `k` times. Walking up would cost `O(k)` on each of those
+  firings. See `docs/design/engine.md` §8.
+
+  The same fallback and the same warning as `inserters/2`: call `index_support/1` first.
   """
-  @spec index_inserters(t()) :: t()
-  def index_inserters(%__MODULE__{inserters: nil} = memory) do
-    index =
-      for {node_id, by_token} <- memory.insertions,
-          {token, batches} <- by_token,
-          batch <- batches,
-          fact <- batch,
-          reduce: %{} do
-        acc -> add_inserter(acc, fact, {node_id, token})
-      end
-
-    %__MODULE__{memory | inserters: presence(index)}
+  @spec dependents(t(), term()) :: [term()]
+  def dependents(%__MODULE__{dependents: nil, insertions: insertions}, fact) do
+    for {_node_id, by_token} <- insertions,
+        {token, batches} <- by_token,
+        fact in Token.rests_on(token),
+        batch <- batches,
+        derived <- batch,
+        uniq: true,
+        do: derived
   end
 
-  def index_inserters(%__MODULE__{} = memory), do: memory
+  def dependents(%__MODULE__{dependents: dependents}, fact) do
+    dependents |> Map.get(fact, %{}) |> Map.keys()
+  end
+
+  @doc """
+  Builds the support indexes if they are not built, and returns the memory holding them.
+
+  One pass over every insertion record, building `inserters` and `dependents` together.
+  After this, `add_insertion/4` and `take_insertion/3` keep both in step. The pass thus
+  happens one time in a session at most. It does not happen at all in a session where no
+  rule concludes what another rule already concluded, because only that consults them.
+  """
+  @spec index_support(t()) :: t()
+  def index_support(%__MODULE__{inserters: nil} = memory) do
+    {inserters, dependents} = build_support(memory.insertions)
+
+    %__MODULE__{memory | inserters: inserters, dependents: dependents}
+  end
+
+  def index_support(%__MODULE__{} = memory), do: memory
+
+  # `nil` for both, or a map for both. Having no records to index is what decides it, and
+  # not either map coming out empty. `dependents` is legitimately empty on records that are
+  # there: a rule anchored on the root token rests on nothing, so it writes no edge. Reading
+  # that emptiness as "not built" would leave the index `nil` next to live records, and
+  # every later edge would be dropped on the floor by `edges_add/3`.
+  defp build_support(insertions) when insertions == %{}, do: {nil, nil}
+
+  defp build_support(insertions) do
+    for {node_id, by_token} <- insertions,
+        {token, batches} <- by_token,
+        rests_on = Token.rests_on(token),
+        batch <- batches,
+        fact <- batch,
+        reduce: {%{}, %{}} do
+      {inserters, dependents} ->
+        {add_inserter(inserters, fact, {node_id, token}),
+         Enum.reduce(rests_on, dependents, &add_inserter(&2, &1, fact))}
+    end
+  end
 
   # --- the fact multiset ----------------------------------------------------------
 
   @doc """
-  Records a fact, returning `{memory, :new | :duplicate}`.
+  Records one occurrence of a fact.
 
-  Only `:new` propagates. A second insertion of an equal fact bumps its count instead, so
-  that one retraction does not remove it. The matches it would make already exist.
+  Every occurrence counts, and every occurrence propagates. A fact equal to one already
+  present is a second occurrence of it, not a repeat of the first.
   """
-  @spec add_fact(t(), term()) :: {t(), :new | :duplicate}
+  @spec add_fact(t(), term()) :: t()
   def add_fact(%__MODULE__{facts: facts} = memory, fact) do
-    case Map.get(facts, fact) do
-      nil -> {%__MODULE__{memory | facts: Map.put(facts, fact, 1)}, :new}
-      n -> {%__MODULE__{memory | facts: Map.put(facts, fact, n + 1)}, :duplicate}
-    end
+    %__MODULE__{memory | facts: Map.update(facts, fact, 1, &(&1 + 1))}
   end
 
   @doc """
-  Drops one occurrence of a fact, returning `{memory, :gone | :remaining | :absent}`.
+  Drops one occurrence of a fact, returning `{memory, :removed | :absent}`.
 
-  Only `:gone` propagates — that is, only the last occurrence.
+  Only `:removed` propagates. `:absent` says the session never held the fact, so there is
+  no match to take back.
   """
-  @spec remove_fact(t(), term()) :: {t(), :gone | :remaining | :absent}
+  @spec remove_fact(t(), term()) :: {t(), :removed | :absent}
   def remove_fact(%__MODULE__{facts: facts} = memory, fact) do
     case Map.get(facts, fact) do
       nil -> {memory, :absent}
-      1 -> {%__MODULE__{memory | facts: Map.delete(facts, fact)}, :gone}
-      n -> {%__MODULE__{memory | facts: Map.put(facts, fact, n - 1)}, :remaining}
+      1 -> {%__MODULE__{memory | facts: Map.delete(facts, fact)}, :removed}
+      n -> {%__MODULE__{memory | facts: Map.put(facts, fact, n - 1)}, :removed}
     end
   end
 
   @doc """
-  Every distinct fact the session holds.
+  Every fact the session holds, one entry for each occurrence.
   """
   @spec facts(t()) :: [term()]
-  def facts(%__MODULE__{facts: facts}), do: Map.keys(facts)
+  def facts(%__MODULE__{facts: facts}) do
+    Enum.flat_map(facts, fn {fact, count} -> List.duplicate(fact, count) end)
+  end
 
   # --- reading the whole thing -------------------------------------------------------
 
@@ -458,7 +534,7 @@ defmodule Rete.Memory do
   defp store_at(map, key, contents) when contents in [[], %{}], do: Map.delete(map, key)
   defp store_at(map, key, contents), do: Map.put(map, key, contents)
 
-  # Both no-ops while the index is unbuilt. `index_inserters/1` reads `insertions`, which
+  # Both no-ops while the index is unbuilt. `index_support/1` reads `insertions`, which
   # is maintained either way, so there is nothing to catch up on when it is built later.
   defp index_add(nil, _ref, _facts), do: nil
 
@@ -467,19 +543,31 @@ defmodule Rete.Memory do
 
   defp index_drop(nil, _ref, _facts), do: nil
 
-  # Back to `nil` once it holds nothing. An empty index and no index are the same claim,
-  # and collapsing them means a session that drains fully returns to exactly the memory a
-  # fresh one starts with — which several invariants compare against directly. Rebuilding
-  # from an empty `insertions` costs nothing.
+  # No collapse to `nil` here. `take_insertion/3` decides that, for both indexes together,
+  # on whether any record is left. See `build_support/1`.
   defp index_drop(inserters, ref, facts) do
-    facts |> Enum.reduce(inserters, &drop_inserter(&2, &1, ref)) |> presence()
+    Enum.reduce(facts, inserters, &drop_inserter(&2, &1, ref))
   end
 
-  # `nil` means "no entries", whether because nothing built the index or because it
-  # emptied. Both readings are safe, since an absent index is rebuilt from `insertions`,
-  # and collapsing them is what lets a fully drained session compare equal to a fresh one.
-  defp presence(index) when index == %{}, do: nil
-  defp presence(index), do: index
+  # `dependents` is the same shape one level over: `fact => derived fact => count`. One
+  # edge per (fact the match rested on, fact it concluded), so a match resting on three
+  # facts and concluding two writes six. `add_inserter/3` builds both, the "ref" being a
+  # match in one and a concluded fact in the other.
+  defp edges_add(nil, _token, _facts), do: nil
+
+  defp edges_add(dependents, token, facts) do
+    for rested <- Token.rests_on(token), derived <- facts, reduce: dependents do
+      acc -> add_inserter(acc, rested, derived)
+    end
+  end
+
+  defp edges_drop(nil, _token, _facts), do: nil
+
+  defp edges_drop(dependents, token, facts) do
+    for rested <- Token.rests_on(token), derived <- facts, reduce: dependents do
+      acc -> drop_inserter(acc, rested, derived)
+    end
+  end
 
   # `inserters` mirrors `insertions`, one entry per occurrence of a fact in a batch. A
   # batch that names the same fact twice counts twice, so that taking the batch back
