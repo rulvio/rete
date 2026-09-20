@@ -161,6 +161,7 @@ session = Rete.Session.fire_rules(session)
 
 Rete.Session.facts(session) |> Enum.sort()
 #=> [
+#     {:threshold, 100},
 #     {:customer, 1, "Ada"},
 #     {:customer, 2, "Bo"},
 #     {:large_order, 1, 250},
@@ -168,8 +169,7 @@ Rete.Session.facts(session) |> Enum.sort()
 #     {:order, 1, 40},
 #     {:order, 1, 250},
 #     {:spend, "Ada", 290},
-#     {:spend, "Bo", 30},
-#     {:threshold, 100}
+#     {:spend, "Bo", 30}
 #   ]
 ```
 
@@ -213,8 +213,8 @@ and not a scan. A call that does not match raises `FunctionClauseError`, and one
 wrong arity does not compile. Both are reported at the line you wrote, and an editor
 completes the call. Write no head for a query that answers with every match that it holds.
 
-A guard on the head is a test on the left hand side, so the query holds no match that fails
-it, and a call that names a rejected value answers `[]`. The guard is not on the generated
+A guard on the head is a test on the left hand side. The query thus holds no match that
+fails it, and a call naming a rejected value answers `[]`. The guard is not on the generated
 clause, so it may call anything a rule body may call, and not only what an Elixir guard
 allows.
 
@@ -235,13 +235,13 @@ session =
 
 Rete.Session.facts(session) |> Enum.sort()
 #=> [
+#     {:threshold, 100},
 #     {:customer, 1, "Ada"},
 #     {:customer, 2, "Bo"},
 #     {:online_order, 2, 30},
 #     {:order, 1, 40},
 #     {:spend, "Ada", 40},
-#     {:spend, "Bo", 30},
-#     {:threshold, 100}
+#     {:spend, "Bo", 30}
 #   ]
 ```
 
@@ -260,13 +260,13 @@ session =
 
 Rete.Session.facts(session) |> Enum.sort()
 #=> [
-#     {:customer, 1, "Ada"},
-#     {:customer, 2, "Bo"},
 #     {:dormant, "Ada"},
 #     {:dormant, "Bo"},
+#     {:threshold, 100},
+#     {:customer, 1, "Ada"},
+#     {:customer, 2, "Bo"},
 #     {:spend, "Ada", 0},
-#     {:spend, "Bo", 0},
-#     {:threshold, 100}
+#     {:spend, "Bo", 0}
 #   ]
 ```
 
@@ -290,12 +290,19 @@ Rete.Inspect.explain(session, {Retail, :dormant})
 #           %{fact: {:customer, 1, "Ada"}, origin: :asserted, from: [], members: nil}
 #         ],
 #         inserted: [{:dormant, "Ada"}]
+#       },
+#       %{
+#         bindings: %{cid: 2, name: "Bo"},
+#         matches: [
+#           %{fact: {:customer, 2, "Bo"}, origin: :asserted, from: [], members: nil}
+#         ],
+#         inserted: [{:dormant, "Bo"}]
 #       }
 #     ]
 #   }
 ```
 
-One activation is one match the rule fired on. Each entry of `:matches` says where its fact
+One activation is one match the rule fired on, so two dormant customers give two. Each entry of `:matches` says where its fact
 came from. `:from` names the rules that concluded it, so you read a chain by following that
 pair to its own entry. It is a list, because a fact concluded twice has two independent
 supports, and both must go before the fact itself goes.

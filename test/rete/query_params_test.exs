@@ -684,4 +684,41 @@ defmodule Rete.QueryParamsTest do
       assert :internal == Keyword.get(production.opts, :meta)
     end
   end
+
+  # `index/2` was how 0.6 declared a second keying. The head is the only keying now, so the
+  # macro exists purely to say what to write instead. "undefined function index/2" would
+  # not, which is why it was kept rather than deleted.
+  describe "the index/2 declaration that a head replaced" do
+    test "it names the head to write in its place" do
+      error =
+        assert_raise ArgumentError, fn ->
+          defmodule Legacy do
+            use Rete.Ruleset
+
+            index(:rows, [:cid])
+
+            defquery rows(cid)({:rec, cid, amt}), do: {cid, amt}
+          end
+        end
+
+      assert error.message =~ "index :rows, [:cid] is no longer a declaration"
+      assert error.message =~ "`defquery rows(cid)(<conditions>)`"
+      assert error.message =~ "there is no second index to declare"
+    end
+
+    test "a bare key is named the same way as a list of them" do
+      error =
+        assert_raise ArgumentError, fn ->
+          defmodule LegacyBare do
+            use Rete.Ruleset
+
+            index(:rows, :cid)
+
+            defquery rows(cid)({:rec, cid, amt}), do: {cid, amt}
+          end
+        end
+
+      assert error.message =~ "`defquery rows(cid)(<conditions>)`"
+    end
+  end
 end

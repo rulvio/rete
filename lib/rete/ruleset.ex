@@ -128,11 +128,12 @@ defmodule Rete.Ruleset do
 
   # Renders the head as it was written, not as a list of names. A head is a pattern now, so
   # `defquery rows([:cid])` would name nothing the author could find in their source.
-  defp signature(%IR.Production{name: name, params: params, __ast__: ast}) do
-    case ast && Map.get(ast, :head) do
-      nil -> "defquery #{name}(#{Enum.join(params, ", ")})"
-      head -> "defquery #{name}(#{Enum.map_join(head, ", ", &Macro.to_string/1)})"
-    end
+  #
+  # Matches `:head` rather than reaching for it. `check_params!/3` returns early on empty
+  # `:params`, and only the head clause of the parser sets `:params`, so a production that
+  # reaches here always carries one.
+  defp signature(%IR.Production{name: name, __ast__: %{head: head}}) do
+    "defquery #{name}(#{Enum.map_join(head, ", ", &Macro.to_string/1)})"
   end
 
   # Keeps the variable AST the parser collected, so the RHS pattern carries the source

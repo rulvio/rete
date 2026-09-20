@@ -281,6 +281,62 @@ defmodule Rete.NetworkTest do
       refute Enum.any?(Map.keys(net.alphas), &(Atom.to_string(&1) =~ "@"))
     end
 
+    # The test above splits a plain fact condition. `Rete.Compiler.qualify/3` has to walk
+    # into a collection, a negation and a disjunction to reach the conditions nested in
+    # them, and a clause it skipped would leave that code shared. Asserted on the answers
+    # rather than on the graph: a miss here is a wrong row, not a crash.
+    test "a condition nested in a collection, negation or disjunction is split too" do
+      defmodule CollA do
+        use Rete.Ruleset
+        def big?(amt), do: amt > 100
+        defrule r({:cust, c}, os = [{:order, c, amt} when big?(amt)]), do: {:a, c, length(os)}
+      end
+
+      defmodule CollB do
+        use Rete.Ruleset
+        def big?(amt), do: amt > 1000
+        defrule r({:cust, c}, os = [{:order, c, amt} when big?(amt)]), do: {:b, c, length(os)}
+      end
+
+      defmodule NegA do
+        use Rete.Ruleset
+        def hot?(amt), do: amt > 100
+        defrule n({:cust, c}, {:not, [{:order, c, amt} when hot?(amt)]}), do: {:na, c}
+      end
+
+      defmodule NegB do
+        use Rete.Ruleset
+        def hot?(amt), do: amt > 1000
+        defrule n({:cust, c}, {:not, [{:order, c, amt} when hot?(amt)]}), do: {:nb, c}
+      end
+
+      defmodule OrA do
+        use Rete.Ruleset
+        def ok?(a), do: a > 100
+        defrule o({:or, [{:order, 1, a} when ok?(a), {:sale, 1, a} when ok?(a)]}), do: {:oa, a}
+      end
+
+      defmodule OrB do
+        use Rete.Ruleset
+        def ok?(a), do: a > 1000
+        defrule o({:or, [{:order, 1, a} when ok?(a), {:sale, 1, a} when ok?(a)]}), do: {:ob, a}
+      end
+
+      facts =
+        [CollA, CollB, NegA, NegB, OrA, OrB]
+        |> Rete.Session.new()
+        |> Rete.Session.insert([{:cust, 1}, {:order, 1, 500}])
+        |> Rete.Session.fire_rules()
+        |> Rete.Session.facts()
+
+      # 500 passes the lenient helper of each pair and fails the strict one.
+      assert {:a, 1, 1} in facts and {:b, 1, 0} in facts, "collection shared a node"
+      refute {:na, 1} in facts
+      assert {:nb, 1} in facts, "negation shared a node"
+      assert {:oa, 500} in facts
+      refute {:ob, 500} in facts
+    end
+
     # Hand built, so that the pass is pinned even if W1 later learns to resolve
     # unqualified calls and the codes above stop colliding.
     test "disambiguate_codes/1 keeps a code two productions of one module share" do

@@ -746,6 +746,38 @@ defmodule Rete.BehaviorTest do
                )
     end
 
+    defmodule NandShapes do
+      use Rete.Ruleset
+
+      defrule with_coll({:cust, cid}, {:nand, [_os = [{:order, cid, _a}], {:vip, cid}]}),
+        do: {:coll_ok, cid}
+
+      defrule with_or({:cust2, cid}, {:nand, [{:or, [{:a, cid}, {:b, cid}]}, {:flag, cid}]}),
+        do: {:or_ok, cid}
+    end
+
+    # The helper's marker is keyed on the ancestor bindings its conjunction joins on, and
+    # working those out means walking into every shape a conjunction may hold. A shape the
+    # walk skipped would key the marker on nothing, and one matching group would then
+    # suppress the rule for every group. That is Clara issue 304 by another route, so it is
+    # asserted the same way: one group suppressed, another untouched, in one session.
+    test "a conjunction holding a collection or a disjunction stays scoped to its group" do
+      session =
+        run(NandShapes, [
+          {:cust, 1},
+          {:order, 1, 5},
+          {:vip, 1},
+          {:cust, 2},
+          {:cust2, 1},
+          {:a, 1},
+          {:flag, 1},
+          {:cust2, 2}
+        ])
+
+      assert [{:coll_ok, 2}] == tagged(session, :coll_ok)
+      assert [{:or_ok, 2}] == tagged(session, :or_ok)
+    end
+
     defmodule OrOfNegations do
       use Rete.Ruleset
 
