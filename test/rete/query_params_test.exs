@@ -252,8 +252,8 @@ defmodule Rete.QueryParamsTest do
     end
 
     # A bare name reaches neither form, so the error suggests both. The query node carries
-    # the head as source, so the suggestion spells out a call that a reader can copy. A
-    # pattern is named whole, and not as the variables inside it.
+    # the head as source, so the suggestion names the arguments the call takes instead of a
+    # placeholder. A compound pattern stays one argument, which is what the caller writes.
     test "a bare name suggests the call the head declares" do
       shapes = run(Shapes, facts_for(12))
 
@@ -393,6 +393,13 @@ defmodule Rete.QueryParamsTest do
 
       assert [rows: 3] == arities(AllDiscarded, [:rows])
       assert [1, 2] == AllDiscarded.rows(session, :anything, :at_all)
+
+      # A suggested call names the head as it was written, so a discarded position reads as
+      # discarded. That is the shape to write, and not a line to paste: a head names its
+      # arguments with variables, and none of them is bound where the reader stands.
+      error = assert_raise ArgumentError, fn -> Session.query(session, :rows) end
+
+      assert error.message =~ "AllDiscarded.rows(session, _cid, _)"
     end
 
     # A head is an argument list, so a default means there what it means in any `def`. It

@@ -96,7 +96,7 @@ alpha expressions, join filters, and tests alike, deduplicated by code.
 | `:opts` | `keyword` | W1 | from the leading options map, e.g. `[salience: 100]`; `[]` if absent |
 | `:bind` | `[atom]`, **sorted** | W2c | every variable the LHS can make visible to the RHS, including fact/collection bindings; see below |
 | `:params` | `[atom]`, **sorted** | W1, checked by W2c | what the head of a query binds: the keys of its matches. `[]` on a rule. See below |
-| `:head` | `[String.t]`, **declaration order** | W1 | the head of a query as it was written, one string per pattern. `[]` on a rule. The patterns are AST, so they stay in `:__ast__`; this is the rendering that messages use, and the only part of the head that reaches the network |
+| `:head` | `[String.t]`, **declaration order** | W1 | the head of a query as it was written, one string per pattern. `[]` on a rule. The patterns are AST, so they stay in `:__ast__`. This is the rendering every message about the query uses, and what `escape/1` carries to the network for it |
 | `:lhs` | `t:Rete.IR.lhs/0` | W1, rewritten by W2 | ordered condition list |
 | `:rhs` | `(hash, bindings_map -> facts) \| nil` | `escape/1` | `nil` before escaping |
 | `:module` | `module` | W1 | defining module |
