@@ -66,8 +66,15 @@ The compiler checks the call, and an editor completes it. A call that does not m
   default `params` is gone. `q(session)` on a query with a head, and `q(session, cid: 1)`
   on a query without one, are undefined functions now. Each warns at compile time, and
   raises `UndefinedFunctionError` when it runs. Before, each was an `ArgumentError` from a
-  function that existed. A default you write in the head gives the query a second arity, in
-  the way it does in any `def`.
+  function that existed.
+
+* **A head pattern takes no default, and neither does a condition.** `defquery rows(cid \\
+  1)(...)` is an error now. A default applies at a call site, and `Rete.Session.query/3`
+  has none to apply it at. It takes the bindings and requires every parameter, so it would
+  raise where the generated function answered, and one query would read two ways. Write a
+  second query for the common value, or a wrapper function that supplies it. A condition is
+  refused for the plainer reason that it matches a fact that is already there. Both used to
+  reach the compiler, which reported `undefined variable` or `undefined function \\/2`.
 
 * **A keyword head matches in the order you declared it.** `(cid: cid, tid: tid)` does not
   match a call of `(tid: 2, cid: 1)`. A head is a pattern, so it behaves like one. Before,

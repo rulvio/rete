@@ -74,8 +74,7 @@ join keys. Normalization must therefore run first.
 
 * `__<code>__/1` and `__<code>__/2` - one function per distinct expression,
 * `<query_name>/(N+1)` - one per query, running it against a session. `N` is the number
-  of patterns in its head, and it is `0` for a query with no head. A head pattern carrying
-  a default gives the query a second arity, as it does in any `def`,
+  of patterns in its head, and it is `0` for a query with no head,
 * `__rhs_<name>__/2` - the RHS of each production,
 * `get_rule_data/0`, `get_expr_data/0`, `get_taxo_data/0`, `get_version/0`.
 
@@ -199,6 +198,21 @@ is no exception to that.
 
 The check above stays for a different reason. A head guard constrains the call, and one
 that read the rest of the LHS would be the trailing `when` under a second spelling.
+
+#### A head pattern takes no default
+
+The same argument refuses one. A default cannot reach the store, because it is not a
+constraint on matches. It is a substitution at a call site, and `Rete.Engine.query/3` has
+no call site to substitute into. It takes the bindings and checks that every parameter is
+there, so it would raise where the generated function answered. One query would read two
+ways.
+
+`Rete.DSL.Parser.reject_defaults!/3` therefore refuses a default in a head, and in a
+condition for the plainer reason that a condition matches a fact already in memory. Elixir
+reports `\\` inside a match as "undefined function `\\/2`", which names nothing the author
+wrote, so the parser reports it first. `when` binds tighter than `\\`, which puts the guard
+of `(cid \\ 1 when cid > 0)` inside the default value. The check runs over the head before
+the guards are split out, so that spelling reaches the same message.
 
 ### `Rete.IR.Fact`
 

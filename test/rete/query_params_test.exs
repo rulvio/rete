@@ -402,25 +402,64 @@ defmodule Rete.QueryParamsTest do
       assert error.message =~ "AllDiscarded.rows(session, _cid, _)"
     end
 
-    # A head is an argument list, so a default means there what it means in any `def`. It
-    # gives the query a second arity, and the default value keys the matches.
-    test "a head pattern may carry a default" do
-      defmodule DefaultHead do
-        use Rete.Ruleset
+    # A head is an argument list, so `def` would take a default here. The engine refuses
+    # one, because `Rete.Session.query/3` takes the bindings and could not honour it. The
+    # generated function would answer where that call raised, and one query would read two
+    # ways.
+    test "a head pattern cannot carry a default" do
+      error =
+        assert_raise ArgumentError, fn ->
+          defmodule DefaultHead do
+            use Rete.Ruleset
 
-        defquery rows(cid \\ 1)({:rec, cid, amt}), do: {cid, amt}
-      end
+            defquery rows(cid \\ 1)({:rec, cid, amt}), do: {cid, amt}
+          end
+        end
 
-      session = run(DefaultHead, [{:rec, 1, 10}, {:rec, 2, 20}])
+      assert error.message =~ "rows(cid \\\\ 1) gives a head pattern a default"
+      assert error.message =~ "`Rete.Session.query/3` could not honour it"
+      assert error.message =~ "Write a second query"
+    end
 
-      assert [rows: 1, rows: 2] == arities(DefaultHead, [:rows])
-      assert [{1, 10}] == DefaultHead.rows(session)
-      assert DefaultHead.rows(session) == DefaultHead.rows(session, 1)
-      assert [{2, 20}] == DefaultHead.rows(session, 2)
+    # `when` binds tighter than `\\`, so the guard parses into the default value rather
+    # than alongside the pattern. Both spellings reach the one message. Without the check
+    # the first reported `undefined variable "cid"` from the generated clause.
+    test "a default carrying a guard is refused the same way" do
+      nested =
+        assert_raise ArgumentError, fn ->
+          defmodule DefaultGuardHead do
+            use Rete.Ruleset
 
-      # A suggestion is a call, and `rows(session, cid \\ 1)` is a declaration.
-      error = assert_raise ArgumentError, fn -> Session.query(session, :rows) end
-      assert error.message =~ "DefaultHead.rows(session, cid)"
+            defquery rows(cid \\ 1 when cid > 0)({:rec, cid, amt}), do: {cid, amt}
+          end
+        end
+
+      wrapped =
+        assert_raise ArgumentError, fn ->
+          defmodule WrappedGuardHead do
+            use Rete.Ruleset
+
+            defquery rows((cid when cid > 0) \\ 1)({:rec, cid, amt}), do: {cid, amt}
+          end
+        end
+
+      assert nested.message =~ "gives a head pattern a default"
+      assert wrapped.message =~ "gives a head pattern a default"
+    end
+
+    # A rule has no call to default, so the head error is the one to report. It is also
+    # the more fundamental of the two.
+    test "a rule with a head and a default reports the head" do
+      error =
+        assert_raise ArgumentError, fn ->
+          defmodule DefaultRuleHead do
+            use Rete.Ruleset
+
+            defrule flag(cid \\ 1)({:rec, cid}), do: {:flagged, cid}
+          end
+        end
+
+      assert error.message =~ "gives a rule a head"
     end
 
     # `()` and no head make the same statement: this query takes no parameters.

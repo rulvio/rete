@@ -98,6 +98,7 @@ defmodule Rete.DSL.Parser do
     %IR.Production{} = production = parse_rule(env, hash, type, {name, [], args}, body)
 
     reject_head_on_rule!(name, type, head)
+    reject_defaults!(name, :head, head)
 
     {patterns, guard} = split_head(head)
     head_bind = parse_bind(patterns)
@@ -109,7 +110,7 @@ defmodule Rete.DSL.Parser do
       | params: bind_vars(head_bind),
         # Rendered here, where the patterns are. Every message about this query names the
         # head the way its author wrote it, and a message reaches for a string.
-        head: Enum.map(patterns, &render_pattern/1),
+        head: Enum.map(patterns, &Macro.to_string/1),
         lhs: production.lhs ++ head_test(env, guard),
         # The guard is not kept here. It goes into the `Rete.IR.Test` that `head_test/2`
         # appends, which records it in the same shape every other guard uses.
@@ -120,6 +121,7 @@ defmodule Rete.DSL.Parser do
   defp parse_rule(env, hash, type, {name, _, args}, body) when is_atom(name) do
     {opts, elements} = parse_args(args)
     check_opts!(name, opts)
+    Enum.each(elements, &reject_defaults!(name, :condition, &1))
     bind = parse_bind(elements)
 
     %IR.Production{
@@ -154,10 +156,35 @@ defmodule Rete.DSL.Parser do
 
   defp reject_head_on_rule!(_name, _type, _head), do: :ok
 
-  # A default is dropped, because both readers of this render a call and
-  # `q(session, cid \\ 1)` is not one.
-  defp render_pattern({:\\, _meta, [pattern, _default]}), do: Macro.to_string(pattern)
-  defp render_pattern(pattern), do: Macro.to_string(pattern)
+  # A default applies where a call is made, and neither of these places is one. Elixir
+  # reports `\\` in a match as "undefined function \\/2", which names nothing the author
+  # wrote, so this arrives first.
+  #
+  # `when` binds tighter than `\\`, so `cid \\ 1 when cid > 0` parses with the guard inside
+  # the default. Walking the head before `split_head/1` is what catches that spelling.
+  defp reject_defaults!(name, source, ast) do
+    case Macro.prewalk(ast, nil, &find_default/2) do
+      {_ast, nil} -> :ok
+      {_ast, _default} -> raise ArgumentError, default_message(name, source, ast)
+    end
+  end
+
+  defp find_default({:\\, _meta, [_pattern, _default]} = node, nil), do: {node, node}
+  defp find_default(node, found), do: {node, found}
+
+  defp default_message(name, :head, head) do
+    "#{name}(#{Enum.map_join(head, ", ", &Macro.to_string/1)}) gives a head pattern a " <>
+      "default, and a head pattern cannot take one. A default applies at the call site, " <>
+      "so `Rete.Session.query/3` could not honour it and the two ways of reading this " <>
+      "query would disagree. Write a second query, or a wrapper function that supplies " <>
+      "the value."
+  end
+
+  defp default_message(_name, :condition, element) do
+    "#{Macro.to_string(element)} gives a condition a default, and a condition cannot take " <>
+      "one. A condition matches a fact that is already there, so there is no call to " <>
+      "supply a value for. Remove the default."
+  end
 
   # Separates the patterns of a head from its guards. Elixir attaches a `when` to the one
   # argument it follows, so `rows(cid, tid when cid < tid)` guards the last pattern alone.

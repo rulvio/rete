@@ -508,8 +508,8 @@ defmodule Rete.PropertyTest do
 
     property "an unbuilt index answers the same as a built one" do
       # The fallback path in `Rete.Memory.inserters/2`, which scans `insertions`
-      # rather than forcing a build. `Rete.Inspect.derivations/2` takes it, so it
-      # has to agree with the index for every fact the session holds.
+      # rather than forcing a build. No caller takes it now, so this property is
+      # what holds it to agreeing with the index.
       check all(facts <- multiset(), facts != [], max_runs: 40) do
         # Matched out rather than fetched, so the struct update below is one the
         # compiler can check: `Map.fetch!/2` gives back `dynamic()`, and

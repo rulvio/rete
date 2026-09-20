@@ -681,15 +681,10 @@ MyRuleset.rows(session, {1, 5})  # keyed on tid alone, so `1` is a label and not
 
 Rename it to `cid` to key on it. A guard cannot read it, because the pattern discards it.
 
-A head pattern may carry a **default**, as an argument of any `def` may. It gives the query
-a second arity, and the default keys the matches when a caller leaves it out:
-
-```elixir
-defquery rows(cid \\ 1)({:rec, cid, amt}), do: {cid, amt}
-
-MyRuleset.rows(session)     # keyed on %{cid: 1}
-MyRuleset.rows(session, 2)  # keyed on %{cid: 2}
-```
+A head pattern cannot carry a **default**, although an argument of any `def` may. A default
+applies at the call site, and `Rete.Session.query/3` never reaches that call site. It takes
+the bindings, so it could not honour the default, and one query would then read two ways.
+Write a second query for the common value, or a wrapper function that supplies it.
 
 A query has one head. Thus two ways to read the same conditions are two queries. Together
 they cost one network: the engine matches the conditions above them one time, whether you
@@ -1152,5 +1147,7 @@ give them different names instead. That is what a name is for.
 | `defquery q({:a, cid})` then `q(session, cid: 1)` | the same: `q` has no head, so it is `q/1` |
 | `defquery q(cid: cid, tid: tid)(...)` then `q(session, tid: 2, cid: 1)` | a `FunctionClauseError`: a keyword head matches in the order you declared |
 | `defquery q(cid when amt > 1)({:a, cid, amt})` | an error: a head guard reads only what the head binds. Write it after the conditions |
+| `defquery q(cid \\ 1)({:a, cid})` | an error: a head pattern takes no default, because `Rete.Session.query/3` could not honour one |
+| `defrule r({:order, cid \\ 1})` | an error: a condition matches a fact that is already there, so it has no call to default |
 | `defrule r(cid)({:a, cid})` | an error: only a query is read, so only a query takes parameters |
 | `@limit 5` … rule … `@limit 100` … same condition | an error: two conditions that read the same attribute at different values cannot share one compiled function |
