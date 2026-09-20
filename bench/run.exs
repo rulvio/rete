@@ -22,8 +22,8 @@
 # **The exponent gates CI.** A run that finds a superlinear scenario exits non-zero, and
 # `finish/0` names it. An exponent is a ratio between two timings, so the speed of the
 # machine has no effect on it. Measured at 2 and at 4 schedulers, and under 3x CPU
-# oversubscription, the worst of the eighteen readings moved from n^1.12 to n^1.13. The
-# gate is n^1.5.
+# oversubscription, the worst of the readings stayed near n^1.2. It moves more between two
+# runs of one configuration than between the configurations. The gate is n^1.5.
 #
 # **Wall clock is asserted on nowhere.** A duration threshold on a shared runner fails for
 # reasons that mean nothing. Every millisecond figure this prints is there to be read, and

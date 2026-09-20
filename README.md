@@ -384,7 +384,7 @@ docs under `docs/design/` record why.
   one: alpha and beta node sharing across modules as well as within one, hash joins,
   incremental retraction. Two profiling passes have run, and `mix bench` keeps their
   results honest by reporting the empirical exponent of each scenario rather than a
-  wall-clock figure. All eighteen scenarios are linear.
+  wall-clock figure. Every scenario is linear.
   [docs/design/engine.md](docs/design/engine.md) §12 lists the known gaps that remain, and
   what each would take to close. What has *not* been done is tuning for absolute
   throughput, or measuring wide disjunctions or memory rather than time.

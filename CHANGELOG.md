@@ -55,10 +55,9 @@ The compiler checks the call, and an editor completes it. A call that does not m
 * **`mix bench` gates CI.** A run that finds a superlinear scenario names it and exits
   non-zero. A `bench` job runs it on every push and pull request. An exponent is a ratio
   between two timings, so the speed of the runner has no effect on it. Measured at 2 and at
-  4 schedulers, and under 3x CPU oversubscription, the worst of the eighteen readings moved
-  from n^1.12 to n^1.13. The gate is n^1.5. Wall clock is still asserted on nowhere. The
-  run is not retried, because a scenario that fails now and then is a scenario sitting too
-  near the gate.
+  4 schedulers, and under 3x CPU oversubscription, the worst of the readings stayed near
+  n^1.2. The gate is n^1.5. Wall clock is still asserted on nowhere. The run is not retried,
+  because a scenario that fails now and then is a scenario sitting too near the gate.
 
 ### Changed
 
