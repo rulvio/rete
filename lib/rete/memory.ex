@@ -307,10 +307,12 @@ defmodule Rete.Memory do
   the purpose of it. Before, the engine recomputed the answer from every insertion record in
   the session, for every conclusion that was already present.
 
-  This falls back to that recomputation when the index is not built. A reader that asks one
-  time, such as `Rete.Inspect.derivations/2`, thus gets a correct answer. It does not force
-  a build on a session that would never need one. A caller that asks repeatedly should call
-  `index_inserters/1` first, and keep what it returns.
+  This falls back to that recomputation when the index is not built, so a reader that asks
+  one time gets a correct answer without forcing a build on a session that would never need
+  one. **A caller that asks repeatedly must call `index_inserters/1` first, and keep what it
+  returns.** The fallback is a pass over every insertion record, so asking per fact without
+  the index is quadratic in the size of the session. `Rete.Inspect.explain/1,2` builds it
+  for that reason.
   """
   @spec inserters(t(), term()) :: [inserter()]
   def inserters(%__MODULE__{inserters: nil, insertions: insertions}, fact) do
