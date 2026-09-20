@@ -30,8 +30,11 @@ defmodule Rete.DSL.Parser do
   A head is a list of **patterns**, and a call matches them. The variables they bind key the
   matches of the query, and they become `:params`. A pattern may carry a guard,
   `rows(amt when amt > 10)(...)`. The guard becomes a `Rete.IR.Test` on the left hand side,
-  and it reads only what the head binds. Each pattern takes one `when`. A `when` after the
-  second argument list is the rule level guard instead, and it reads every binding.
+  and it reads only what the head binds. A `when` after the second argument list is the rule
+  level guard instead, and it reads every binding.
+
+  Every place that takes a guard takes **one** `when`. A chain of them is refused, because
+  a guard compiles to a function and `when` is not an expression.
 
   A type is any term except `nil`. A pattern must write it as a literal. `__type__` always
   declares a type. It is never a field to match on, so the parser drops it from every
@@ -222,21 +225,31 @@ defmodule Rete.DSL.Parser do
   #
   # Any number of them, and not two. `flatten_when/1` unnests the whole chain, so the count
   # and the rewrite both describe what was written rather than the first mistake in it.
-  defp reject_extra_guards!(name, source, {:when, _meta, _args} = guard) do
+  #
+  # Every place a guard is written, and not only the two a `def` head makes tempting. A
+  # condition and a collection compile a guard the same way, so they fail the same way, and
+  # an author who learned the rule from one message has no reason to expect another answer.
+  defp reject_extra_guards!(subject, source, {:when, _meta, _args} = guard) do
     guards = flatten_when(guard)
 
     raise ArgumentError,
-          "#{name} writes #{length(guards)} guards where one `when` is all that a " <>
-            "#{when_noun(source)} takes. Elixir nests each `when` after the first inside " <>
-            "the one before it. A guard here becomes a compiled function, and `when` is " <>
-            "not an expression, so the nested ones would reach it as a call. Join them " <>
-            "with `and`: `when #{Macro.to_string(combine_guards(guards))}`."
+          "#{subject(subject, source)} writes #{length(guards)} guards where one `when` " <>
+            "is all that a #{when_noun(source)} takes. Elixir nests each `when` after the " <>
+            "first inside the one before it. A guard here becomes a compiled function, and " <>
+            "`when` is not an expression, so the nested ones would reach it as a call. " <>
+            "Join them with `and`: `when #{Macro.to_string(combine_guards(guards))}`."
   end
 
-  defp reject_extra_guards!(_name, _source, _guard), do: :ok
+  defp reject_extra_guards!(_subject, _source, _guard), do: :ok
+
+  # A head and a rule have a name to give back. A condition has none, so it is named by the
+  # source the author wrote, in the way `default_message/3` names one.
+  defp subject(element, :condition), do: Macro.to_string(element)
+  defp subject(name, _source), do: name
 
   defp when_noun(:head), do: "head pattern"
   defp when_noun(:rule), do: "rule"
+  defp when_noun(:condition), do: "condition"
 
   defp flatten_when({:when, _meta, [left, right]}), do: flatten_when(left) ++ flatten_when(right)
   defp flatten_when(guard), do: [guard]
@@ -343,7 +356,8 @@ defmodule Rete.DSL.Parser do
   @spec parse_element(env(), Macro.t()) :: IR.condition()
   def parse_element(env, element), do: parse_element(env, element, %{binding: nil, guard: nil})
 
-  defp parse_element(env, {:when, _, [inner, guard]}, acc) do
+  defp parse_element(env, {:when, _, [inner, guard]} = element, acc) do
+    reject_extra_guards!(element, :condition, guard)
     parse_element(env, inner, %{acc | guard: join_guards(acc.guard, guard)})
   end
 
@@ -370,8 +384,12 @@ defmodule Rete.DSL.Parser do
   defp parse_element(env, [inner] = source, acc) do
     {pattern, guard} =
       case inner do
-        {:when, _, [pattern, guard]} -> {pattern, guard}
-        pattern -> {pattern, nil}
+        {:when, _, [pattern, guard]} ->
+          reject_extra_guards!(inner, :condition, guard)
+          {pattern, guard}
+
+        pattern ->
+          {pattern, nil}
       end
 
     case pattern do

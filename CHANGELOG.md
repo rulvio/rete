@@ -51,9 +51,11 @@ Rete.Inspect.why_not(session)
   two. Several patterns may each carry a guard, and the guards then combine with `and`.
   Each pattern takes one `when`, so write `amt when a and b` rather than
   `amt when a when b`. The second spelling is refused with a message naming the first,
-  because a `def` head accepts it and a head pattern does not. A guard over the **other**
-  bindings is the rule level guard, after the conditions, and the error for one in the head
-  names it.
+  because a `def` head accepts it and a head pattern does not. That refusal covers every
+  place a guard is written, so a condition, a collection and the rule level guard each take
+  one `when` too. Each used to reach the compiler, which reported `undefined function
+  when/2` against a generated name. A guard over the **other** bindings is the rule level
+  guard, after the conditions, and the error for one in the head names it.
 
   The guard becomes a test on the left hand side, and that is all it does. The query node
   never holds a match that fails it, so a call naming a rejected value finds nothing. This
@@ -115,8 +117,9 @@ Rete.Inspect.why_not(session)
   the head pattern. It keeps taking the bindings as a keyword list or a map, and it keeps
   the check on them. For a head of `({cid, tid})`, the function takes `{1, 2}` and this call
   takes `%{cid: 1, tid: 2}`. A head guard prunes the store both of them read, so both answer
-  `[]` for a value it rejects. Given a bare name, the error now names the call the head
-  declares, in place of a `params` placeholder.
+  `[]` for a value it rejects. Given a bare name, the error now spells out both calls. It
+  names the arguments the head declares, and the keys this one wants, where it used to
+  stand a `params` placeholder in for them.
 
 * **`explain` reports a rule, and no longer a fact.** `explain(session, fact)` walked
   provenance recursively. `explain(session, {module, name})` reports every match the rule

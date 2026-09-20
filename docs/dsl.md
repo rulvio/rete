@@ -754,8 +754,9 @@ defquery no(amt when amt > 1 when amt < 5)(...)
 #     `when amt > 1 and amt < 5`.
 ```
 
-A chain of any length reports the same way, so four `when`s report four guards. The rule
-level guard, after the conditions, takes one `when` for the same reason.
+A chain of any length reports the same way, so four `when`s report four guards. This holds
+wherever you write a guard. A condition, a collection and the rule level guard each take
+one `when`, because each compiles a guard the same way.
 
 Write a guard over the **other** bindings as a rule level guard instead, after the
 conditions:
@@ -1165,7 +1166,7 @@ give them different names instead. That is what a name is for.
 | `defquery q({:a, cid})` then `q(session, cid: 1)` | the same: `q` has no head, so it is `q/1` |
 | `defquery q(cid: cid, tid: tid)(...)` then `q(session, tid: 2, cid: 1)` | a `FunctionClauseError`: a keyword head matches in the order you declared |
 | `defquery q(cid when amt > 1)({:a, cid, amt})` | an error: a head guard reads only what the head binds. Write it after the conditions |
-| `defquery q(cid when cid > 1 when cid < 5)({:a, cid})` | an error: one `when` is all a head pattern takes. Join the two with `and`. A rule level guard is the same |
+| `defquery q(cid when cid > 1 when cid < 5)({:a, cid})` | an error: one `when` is all a head pattern takes. Join them with `and`. A condition, a collection and a rule level guard are the same |
 | `defquery q(cid \\ 1)({:a, cid})` | an error: a head pattern takes no default, because `Rete.Session.query/3` could not honour one |
 | `defrule r({:order, cid \\ 1})` | an error: a condition matches a fact that is already there, so it has no call to default |
 | `defrule r(cid)({:a, cid})` | an error: only a query is read, so only a query takes parameters |

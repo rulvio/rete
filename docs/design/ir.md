@@ -212,6 +212,11 @@ The chain has no length limit, so the message does not assume one. It unnests th
 chain, counts it, and rewrites it as one `and`. So `a when b when c when d` reports four
 guards and names the guard to write in their place.
 
+The check runs at every place a guard is written: a head pattern, a condition, a
+collection, and the trailing `when` of a rule. Each compiles a guard into a function, so
+each fails the same way without it. A condition has no name to report, so the message names
+it by its source, as the default message for a condition does.
+
 #### A head pattern takes no default
 
 The same argument refuses one. A default cannot reach the store, because it is not a

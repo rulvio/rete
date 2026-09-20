@@ -704,6 +704,60 @@ defmodule Rete.QueryParamsTest do
       assert error.message =~ "`when amt > 1 and amt < 5`"
     end
 
+    # The other two places a guard is written. All four compile a guard the same way, so
+    # all four report it the same way. A condition has no name to give back, so the message
+    # names it by its source, as the default message for a condition does.
+    test "a condition and a collection take one when too" do
+      condition =
+        assert_raise ArgumentError, fn ->
+          defmodule TwoWhensCondition do
+            use Rete.Ruleset
+
+            defrule mid({:sale, amt} when amt > 1 when amt < 5), do: {:mid, amt}
+          end
+        end
+
+      collection =
+        assert_raise ArgumentError, fn ->
+          defmodule TwoWhensCollection do
+            use Rete.Ruleset
+
+            defrule mid(xs = [{:sale, amt} when amt > 1 when amt < 5]), do: {:mid, length(xs)}
+          end
+        end
+
+      for error <- [condition, collection] do
+        assert error.message =~
+                 "{:sale, amt} when amt > 1 when amt < 5 writes 2 guards where one `when` " <>
+                   "is all that a condition takes"
+
+        assert error.message =~ "Join them with `and`: `when amt > 1 and amt < 5`"
+      end
+    end
+
+    # The check refuses a chain, and nothing else. One `when` per site still compiles,
+    # whatever it holds.
+    test "one when per site still compiles everywhere" do
+      defmodule OneWhenEach do
+        use Rete.Ruleset
+
+        defquery ok(amt when amt > 1 and amt < 9)(
+                   {:sale, amt} when amt != 3,
+                   xs = [{:tick, amt, n} when n > 0]
+                 )
+                 when amt != 4,
+                 do: {amt, length(xs)}
+      end
+
+      session =
+        [OneWhenEach]
+        |> Session.new()
+        |> Session.insert([{:sale, 5}, {:tick, 5, 1}, {:tick, 5, 2}])
+        |> Session.fire_rules()
+
+      assert [{5, 2}] == OneWhenEach.ok(session, 5)
+    end
+
     # `when` binds tighter than `\\`, so a default carrying a guard reaches the head as one
     # `when`, not two. The default check runs first and keeps that case.
     test "a default carrying a guard still reports the default" do
