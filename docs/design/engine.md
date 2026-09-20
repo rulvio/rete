@@ -853,12 +853,14 @@ store of the query node. `Rete.Engine.query/3` then uses the parameters of a cal
 key. There is one store and one keying. A read is thus a map fetch, and it costs what it
 returns, not what the query holds.
 
-The head itself does not reach the network. It is a list of Elixir patterns, and it is the
-argument list of the function the query generates. That function matches the call against
-it, takes out the bindings, and hands this node the same map it always took. So the
-calling convention is a compile-time matter, and the store is unchanged by it.
+The patterns of the head do not reach the network. They are Elixir patterns, and they are
+the argument list of the function the query generates. That function matches the call
+against them, takes out the bindings, and hands this node the same map it always took. So
+the calling convention is a compile-time matter, and the store is unchanged by it. The node
+does carry the head rendered as source, so that a message can name the call to write, and
+nothing matches on that.
 
-A guard on the head is the one part of it that the network sees. It becomes a
+A guard on the head is the one part of it that changes what the network holds. It becomes a
 `Rete.IR.Test` on the left hand side, so the query node never stores a match it rejects.
 See `ir.md` §2.
 

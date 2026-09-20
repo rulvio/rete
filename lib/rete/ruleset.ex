@@ -130,7 +130,12 @@ defmodule Rete.Ruleset do
   # `defquery rows([:cid])` would name nothing the author could find in their source.
   # `:head` is the parser's rendering of it, which is the same one every other message
   # about this query uses.
-  defp signature(%IR.Production{name: name, head: head}) do
+  #
+  # Matches a head that is there, rather than rendering `()` for one that is not.
+  # `check_params!/3` returns early on empty `:params`, and only a head sets `:params`, so
+  # a production reaching here always carries one. A refactor that broke that should fail
+  # here instead of naming a declaration nobody wrote.
+  defp signature(%IR.Production{name: name, head: [_ | _] = head}) do
     "defquery #{name}(#{Enum.join(head, ", ")})"
   end
 
