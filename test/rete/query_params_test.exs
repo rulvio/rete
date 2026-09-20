@@ -380,6 +380,23 @@ defmodule Rete.QueryParamsTest do
       assert [1, 2] == AllDiscarded.rows(session, :anything, :at_all)
     end
 
+    # A head is an argument list, so a default means there what it means in any `def`. It
+    # gives the query a second arity, and the default value keys the matches.
+    test "a head pattern may carry a default" do
+      defmodule DefaultHead do
+        use Rete.Ruleset
+
+        defquery rows(cid \\ 1)({:rec, cid, amt}), do: {cid, amt}
+      end
+
+      session = run(DefaultHead, [{:rec, 1, 10}, {:rec, 2, 20}])
+
+      assert [rows: 1, rows: 2] == arities(DefaultHead, [:rows])
+      assert [{1, 10}] == DefaultHead.rows(session)
+      assert DefaultHead.rows(session) == DefaultHead.rows(session, 1)
+      assert [{2, 20}] == DefaultHead.rows(session, 2)
+    end
+
     # `()` and no head make the same statement: this query takes no parameters.
     test "an empty head is a query with no parameters" do
       defmodule EmptyHead do
@@ -551,8 +568,8 @@ defmodule Rete.QueryParamsTest do
       assert [] == TwoGuards.rows(session, 0)
     end
 
-    # A head guard becomes a guard on the generated function, so it can only read what
-    # that function takes. The rule level guard is the one that reads the rest.
+    # A head guard constrains the call, so it reads only what the head binds. The rule
+    # level guard is the one that reads the rest.
     test "a guard that reads a binding the head does not make is refused" do
       error =
         assert_raise ArgumentError, fn ->

@@ -680,6 +680,16 @@ MyRuleset.rows(session, {1, 5})  # keyed on tid alone, so `1` is a label and not
 
 Rename it to `cid` to key on it. A guard cannot read it, because the pattern discards it.
 
+A head pattern may carry a **default**, as an argument of any `def` may. It gives the query
+a second arity, and the default keys the matches when a caller leaves it out:
+
+```elixir
+defquery rows(cid \\ 1)({:rec, cid, amt}), do: {cid, amt}
+
+MyRuleset.rows(session)     # keyed on %{cid: 1}
+MyRuleset.rows(session, 2)  # keyed on %{cid: 2}
+```
+
 A query has one head. Thus two ways to read the same conditions are two queries. Together
 they cost one network: the engine matches the conditions above them one time, whether you
 write one query or four.
