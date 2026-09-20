@@ -662,9 +662,10 @@ MyRuleset.same(session, 1, 1)  #=> the matches keyed on %{cid: 1}
 MyRuleset.same(session, 1, 2)  #=> ** (FunctionClauseError)
 ```
 
-A call that does not match raises `FunctionClauseError`, and a call of the wrong arity
-does not compile. Both are reported at the line that you wrote, and an editor completes
-the call, because the query is an ordinary function.
+A call that does not match raises `FunctionClauseError`. A call of the wrong arity warns at
+compile time, and the warning names the arity the query has. It raises
+`UndefinedFunctionError` when it runs. Each is reported at the line that you wrote, and an
+editor completes the call, because the query is an ordinary function.
 
 A head may bind nothing. `defquery ping(:tick)(...)` keys on nothing and answers with
 every match. The argument is then an assertion at the call site, and nothing more.
@@ -766,7 +767,8 @@ defquery rows(cid when cid > 0)({:rec, cid, amt}) when amt > 1, do: {cid, amt}
 A query is identified by **module and name together**, never by the name alone. Because of
 this, two rulesets that each define a `:summary` compose into one session without
 collision. `MyRuleset.summary(session)` is unambiguous by construction, since it is an
-ordinary function call. A typo here is a compile error, not an empty result at runtime.
+ordinary function call. A typo here warns at compile time, and it is never an empty result
+at runtime.
 
 When the query is not known until it runs, name it with the pair:
 
@@ -1146,8 +1148,8 @@ give them different names instead. That is what a name is for.
 | `{:order, _amt} when _amt > 0` | an error saying to rename it to `amt`; `_`-prefixed names are discarded |
 | `[f = {:order, cid}]` | an error: bind the whole collection, not an element of it |
 | `defquery q(%{params: [:cid]}, {:a, cid})` | an error: `params` is not a known option. Write it as the head instead: `defquery q(cid)({:a, cid})` |
-| `defquery q(cid)(...)` then `q(session)` | a compile error: the head gives `q/2`, so `q/1` is undefined |
-| `defquery q({:a, cid})` then `q(session, cid: 1)` | a compile error: `q` has no head, so it is `q/1` |
+| `defquery q(cid)(...)` then `q(session)` | a compile warning, then an `UndefinedFunctionError`: the head gives `q/2`, so `q/1` is undefined |
+| `defquery q({:a, cid})` then `q(session, cid: 1)` | the same: `q` has no head, so it is `q/1` |
 | `defquery q(cid: cid, tid: tid)(...)` then `q(session, tid: 2, cid: 1)` | a `FunctionClauseError`: a keyword head matches in the order you declared |
 | `defquery q(cid when amt > 1)({:a, cid, amt})` | an error: a head guard reads only what the head binds. Write it after the conditions |
 | `defrule r(cid)({:a, cid})` | an error: only a query is read, so only a query takes parameters |

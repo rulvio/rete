@@ -74,7 +74,8 @@ join keys. Normalization must therefore run first.
 
 * `__<code>__/1` and `__<code>__/2` - one function per distinct expression,
 * `<query_name>/(N+1)` - one per query, running it against a session. `N` is the number
-  of patterns in its head, and it is `0` for a query with no head,
+  of patterns in its head, and it is `0` for a query with no head. A head pattern carrying
+  a default gives the query a second arity, as it does in any `def`,
 * `__rhs_<name>__/2` - the RHS of each production,
 * `get_rule_data/0`, `get_expr_data/0`, `get_taxo_data/0`, `get_version/0`.
 

@@ -209,9 +209,10 @@ defquery big(cid, amt when amt > 1000)(...) #=> big(session, 1, 5_000)
 ```
 
 What the patterns bind is what the engine keys the matches on, so a read is a map lookup
-and not a scan. A call that does not match raises `FunctionClauseError`, and one of the
-wrong arity does not compile. Both are reported at the line you wrote, and an editor
-completes the call. Write no head for a query that answers with every match that it holds.
+and not a scan. A call that does not match raises `FunctionClauseError`. A call of the
+wrong arity warns at compile time, and raises `UndefinedFunctionError` when it runs. Each
+is reported at the line you wrote, and an editor completes the call. Write no head for a
+query that answers with every match that it holds.
 
 A guard on the head is a test on the left hand side. The query thus holds no match that
 fails it, and a call naming a rejected value answers `[]`. The guard is not on the generated

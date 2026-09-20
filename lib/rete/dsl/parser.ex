@@ -109,7 +109,7 @@ defmodule Rete.DSL.Parser do
       | params: bind_vars(head_bind),
         # Rendered here, where the patterns are. Every message about this query names the
         # head the way its author wrote it, and a message reaches for a string.
-        head: Enum.map(patterns, &Macro.to_string/1),
+        head: Enum.map(patterns, &render_pattern/1),
         lhs: production.lhs ++ head_test(env, guard),
         # The guard is not kept here. It goes into the `Rete.IR.Test` that `head_test/2`
         # appends, which records it in the same shape every other guard uses.
@@ -153,6 +153,11 @@ defmodule Rete.DSL.Parser do
   end
 
   defp reject_head_on_rule!(_name, _type, _head), do: :ok
+
+  # A default is dropped, because both readers of this render a call and
+  # `q(session, cid \\ 1)` is not one.
+  defp render_pattern({:\\, _meta, [pattern, _default]}), do: Macro.to_string(pattern)
+  defp render_pattern(pattern), do: Macro.to_string(pattern)
 
   # Separates the patterns of a head from its guards. Elixir attaches a `when` to the one
   # argument it follows, so `rows(cid, tid when cid < tid)` guards the last pattern alone.

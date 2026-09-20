@@ -115,8 +115,9 @@ defmodule Bench do
         # asynchronous, so the script has to stay alive for it to take effect.
         #
         # The wait is bounded, and `halt/1` is the backstop. A shutdown that never arrives
-        # would otherwise hang the run until the CI job times out, hours later. Reaching
-        # the backstop means output may be cut, and that is still better than a hang.
+        # would otherwise hang the run. Reaching the backstop means output may be cut, and
+        # that is still better than a hang. The CI job allows longer than this wait, so the
+        # backstop runs there rather than the job timing out on a node that will not stop.
         System.stop(1)
         Process.sleep(@stop_timeout)
         System.halt(1)

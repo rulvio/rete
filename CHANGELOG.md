@@ -30,7 +30,8 @@ defquery by_list(cid: cid, tid: tid)(...)   #=> by_list(session, cid: 1, tid: 2)
 ```
 
 The compiler checks the call, and an editor completes it. A call that does not match raises
-`FunctionClauseError`, and one of the wrong arity does not compile.
+`FunctionClauseError`. One of the wrong arity warns at compile time, and raises
+`UndefinedFunctionError` when it runs.
 
 ### Added
 
@@ -61,10 +62,12 @@ The compiler checks the call, and an editor completes it. A call that does not m
 
 ### Changed
 
-* **A head of N patterns generates `name/(N+1)`, and nothing else.** The arity-2 clause
-  with a default is gone. `q(session)` on a query with a head, and `q(session, cid: 1)` on
-  a query without one, are now compile errors at the call site. Before, each was an
-  `ArgumentError` while the program ran.
+* **A head of N patterns generates `name/(N+1)`.** The generated arity-2 clause with a
+  default `params` is gone. `q(session)` on a query with a head, and `q(session, cid: 1)`
+  on a query without one, are undefined functions now. Each warns at compile time, and
+  raises `UndefinedFunctionError` when it runs. Before, each was an `ArgumentError` from a
+  function that existed. A default you write in the head gives the query a second arity, in
+  the way it does in any `def`.
 
 * **A keyword head matches in the order you declared it.** `(cid: cid, tid: tid)` does not
   match a call of `(tid: 2, cid: 1)`. A head is a pattern, so it behaves like one. Before,

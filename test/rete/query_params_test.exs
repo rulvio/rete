@@ -417,6 +417,10 @@ defmodule Rete.QueryParamsTest do
       assert [{1, 10}] == DefaultHead.rows(session)
       assert DefaultHead.rows(session) == DefaultHead.rows(session, 1)
       assert [{2, 20}] == DefaultHead.rows(session, 2)
+
+      # A suggestion is a call, and `rows(session, cid \\ 1)` is a declaration.
+      error = assert_raise ArgumentError, fn -> Session.query(session, :rows) end
+      assert error.message =~ "DefaultHead.rows(session, cid)"
     end
 
     # `()` and no head make the same statement: this query takes no parameters.
