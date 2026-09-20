@@ -38,8 +38,9 @@ The compiler checks the call, and an editor completes it. A call that does not m
 * **A guard on a head pattern.** `defquery big(cid, amt when amt > 1000)({:sale, cid, amt})`
   answers `[]` for a call of `big(session, 1, 5)`. The guard reads only what the head binds,
   and every head variable is in scope for it, so `(cid, tid when cid < tid)` compares the
-  two. A guard over the other bindings is the rule level guard, after the conditions, and
-  the error for one in the head names it.
+  two. Each pattern takes one `when`, so join two conditions with `and`. A guard over the
+  other bindings is the rule level guard, after the conditions, and the error for one in
+  the head names it.
 
 * **A head guard prunes the store, and does nothing else.** It is a test on the left hand
   side, so the query node never holds a match that fails it, and a call that names a

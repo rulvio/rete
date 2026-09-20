@@ -30,8 +30,8 @@ defmodule Rete.DSL.Parser do
   A head is a list of **patterns**, and a call matches them. The variables they bind key the
   matches of the query, and they become `:params`. A pattern may carry a guard,
   `rows(amt when amt > 10)(...)`. The guard becomes a `Rete.IR.Test` on the left hand side,
-  and it reads only what the head binds. A `when` after the second argument list is the rule
-  level guard instead, and it reads every binding.
+  and it reads only what the head binds. Each pattern takes one `when`. A `when` after the
+  second argument list is the rule level guard instead, and it reads every binding.
 
   A type is any term except `nil`. A pattern must write it as a literal. `__type__` always
   declares a type. It is never a field to match on, so the parser drops it from every
@@ -191,6 +191,11 @@ defmodule Rete.DSL.Parser do
   # The guards all become one test over the head bindings, though, and every head binding
   # is in scope for it. So they combine into one, and where an author wrote a guard does
   # not change what it reads.
+  #
+  # One `when` per pattern. `amt when a when b` nests a second `when` inside the guard,
+  # which is not an expression, so the generated test function fails to compile. A `def`
+  # head takes the second spelling and this does not. `docs/dsl.md` says to write
+  # `amt when a and b`.
   defp split_head(head) do
     {patterns, guards} =
       Enum.map_reduce(head, [], fn
@@ -643,6 +648,11 @@ defmodule Rete.DSL.Parser do
   value, since matching on `^5` and on `5` is the same match. `^amt` becomes plain `amt`,
   because sharing a variable between two conditions is already how this DSL spells a
   join. Dropping the pin lets ordinary binding classification turn it into a join key.
+
+  This runs over the head of a query too, where the argument for unwrapping is weaker. A
+  pin there becomes an ordinary pattern variable, and so a parameter. `def f(^x)` does not
+  compile, so nothing is lost. But `defquery q(^cid)(...)` reads as a match on a value, and
+  it is a parameter named `cid`.
   """
   @spec resolve_constants(Macro.t(), env()) :: Macro.t()
   def resolve_constants(ast, env) do

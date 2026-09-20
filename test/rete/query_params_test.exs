@@ -12,6 +12,8 @@ defmodule Rete.QueryParamsTest do
   use ExUnit.Case, async: true
   use ExUnitProperties
 
+  import ExUnit.CaptureIO
+
   alias Rete.Session
 
   defmodule Plain do
@@ -434,17 +436,17 @@ defmodule Rete.QueryParamsTest do
           end
         end
 
-      wrapped =
+      alongside =
         assert_raise ArgumentError, fn ->
-          defmodule WrappedGuardHead do
+          defmodule AlongsideGuardHead do
             use Rete.Ruleset
 
-            defquery rows((cid when cid > 0) \\ 1)({:rec, cid, amt}), do: {cid, amt}
+            defquery rows(cid when cid > 0 \\ 1)({:rec, cid, amt}), do: {cid, amt}
           end
         end
 
       assert nested.message =~ "gives a head pattern a default"
-      assert wrapped.message =~ "gives a head pattern a default"
+      assert alongside.message =~ "gives a head pattern a default"
     end
 
     # A rule has no call to default, so the head error is the one to report. It is also
@@ -602,6 +604,61 @@ defmodule Rete.QueryParamsTest do
       assert [{1, 2, 10}] == Guarded.both(session, 1, 2)
       assert [] == Guarded.both(session, 1, 0)
       assert [] == Guarded.both(session, :nope, 2)
+    end
+
+    # One `when` per pattern, and `and` inside it. This is the spelling `docs/dsl.md` sends
+    # a reader to, so it is the one that has to work.
+    test "one guard may carry two conditions, joined with and" do
+      defmodule AndGuard do
+        use Rete.Ruleset
+
+        defquery mid(amt when amt > 1 and amt < 5)({:sale, amt}), do: amt
+      end
+
+      session = run(AndGuard, [{:sale, 1}, {:sale, 3}, {:sale, 9}])
+
+      assert [3] == AndGuard.mid(session, 3)
+      assert [] == AndGuard.mid(session, 1)
+      assert [] == AndGuard.mid(session, 9)
+      assert [] == Session.query(session, {AndGuard, :mid}, amt: 9)
+    end
+
+    # A guard reads what its pattern bound, and not the argument the caller passed. A
+    # destructuring pattern binds parts, so a guard over those parts is the only way to
+    # constrain one. There is no name for the whole argument to read.
+    test "a guard may read what a destructuring pattern bound" do
+      defmodule NestedGuard do
+        use Rete.Ruleset
+
+        defquery span({from, to} when from < to)({:rec, from, to}), do: {from, to}
+      end
+
+      session = run(NestedGuard, [{:rec, 1, 2}, {:rec, 3, 2}])
+
+      assert [{1, 2}] == NestedGuard.span(session, {1, 2})
+      assert [] == NestedGuard.span(session, {3, 2})
+      assert [] == Session.query(session, {NestedGuard, :span}, from: 3, to: 2)
+    end
+
+    # A `def` head takes a second `when`, and this does not. The guard becomes a compiled
+    # test function, and a nested `when` is not an expression, so the failure comes from
+    # the compiler. It names `when/2`, which is what `docs/dsl.md` tells a reader to
+    # expect. The diagnostic goes to stderr, so it is captured rather than printed.
+    test "a pattern takes one when, and a second does not compile" do
+      source = """
+      defmodule Rete.QueryParamsTest.TwoWhens do
+        use Rete.Ruleset
+
+        defquery mid(amt when amt > 1 when amt < 5)({:sale, amt}), do: amt
+      end
+      """
+
+      reported =
+        capture_io(:stderr, fn ->
+          assert_raise CompileError, fn -> Code.compile_string(source) end
+        end)
+
+      assert reported =~ "undefined function when/2"
     end
 
     # The point of keeping the guard off the generated clause. A test on the left hand side

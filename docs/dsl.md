@@ -739,6 +739,14 @@ defquery ordered(cid, tid when cid < tid)(...)
 defquery checked(cid when is_integer(cid), tid when tid > 0)(...)
 ```
 
+Each pattern takes **one** `when`. Join two conditions with `and`, as you would in any
+guard. A second `when` on one pattern is not a head guard, and it does not compile:
+
+```elixir
+defquery ok(amt when amt > 1 and amt < 5)(...)   # one guard, two conditions
+defquery no(amt when amt > 1 when amt < 5)(...)  # not supported
+```
+
 Write a guard over the **other** bindings as a rule level guard instead, after the
 conditions:
 
@@ -1147,6 +1155,7 @@ give them different names instead. That is what a name is for.
 | `defquery q({:a, cid})` then `q(session, cid: 1)` | the same: `q` has no head, so it is `q/1` |
 | `defquery q(cid: cid, tid: tid)(...)` then `q(session, tid: 2, cid: 1)` | a `FunctionClauseError`: a keyword head matches in the order you declared |
 | `defquery q(cid when amt > 1)({:a, cid, amt})` | an error: a head guard reads only what the head binds. Write it after the conditions |
+| `defquery q(cid when cid > 1 when cid < 5)({:a, cid})` | a compile error naming `when/2`: a pattern takes one `when`. Join the two with `and` |
 | `defquery q(cid \\ 1)({:a, cid})` | an error: a head pattern takes no default, because `Rete.Session.query/3` could not honour one |
 | `defrule r({:order, cid \\ 1})` | an error: a condition matches a fact that is already there, so it has no call to default |
 | `defrule r(cid)({:a, cid})` | an error: only a query is read, so only a query takes parameters |

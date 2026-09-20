@@ -303,6 +303,11 @@ defmodule Rete.Ruleset do
   A head guard reads only what the head binds. Write a guard over the other bindings as a
   rule level guard instead, after the conditions.
 
+  Every head variable is in scope for the guard, whichever pattern you wrote it after. So
+  `(cid, tid when cid < tid)` compares the two. Several patterns may each carry a guard,
+  and the guards then combine with `and`. Each pattern takes **one** `when`, so write
+  `amt when a and b` rather than `amt when a when b`.
+
   A query **without** a head takes no parameters. It answers with every match that it
   holds, in arrival order. This is the default, and it costs nothing more.
 
