@@ -6,9 +6,10 @@ All notable changes to `rete` are recorded here. The format follows
 
 ## 0.8.0
 
-**This release changes how you call a query.** The head of a query is an Elixir pattern
-now, and the call matches it. **This release has breaking changes.** Every call of a query
-with a head has to be rewritten.
+**This release has breaking changes**, and they fall in two places. The head of a query is
+an Elixir pattern now, so every call of a query with a head has to be rewritten.
+`Rete.Inspect` is two functions, so `fired/2` and `collection/3` are gone and `explain/2`
+answers a different question.
 
 Before, a head was a list of names, and a call gave a keyword list or a map of those names.
 The name was written twice, and the engine checked the caller's keys while the program ran.
@@ -30,36 +31,53 @@ defquery by_list(cid: cid, tid: tid)(...)   #=> by_list(session, cid: 1, tid: 2)
 ```
 
 The compiler checks the call, and an editor completes it. A call that does not match raises
-`FunctionClauseError`. One of the wrong arity warns at compile time, and raises
+`FunctionClauseError`. A call of the wrong arity warns at compile time, and raises
 `UndefinedFunctionError` when it runs.
+
+`Rete.Inspect` is addressed the same way everywhere. `explain/2` and `why_not/2` each take
+the `{module, name}` pair you wrote in `defrule`, and the arity-1 form of each answers for
+every rule and query at once.
+
+```elixir
+Rete.Inspect.explain(session, {MyRuleset, :large_order})
+Rete.Inspect.why_not(session)
+```
 
 ### Added
 
 * **A guard on a head pattern.** `defquery big(cid, amt when amt > 1000)({:sale, cid, amt})`
-  answers `[]` for a call of `big(session, 1, 5)`. The guard reads only what the head binds,
-  and every head variable is in scope for it, so `(cid, tid when cid < tid)` compares the
-  two. Each pattern takes one `when`, so join two conditions with `and`. A guard over the
-  other bindings is the rule level guard, after the conditions, and the error for one in
-  the head names it.
+  answers `[]` for a call of `big(session, 1, 5)`. Every head variable is in scope for the
+  guard, whichever pattern you wrote it after, so `(cid, tid when cid < tid)` compares the
+  two. Several patterns may each carry a guard, and the guards then combine with `and`.
+  Each pattern takes one `when`, so write `amt when a and b` rather than
+  `amt when a when b`. A guard over the **other** bindings is the rule level guard, after
+  the conditions, and the error for one in the head names it.
 
-* **A head guard prunes the store, and does nothing else.** It is a test on the left hand
-  side, so the query node never holds a match that fails it, and a call that names a
-  rejected value finds nothing. This is sound because a query is read by term equality: the
-  guard holds of an argument exactly when it holds of the binding that the argument
-  matches. It removes exactly the matches that no call could reach, so the generated
-  function and `Rete.Session.query/3` answer the same way.
+  The guard becomes a test on the left hand side, and that is all it does. The query node
+  never holds a match that fails it, so a call naming a rejected value finds nothing. This
+  is sound because a query is read by term equality: the guard holds of an argument exactly
+  when it holds of the binding that the argument matches. It removes exactly the matches no
+  call could reach, so the generated function and `Rete.Session.query/3` still answer the
+  same way.
 
-* **A head guard may be any expression, and not only a valid Elixir guard.** It is not put
-  on the generated clause, because a clause guard would reject the same calls and add
-  nothing. So `defquery named(name when String.length(name) > 3)(...)` compiles, in the way
-  that the same guard on a condition does.
+  Keeping the guard off the generated clause is what lets it be **any expression a rule
+  body may call**, and not only a valid Elixir guard. So
+  `defquery named(name when String.length(name) > 3)(...)` compiles. A clause guard would
+  reject the same calls and add nothing, because the test already emptied their keys. It
+  also runs when a match propagates, and not when you call, so write a head guard as a
+  function of its arguments. `docs/design/ir.md` §2 has the argument.
+
+* **`explain/1` and `why_not/1`.** Each answers for every rule and query in the session, in
+  one list, sorted by module and then by name. Generated negation helpers are left out.
+  Name one with the arity-2 form to see it anyway.
 
 * **`mix bench` gates CI.** A run that finds a superlinear scenario names it and exits
-  non-zero. A `bench` job runs it on every push and pull request. An exponent is a ratio
-  between two timings, so the speed of the runner has no effect on it. Measured at 2 and at
-  4 schedulers, and under 3x CPU oversubscription, the worst of the readings stayed near
-  n^1.2. The gate is n^1.5. Wall clock is still asserted on nowhere. The run is not retried,
-  because a scenario that fails now and then is a scenario sitting too near the gate.
+  non-zero. A `bench` job runs it on every push and pull request, once, on the current
+  release. An exponent is a ratio between two timings, so the speed of the runner has no
+  effect on it. Measured at 2 and at 4 schedulers, and under 3x CPU oversubscription, the
+  worst of the readings stayed near n^1.2. The gate is n^1.5. Wall clock is still asserted
+  on nowhere. The run is not retried, because a scenario that fails now and then is a
+  scenario sitting too near the gate.
 
 ### Changed
 
@@ -69,6 +87,19 @@ The compiler checks the call, and an editor completes it. A call that does not m
   raises `UndefinedFunctionError` when it runs. Before, each was an `ArgumentError` from a
   function that existed.
 
+* **A head pattern is any pattern, so two checks on it are gone.** A head no longer has to
+  be bare variables, and a repeated name is no longer refused. Four consequences follow,
+  and each is what the same pattern would mean in any `def`.
+
+  * `(cid, cid)` is an equality constraint. The two values have to be equal, and they
+    contribute one key. Before, it was a compile error.
+  * `(:tick)` binds nothing. The query keys on nothing and answers with every match, and
+    the argument is an assertion at the call site.
+  * `(cid: cid, tid: tid)` matches in the order you declared. A call of `(tid: 2, cid: 1)`
+    raises `FunctionClauseError`. Before, the order of a call never mattered.
+  * `({_cid, tid})` keys on `tid` alone. A `_`-prefixed name labels a position, and a guard
+    cannot read it because the pattern discards it.
+
 * **A head pattern takes no default, and neither does a condition.** `defquery rows(cid \\
   1)(...)` is an error now. A default applies at a call site, and `Rete.Session.query/3`
   has none to apply it at. It takes the bindings and requires every parameter, so it would
@@ -77,35 +108,43 @@ The compiler checks the call, and an editor completes it. A call that does not m
   refused for the plainer reason that it matches a fact that is already there. Both used to
   reach the compiler, which reported `undefined variable` or `undefined function \\/2`.
 
-* **A keyword head matches in the order you declared it.** `(cid: cid, tid: tid)` does not
-  match a call of `(tid: 2, cid: 1)`. A head is a pattern, so it behaves like one. Before,
-  the order of a call never mattered.
+* **`Rete.Session.query/3` keeps its signature, and it now differs from the generated
+  function.** It is dispatched by `{module, name}` while the program runs, so it cannot know
+  the head pattern. It keeps taking the bindings as a keyword list or a map, and it keeps
+  the check on them. For a head of `({cid, tid})`, the function takes `{1, 2}` and this call
+  takes `%{cid: 1, tid: 2}`. A head guard prunes the store both of them read, so both answer
+  `[]` for a value it rejects. Given a bare name, the error now names the call the head
+  declares, in place of a `params` placeholder.
 
-* **A repeated variable in a head is an equality constraint.** `(cid, cid)` means the two
-  values have to be equal, and it contributes one key. Before, it was a compile error.
+* **`explain` reports a rule, and no longer a fact.** `explain(session, fact)` walked
+  provenance recursively. `explain(session, {module, name})` reports every match the rule
+  fired on, the facts behind each one, and what it concluded. A fact passed to it now
+  raises `FunctionClauseError`, because only a `{module, name}` pair has a clause.
 
-* **A head may bind nothing.** `defquery ping(:tick)(...)` keys on nothing and answers with
-  every match. The argument is an assertion at the call site. Before, a head took a bare
-  variable and nothing else.
+  Provenance is one level deep. Each matched fact carries `:origin` and `:from`, and
+  `:from` is the **list** of rules that concluded it. You read a chain by following one of
+  those pairs to its own entry in the same result. A tree repeated the same subtree under
+  everything resting on it, and needed a cycle guard for a conclusion that supports itself.
 
-* **A `_`-prefixed name in a head labels a position and keys nothing.** It behaves as it
-  does in any `def`. `defquery rows({_cid, tid})(...)` keys on `tid` alone, and `_cid`
-  names the other element of the tuple for a reader. A guard cannot read it, because the
-  pattern discards it.
+* **`explain` needs a session you have fired.** `why_not` always did, and `explain/2` and
+  `fired/2` did not. On a session with propagation queued they would report zero of
+  everything, which reads as "nothing matched" when the truth is "nothing has been matched
+  yet". A session fired and then inserted into is refused too. An explanation used to
+  report `origin: :unknown` for a fact a queued retraction had already removed. That answer
+  is gone with the session state that produced it.
 
-* **`Rete.Session.query/3` is unchanged, and it now differs from the generated function.**
-  It is dispatched by `{module, name}` while the program runs, so it cannot know the head
-  pattern. It keeps taking the bindings as a keyword list or a map, and it keeps the check
-  on them. For a head of `({cid, tid})`, the function takes `{1, 2}` and this call takes
-  `%{cid: 1, tid: 2}`.
+* **`why_not` reports the rule it is about.** It returns `%{rule:, module:, chain:}`, where
+  `:chain` is the node list it used to return on its own. This is what lets `why_not/1`
+  report every rule in one list.
 
 * **`mix bench` judges a scenario on a least-squares fit, and guards the top end
-  separately.** It used the steepest step between two sizes. That is the worst of three
-  noisy ratios, and it swings. Over six runs of one unchanged scenario it read 1.45 to
-  1.89, where the fit read 1.32 to 1.36. The fit is the verdict now. A second check covers
-  the last step against a looser bound, because a fit is an average. Without it, a scenario
-  that only turns quadratic at the largest size would pass. There is no way to exempt a
-  scenario.
+  separately.** It used the steepest step between two sizes. That is the worst of the
+  ratios, and it swings. Over six runs of one unchanged scenario it read 1.45 to 1.89,
+  where the fit read 1.32 to 1.36. The fit is the verdict now, against a bound of n^1.5. A
+  second check covers the last step against a looser n^1.8, because a fit is an average.
+  Without it, a scenario that only turns quadratic at the largest size would pass. The
+  `expect:` option that could mark a scenario as a known gap is gone, and nothing replaces
+  it. No scenario used it, so it was an untested branch in the thing that gates the build.
 
 * **A scenario may take `isolate: true`, which times each repeat on a fresh process.** A
   build allocates a whole network. Repeating it in one process grows that process's heap
@@ -114,26 +153,6 @@ The compiler checks the call, and an editor completes it. A call that does not m
   over one fact type" measured ~n^1.34 that way, and ~n^1.05 isolated. The figure in
   `docs/design/engine.md` for compiling 1,024 rules thus moves from 7.7 ms to 3.2 ms. The
   compiler did not change. The measurement did.
-
-* `Rete.IR.Production`'s `:params` is sorted, where it kept declaration order before. The
-  head itself is a list of patterns, and it stays in `:__ast__` for the code generator. No
-  runtime structure changed, so the figures for what a head costs and saves still hold.
-
-* **`Rete.Inspect` is two functions, `explain/1,2` and `why_not/1,2`.** Both are addressed
-  by a `{module, name}` pair, which is the pair you wrote in `defrule`. Call either with the
-  session alone for every rule and query at once. Both need a session you have fired.
-
-* **`explain` reports a rule, and no longer a fact.** `explain(session, fact)` walked
-  provenance recursively. `explain(session, {module, name})` reports every match the rule
-  fired on, the facts behind each one, and what it concluded. Provenance is one level deep
-  now: each matched fact carries `:origin` and `:from`, and `:from` is the **list** of rules
-  that concluded it. You read a chain by following one of those pairs to its own entry. A
-  tree repeated the same subtree under everything resting on it, and needed a cycle guard
-  for a conclusion that supports itself.
-
-* **`why_not` reports the rule it is about.** It returns `%{rule:, module:, chain:}`, where
-  `:chain` is the node list it used to return on its own. This is what lets `why_not/1`
-  report every rule in one list.
 
 ### Removed
 
@@ -158,12 +177,43 @@ The compiler checks the call, and an editor completes it. A call that does not m
 
 ### Fixed
 
-* **A collection in an explanation reports what the rule received.** Two defects, both since
-  0.1.0, and both in code that `collection/3` took with it. A plain collection stores facts
-  and a filtered one stores `%Rete.Element{}` candidates. Reading every member as an element
-  raised `BadMapError` on the plain shape, which is the shape the README leads with. Reading
-  a filtered group whole named facts that the filter kept out, so a rule that gathered one
-  order out of two was reported as gathering both.
+* **Two defects in how a collection was reported.** Both were there since 0.1.0, and both
+  in code that `collection/3` took with it when it went. A plain collection stores facts
+  and a filtered one stores `%Rete.Element{}` candidates. Reading
+  every member as an element raised `BadMapError` on the plain shape, which is the shape
+  the README leads with. Reading a filtered group whole named facts that the filter kept
+  out, so a rule that gathered one order out of two was reported as gathering both. The
+  `origin: :gathered` entry that replaces the call reports the list the rule received, and
+  a filtered collection records that list already filtered.
+
+* **Three outputs in the README worked example.** `Enum.sort/1` orders tuples by size
+  before content, so the two element `{:threshold, 100}` sorts ahead of every three element
+  fact, and the README listed it last. Nothing executed those `#=>` comments.
+  `test/rete/readme_test.exs` runs the example now, so a wrong output fails the build.
+
+### Internal
+
+* `Rete.IR.Production` has a new `:head`: the patterns of the head rendered as source, one
+  string each. Every message about a query names the head the way its author wrote it, and
+  a message reaches for a string. The patterns themselves are AST, so they stay in
+  `:__ast__` for the code generator, alongside `head_bind`. `Rete.Network.Node.Query` gains
+  the same `:head`, for the one error message that suggests a call. Nothing matches on it.
+* `Rete.IR.Production`'s `:params` is sorted, where it kept declaration order before. The
+  order never reached a key, because `Token.join_key/2` returns a map. The order a reader
+  cares about is now `:head`. No runtime structure changed, so the figures for what a head
+  costs and saves still hold.
+* `Rete.IR.Test` has a new `:source`, `:rule` or `:head`. It decides which construct an
+  error about a guard names, and what advice it gives. It is read at compile time only, and
+  `escape/1` does not carry it.
+* `Rete.Inspect` is linear in the rule count. Resolving one rule's terminal node scans the
+  beta graph, so the arity-1 forms map over the nodes rather than over refs. That alone
+  read ~n^1.7 over 400 rules, where the gate is n^1.5. `Memory.inserters/2` scans every
+  insertion record when its index is not built, so `explain` forces `index_inserters/1`
+  once and keeps it for the call. Two `bench/run.exs` scenarios cover both.
+* `test/rete/behavior_test.exs` covers two README claims that nothing executed: a session
+  round-trips through `:erlang.term_to_binary/1`, and a checkpointed one still works after
+  its ruleset is recompiled. The second is the harder half, because a compound negation
+  compiles to local funs, which resolve by a hash of the module's compiled form.
 
 ## 0.7.0
 

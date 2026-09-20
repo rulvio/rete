@@ -436,9 +436,9 @@ than a wall-clock figure, since nobody has a baseline for that.
 This engine's real failure mode is not a slow function. It is an operation that proves
 quadratic in something a session accumulates. A single-size measurement cannot show this.
 
-Each scenario runs at four sizes and reports two numbers. The **fit** is k over every size
-at once, by least squares, and it is the verdict. The gate on it is `n^1.5`. The **worst
-pair** is the steepest step between two sizes, and it is printed to be read.
+Each scenario runs at three or four sizes and reports two numbers. The **fit** is k over
+every size at once, by least squares, and it is the verdict. The gate on it is `n^1.5`. The
+**worst pair** is the steepest step between two sizes, and it is printed to be read.
 
 The *last* step is gated on as well, against a looser bound of `n^1.8`. A fit is an
 average, so on its own it would dilute a scenario that stays linear until the largest size
