@@ -126,14 +126,12 @@ defmodule Rete.Ruleset do
     end
   end
 
-  # Renders the head as it was written, not as a list of names. A head is a pattern now, so
+  # Names the head as it was written, not as a list of names. A head is a pattern now, so
   # `defquery rows([:cid])` would name nothing the author could find in their source.
-  #
-  # Matches `:head` rather than reaching for it. `check_params!/3` returns early on empty
-  # `:params`, and only the head clause of the parser sets `:params`, so a production that
-  # reaches here always carries one.
-  defp signature(%IR.Production{name: name, __ast__: %{head: head}}) do
-    "defquery #{name}(#{Enum.map_join(head, ", ", &Macro.to_string/1)})"
+  # `:head` is the parser's rendering of it, which is the same one every other message
+  # about this query uses.
+  defp signature(%IR.Production{name: name, head: head}) do
+    "defquery #{name}(#{Enum.join(head, ", ")})"
   end
 
   # Keeps the variable AST the parser collected, so the RHS pattern carries the source
@@ -276,9 +274,9 @@ defmodule Rete.Ruleset do
 
   Any pattern works, so you choose the shape a caller writes:
 
-      defquery by_pair(cid, tid)(...)          #=> by_pair(session, 1, 2)
-      defquery by_tuple({cid, tid})(...)       #=> by_tuple(session, {1, 2})
-      defquery by_map(%{cid: cid})(...)        #=> by_map(session, %{cid: 1})
+      defquery by_pair(cid, tid)(...)           #=> by_pair(session, 1, 2)
+      defquery by_tuple({cid, tid})(...)        #=> by_tuple(session, {1, 2})
+      defquery by_map(%{cid: cid})(...)         #=> by_map(session, %{cid: 1})
       defquery by_list(cid: cid, tid: tid)(...) #=> by_list(session, cid: 1, tid: 2)
 
   The session is the first argument, so a query pipes. A head of N patterns gives

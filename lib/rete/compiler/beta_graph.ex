@@ -353,7 +353,8 @@ defmodule Rete.Compiler.BetaGraph do
       hash: production.hash,
       rhs: production.rhs,
       bind: production.bind || [],
-      params: production.params || []
+      params: production.params || [],
+      head: production.head || []
     }
   end
 

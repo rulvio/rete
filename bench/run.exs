@@ -225,6 +225,9 @@ defmodule Bench do
     {pid, monitor} =
       spawn_monitor(fn ->
         fun.()
+        # The warm-up allocated one whole structure on this heap, so collect before timing
+        # for the same reason `time/1` does.
+        :erlang.garbage_collect()
         {us, _} = :timer.tc(fun)
         send(caller, {ref, us / 1000})
       end)

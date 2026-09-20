@@ -95,7 +95,8 @@ alpha expressions, join filters, and tests alike, deduplicated by code.
 | `:hash` | `integer` | W1 | `:erlang.phash2([decl_ast, body_ast])` after module-attribute qualification. `decl_ast` includes the head |
 | `:opts` | `keyword` | W1 | from the leading options map, e.g. `[salience: 100]`; `[]` if absent |
 | `:bind` | `[atom]`, **sorted** | W2c | every variable the LHS can make visible to the RHS, including fact/collection bindings; see below |
-| `:params` | `[atom]`, **sorted** | W1, checked by W2c | what the head of a query binds: the keys of its matches. `[]` on a rule. The head itself is a list of patterns, and it stays in `:__ast__`. See below |
+| `:params` | `[atom]`, **sorted** | W1, checked by W2c | what the head of a query binds: the keys of its matches. `[]` on a rule. See below |
+| `:head` | `[String.t]`, **declaration order** | W1 | the head of a query as it was written, one string per pattern. `[]` on a rule. The patterns are AST, so they stay in `:__ast__`; this is the rendering that messages use, and the only part of the head that reaches the network |
 | `:lhs` | `t:Rete.IR.lhs/0` | W1, rewritten by W2 | ordered condition list |
 | `:rhs` | `(hash, bindings_map -> facts) \| nil` | `escape/1` | `nil` before escaping |
 | `:module` | `module` | W1 | defining module |
@@ -195,7 +196,7 @@ answer once. The store is the one place both paths meet, so the store is where t
 has to act. Everything in a production is evaluated as a match propagates, and a head guard
 is no exception to that.
 
-The check above stays for a different reason: a head guard constrains the call, and one
+The check above stays for a different reason. A head guard constrains the call, and one
 that read the rest of the LHS would be the trailing `when` under a second spelling.
 
 ### `Rete.IR.Fact`

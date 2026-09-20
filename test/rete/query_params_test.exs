@@ -250,6 +250,21 @@ defmodule Rete.QueryParamsTest do
       assert error.message =~ "was given [:cid]"
       assert error.message =~ "defquery rows(cid)(...)"
     end
+
+    # A bare name reaches neither form, so the error suggests both. The query node carries
+    # the head as source, so the suggestion spells out a call that a reader can copy. A
+    # pattern is named whole, and not as the variables inside it.
+    test "a bare name suggests the call the head declares" do
+      shapes = run(Shapes, facts_for(12))
+
+      tuple = assert_raise ArgumentError, fn -> Session.query(shapes, :by_tuple) end
+      pair = assert_raise ArgumentError, fn -> Session.query(shapes, :by_pair) end
+      headless = assert_raise ArgumentError, fn -> Session.query(run(Plain, []), :rows) end
+
+      assert tuple.message =~ "Shapes.by_tuple(session, {cid, tid})"
+      assert pair.message =~ "Shapes.by_pair(session, cid, tid)"
+      assert headless.message =~ "Plain.rows(session)"
+    end
   end
 
   describe "declaring a head" do

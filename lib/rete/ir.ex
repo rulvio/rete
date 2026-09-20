@@ -254,9 +254,12 @@ defmodule Rete.IR do
         defensively.
       * `:params` is what the head of a query binds: the keys of its matches. It is always
         `[]` on a rule. Unlike `:bind`, it holds only *guaranteed* bindings, which are the
-        keys that every match carries. It is sorted. The head itself is a list of patterns,
-        and it stays in `__ast__.head` for the code generator, because only the generated
-        function needs it.
+        keys that every match carries. It is sorted.
+      * `:head` is the head of a query **as it was written**, one string per pattern. The
+        patterns themselves are AST, so they stay in `__ast__.head` for the code generator
+        and go no further. Only a message needs them after that, and a message needs the
+        source rather than the AST. So this is what survives `escape/1` and reaches the
+        network.
       * `:rhs` is `nil` until the production is escaped. The engine logically inserts
         and truth-maintains its return value. `nil` or `[]` inserts nothing.
     """
@@ -268,13 +271,26 @@ defmodule Rete.IR do
             opts: keyword(),
             bind: [atom()],
             params: [atom()],
+            head: [String.t()],
             lhs: Rete.IR.lhs(),
             rhs: (integer(), map() -> any()) | nil,
             module: module(),
             __ast__: map() | nil
           }
 
-    defstruct [:name, :type, :hash, :opts, :bind, :lhs, :rhs, :module, :__ast__, params: []]
+    defstruct [
+      :name,
+      :type,
+      :hash,
+      :opts,
+      :bind,
+      :lhs,
+      :rhs,
+      :module,
+      :__ast__,
+      params: [],
+      head: []
+    ]
   end
 
   @doc """
@@ -432,6 +448,7 @@ defmodule Rete.IR do
       opts: opts,
       bind: Macro.escape(bind),
       params: Macro.escape(production.params),
+      head: Macro.escape(production.head),
       lhs: Enum.map(lhs, &escape_condition/1),
       rhs: quote(do: Function.capture(__MODULE__, unquote(rhs_name(name)), 2)),
       module: quote(do: __MODULE__)

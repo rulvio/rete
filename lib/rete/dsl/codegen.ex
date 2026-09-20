@@ -390,7 +390,7 @@ defmodule Rete.DSL.Codegen do
   # The map the engine keys on, built from the variables the head patterns bound. Sorted by
   # name, so that one declaration always generates one piece of code.
   defp key_map(head_bind) do
-    {:%{}, [], head_bind |> Enum.sort_by(&elem(&1, 0)) |> Enum.map(fn {k, ast} -> {k, ast} end)}
+    {:%{}, [], Enum.sort_by(head_bind, &elem(&1, 0))}
   end
 
   @doc """

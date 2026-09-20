@@ -305,13 +305,13 @@ defmodule Rete.Engine do
       "two rulesets may each define one. " <> detail
   end
 
-  # The head of a query decides what its function takes, and the head does not reach the
-  # network. So this names the session, and leaves the rest to the declaration. A query
-  # with no parameters takes the session alone, and that much is known here.
+  # The head of a query decides what its function takes. `Rete.Network.Node.Query` carries
+  # it as source for this one message, so the suggestion is the call to write and not a
+  # placeholder standing in for it.
   defp call_args(state, ref) do
     case Network.query(state.network, ref) do
-      %{params: []} -> "session"
-      _node -> "session, <the head>"
+      %{head: [_ | _] = head} -> Enum.join(["session" | head], ", ")
+      _node -> "session"
     end
   end
 

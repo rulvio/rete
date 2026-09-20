@@ -107,6 +107,9 @@ defmodule Rete.DSL.Parser do
     %IR.Production{
       production
       | params: bind_vars(head_bind),
+        # Rendered here, where the patterns are. Every message about this query names the
+        # head the way its author wrote it, and a message reaches for a string.
+        head: Enum.map(patterns, &Macro.to_string/1),
         lhs: production.lhs ++ head_test(env, guard),
         # The guard is not kept here. It goes into the `Rete.IR.Test` that `head_test/2`
         # appends, which records it in the same shape every other guard uses.

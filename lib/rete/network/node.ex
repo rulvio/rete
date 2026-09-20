@@ -230,9 +230,13 @@ defmodule Rete.Network.Node do
     is one map lookup. An empty list is a query with no parameters, or one whose head binds
     nothing. Its tokens all key on `%{}`, and they come back in arrival order.
 
-    The head itself is a list of patterns, and it does not reach here. The generated
-    function matches it, and hands this node the bindings it took out. See
-    `Rete.DSL.Codegen.query_def/1`.
+    The patterns of the head do not reach here. The generated function matches them, and
+    hands this node the bindings it took out. See `Rete.DSL.Codegen.query_def/1`.
+
+    `:head` is those patterns rendered as source, one string each, and `[]` for a query
+    with no head. Nothing matches on it. It is here so that `Rete.Engine.query/3` can spell
+    out the call to write when it is given a bare name, rather than print a placeholder for
+    a head it would otherwise have no way to know.
     """
     @type t :: %__MODULE__{
             id: non_neg_integer() | nil,
@@ -241,9 +245,10 @@ defmodule Rete.Network.Node do
             hash: integer(),
             rhs: fun(),
             bind: [atom()],
-            params: [atom()]
+            params: [atom()],
+            head: [String.t()]
           }
-    defstruct [:id, :name, :module, :hash, :rhs, bind: [], params: []]
+    defstruct [:id, :name, :module, :hash, :rhs, bind: [], params: [], head: []]
   end
 
   @type t ::

@@ -638,10 +638,10 @@ pipes. A head is **not** a list of names. Every entry is an ordinary Elixir patt
 call matches it. So you choose the shape that a caller writes:
 
 ```elixir
-defquery by_pair(cid, tid)(...)            #=> by_pair(session, 1, 2)
-defquery by_tuple({cid, tid})(...)         #=> by_tuple(session, {1, 2})
+defquery by_pair(cid, tid)(...)             #=> by_pair(session, 1, 2)
+defquery by_tuple({cid, tid})(...)          #=> by_tuple(session, {1, 2})
 defquery by_map(%{cid: cid, tid: tid})(...) #=> by_map(session, %{cid: 1, tid: 2})
-defquery by_list(cid: cid, tid: tid)(...)  #=> by_list(session, cid: 1, tid: 2)
+defquery by_list(cid: cid, tid: tid)(...)   #=> by_list(session, cid: 1, tid: 2)
 ```
 
 The variables a head binds are what the engine **keys** the matches on. A read is thus a

@@ -302,10 +302,11 @@ Rete.Inspect.explain(session, {Retail, :dormant})
 #   }
 ```
 
-One activation is one match the rule fired on, so two dormant customers give two. Each entry of `:matches` says where its fact
-came from. `:from` names the rules that concluded it, so you read a chain by following that
-pair to its own entry. It is a list, because a fact concluded twice has two independent
-supports, and both must go before the fact itself goes.
+One activation is one match the rule fired on, so two dormant customers give two. Each
+entry of `:matches` says where its fact came from. `:from` names the rules that concluded
+it, so you read a chain by following that pair to its own entry. It is a list, because a
+fact concluded twice has two independent supports, and both must go before the fact itself
+goes.
 
 A collection reports the gathered list under `origin: :gathered`, with each member described
 in `:members`. That is what the rule received.

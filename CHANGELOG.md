@@ -139,11 +139,11 @@ The compiler checks the call, and an editor completes it. A call that does not m
   rule joining `[:cid, :kind]`, the natural guess `%{cid: 1}` reported `[]` while the rule
   had gathered three facts into two collections.
 
-  Nothing is lost. A token records the list the accumulate node handed the rule, already
-  filtered for a collection with a cross-condition guard, so `explain/2` reports it under
-  `origin: :gathered` with each member in `:members`. Keyed by the activation, two
-  activations sharing one join key each report their own collection, which the old call
-  could only answer as their union.
+  Nothing is lost. A token records the list the accumulate node handed the rule, and a
+  collection with a cross-condition guard records it already filtered. So `explain/2`
+  reports it under `origin: :gathered`, with each member in `:members`. Keyed by the
+  activation, two activations sharing one join key each report their own collection, which
+  the old call could only answer as their union.
 
 ### Fixed
 
