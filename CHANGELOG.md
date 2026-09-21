@@ -8,39 +8,30 @@ All notable changes to `rete` are recorded here. The format follows
 
 ### Changed
 
-* `Rete.Agenda` holds its buckets in a `:gb_trees`, keyed by sort key. They were a map plus
-  a sorted list of the keys. `add/2`, `pop/1` and `remove/2` now cost O(log r) in the
-  **rules** pending, where they cost O(r) before. Firing order does not change. Erlang term
-  order on `{-salience, -internal_salience, order}` is the order the list was kept in.
+* `Rete.Agenda` holds its buckets in a `:gb_trees`, where they were a map plus a sorted list
+  of the keys. `add/2`, `pop/1` and `remove/2` now cost O(log r) in the **rules** pending,
+  where they cost O(r) before. Firing order does not change, since Erlang term order on
+  `{-salience, -internal_salience, order}` is the order the list was kept in.
 
-  Activations reach the agenda in compile order, which is the order the keys sort in, so
-  each rule's first activation walked the whole list. Firing one match of each of 1,024
-  rules cost 19.22 ms, and the same rules fed in reverse cost 6.03 ms, because each key then
-  went at the front. The two directions now cost 8.71 ms and 8.66 ms, which is level within
-  the noise of a run. A tree is a little slower in the direction a list was good at. What it
-  removes is the threefold gap between the two, so the order rules are written in is no
-  longer a performance decision.
+  Keys arrive ascending in compile order, so each rule's first activation walked the whole
+  list. Firing one match of each of 1,024 rules cost 19.22 ms that way and 6.03 ms in
+  reverse. Both cost about 8.7 ms now. A tree is a little slower in the direction a list was
+  good at, and what it removes is the threefold gap between the two.
 
   This is internal. No public function changed, and no ruleset is affected.
 
 * The runaway error of `fire_rules/2` no longer counts the pending activations. The line
   read `Still pending (5 of 12 activations):` and reads `Still pending:` now. The list of
-  rules that fired most still says what it cut, because how many rules are in the loop is
-  the thing being reported. How many activations happened to be queued when the cap hit
-  describes the fan-out rather than the loop, and `fired n cycles` already gives the scale.
-
-  `Rete.Agenda` kept a running count of its activations only to answer that line.
-  `Rete.Agenda.size/1` counts over the buckets now, which is O(r) in the rules pending and
-  has no caller in the engine at all.
+  rules that fired most still says what it cut. `Rete.Agenda.size/1` counted over a stored
+  tally to answer that line, and counts over the buckets now.
 
 ### Added
 
 * Two `mix bench` scenarios in the rule count, which nothing measured before. Every existing
-  scenario scales the facts and holds the ruleset still, and most hold one rule.
-  `activate one match of each of r rules` grows r rules over r fact types, one fact each, so
-  r rules are pending at once. `1,024 rules activated in compile order and in reverse` is its
-  control, and it is what found the shape above. The scaling scenario reads `~n^1.07` where
-  it read `~n^1.40`. See `docs/design/engine.md` §13.
+  scenario scales the facts and holds the ruleset still. `activate one match of each of r
+  rules` gives r rules one fact each, so r rules are pending at once, and reads `~n^1.07`
+  where it read `~n^1.40`. The A/B beside it feeds 1,024 rules in each direction. See
+  `docs/design/engine.md` §13.
 
 ## 0.9.0
 

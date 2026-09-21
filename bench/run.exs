@@ -557,14 +557,11 @@ defmodule Bench.Rules do
   # r rules, each on a fact type of its own, each activated exactly once. Generated,
   # because the shape only shows at a rule count nobody writes by hand.
   #
-  # This measures **firing**, and specifically the agenda. Every rule has its own sort key,
-  # so r rules pending at once means r keys in the agenda. No other scenario reaches that
-  # dimension. `Bench.Agenda` has one rule, and `Bench.Width` fires nothing.
+  # This measures **firing**, and specifically the agenda: r rules pending at once means r
+  # sort keys. `Bench.Agenda` has one rule, and `Bench.Width` fires nothing.
   #
-  # One type per rule is the whole point of the fixture. r rules over *one* type route
-  # every fact to all r alphas, which is O(r²) by design — see §13, "firing is linear in
-  # the rule count, and inherently so". That cost would bury the one being measured. A
-  # distinct type per rule keeps the taxonomy lookup at one alpha per fact.
+  # One type per rule is the point of the fixture. r rules over *one* type offer every fact
+  # to all r alphas, which is O(r²) by design, and that would bury what is being measured.
   def module(r) do
     name = Module.concat(Bench.Rules.Generated, "R#{r}")
 
@@ -592,11 +589,8 @@ defmodule Bench.Rules do
   # One fact per rule, so each of the r rules gets exactly one match.
   def facts(r), do: for(i <- 1..r, do: {:"f#{i}", 1})
 
-  # Through `:persistent_term`, for the reason `Bench.Explain` gives. The scaling scenario
-  # takes `isolate: true`, spawning copies the closure, and a closure over a map of r
-  # networks would copy every one of them at every repeat. A `:persistent_term` is read
-  # without copying. Written once, and never updated, so the global cost of an update is
-  # not paid.
+  # Through `:persistent_term`, for the reason `Bench.Explain` gives: the scaling scenario
+  # isolates, and spawning would copy a map of r networks at every repeat.
   def put(r), do: :persistent_term.put({__MODULE__, r}, Rete.Compiler.build([module(r)]))
   def get(r), do: :persistent_term.get({__MODULE__, r})
 end
@@ -1044,36 +1038,23 @@ Bench.scenario(
     |> Rete.Session.insert(Bench.Rules.facts(r))
     |> Rete.Session.fire_rules()
   end,
-  # `isolate: true`, for the reason the compile scenario gives. This settles a whole session
-  # of r rules per call. Five of them in the bench process grow its heap with `r`, and
-  # collecting that heap then costs more at every later size. It read over the n^1.5 gate
-  # that way, and ~n^1.07 on a fresh heap, with the engine linear underneath both.
-  #
-  # `facts/1` is built inside the timed function here, where the A/B below hoists it out.
-  # A scenario reports an **exponent**, and the build is O(r) against a body that is O(r)
-  # too — about 3% of the call at every size. A constant fraction cancels out of a ratio of
-  # two sizes, so it moves the exponent by nothing. A ratio of two *variants* is the case
-  # that shared work distorts, and that is the one below.
+  # `isolate: true`, for the reason the compile scenario gives: this settles a whole session
+  # of r rules per call, and five of those grow the heap of the bench process with `r`. It
+  # read over the n^1.5 gate that way, and ~n^1.07 on a fresh heap.
   isolate: true,
   note:
     "r rules pending at once, so the agenda holds r sort keys — every scenario above " <>
       "has one rule, and this is the dimension none of them varies"
 )
 
-# An A/B rather than a shape. Both directions activate the same r rules and settle to the
-# same session, so the exponent would say the same thing twice. What separates them is
-# where each new sort key lands, and that is a ratio.
+# An A/B rather than a shape. Both directions settle to the same session, so what separates
+# them is where each new sort key lands. A sorted key list is asymmetric there: keys arrive
+# ascending in compile order, so each insertion walked the whole list, and a reverse feed
+# put each one at the head. A tree is flat both ways, so the two rows sitting level is the
+# property.
 #
-# A sorted key list is asymmetric here. Activations arrive in compile order, so their keys
-# arrive ascending and each insertion walks the whole list. Fed in reverse they arrive
-# descending, and each one goes at the head. An ordered tree is flat both ways. So the two
-# rows sitting level is the property, and a forward row that is a multiple of the reverse
-# row means the agenda is back to a linear insertion.
-#
-# Each direction is a variant argument, so both lists are built **before** the timing. A
-# ratio is what this reports, and work shared by the two rows pulls a ratio toward 1.0 —
-# which is the direction that flatters the fix. Building 1,024 interpolated atoms inside
-# the timed function did that by about 2%.
+# The fact lists are variant arguments, and thus built before the timing. Work the two rows
+# share pulls a ratio toward 1.0, which is the direction that flatters the fix.
 forward_facts = Bench.Rules.facts(1_024)
 reverse_facts = Enum.reverse(forward_facts)
 

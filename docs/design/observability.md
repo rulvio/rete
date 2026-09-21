@@ -259,14 +259,10 @@ Still pending:
 A rule that concludes something its own left hand side matches on will do this.
 ```
 
-Both lists are cut to five items, and only the rules say so. How many rules are in the
-loop is the thing being reported, so a silent cut there would read as the whole story.
-
-The pending list carries no count. Its length is the fan-out at the moment the cap hit,
-which is a property of the queue rather than of the loop. The `fired n cycles` line already
-gives the scale. It used to say `(5 of 12 activations)`, and the agenda kept a running
-count of its activations to answer it. Nothing else ever asked, so the count is taken
-over the buckets now, on the rare occasion something does.
+Both lists are cut to five items, and only the rules say so. How many rules are in the loop
+is the thing being reported, so a silent cut there would read as the whole story. The
+length of the pending list is the fan-out at the moment the cap hit, which describes the
+queue rather than the loop.
 
 This engine does **not** add a configurable action, unlike Clara's `:throw-exception` /
 `:standard-out-warning`. Nothing needs it yet. A caller who wants to log and continue can

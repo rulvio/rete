@@ -10,21 +10,12 @@ defmodule Rete.Agenda do
   Two matches of the same rule fire in the order they arrived.
 
   Every activation of one production node shares a sort key. The agenda is thus a small
-  number of ordered buckets, and not one sorted list of matches. Each bucket is a
-  `Rete.Bucket`, which is the same tombstoned ordered multiset that working memory keys per
-  join key. `remove/2` used to be linear in one bucket, which is one rule's pending matches,
-  so retracting the support of a rule with many of them was quadratic. See
-  `docs/design/engine.md` §7.
-
-  The buckets are held in a `:gb_trees`, ordered by that sort key. So `add/2`, `pop/1` and
-  `remove/2` cost O(log r) in the **rules** pending, and O(1) amortized in the bucket.
-
-  That replaced a sorted list of the keys, which was the wrong shape in one direction.
-  Activations reach the agenda in compile order, which is the order the keys sort in, so
-  each new rule's first activation walked the whole list. Fed in reverse, each key went at
-  the front instead. Firing one match of each of 1,024 rules therefore cost 19.22 ms one
-  way and 6.03 ms the other. A tree is level: 8.71 ms and 8.66 ms. Both scenarios are in
-  `bench/run.exs`.
+  number of ordered buckets, and not one sorted list. Each bucket is a `Rete.Bucket`,
+  which is the same tombstoned ordered multiset that working memory keys per join key. The
+  buckets sit in a `:gb_trees`, so `add/2`, `pop/1` and `remove/2` cost O(log r) in the
+  rules pending, and O(1) amortized in the bucket. `remove/2` used to be linear in one
+  bucket, which is one rule's pending matches, so retracting the support of a rule with
+  many of them was quadratic. See `docs/design/engine.md` §7.
 
   What makes the bucket half of `remove/2` O(1) is the bucket's index, and a bucket builds
   that only when something is first taken from it. An agenda that is only ever added to and
@@ -43,33 +34,22 @@ defmodule Rete.Agenda do
 
   @type key :: {integer(), integer(), non_neg_integer()}
 
-  @typedoc "One `Rete.Bucket` per sort key, ordered by it."
   @type t :: %__MODULE__{buckets: :gb_trees.tree(key(), Bucket.t())}
 
-  # `new/0` is the only way to build one. Without this, `%Rete.Agenda{}` gives a struct with
-  # no buckets, and the first `pop/1` on it fails inside `:gb_trees` rather than where the
-  # mistake was made.
   @enforce_keys [:buckets]
   defstruct [:buckets]
 
   @doc "An empty agenda."
   @spec new() :: t()
-  # `:gb_trees.empty/0` is called here rather than given as a struct default, the same way
-  # `Rete.Bucket.new/1` builds its queue. Elixir evaluates a default at compile time and
-  # embeds the literal it produces. That throws away the opaqueness of `:gb_trees.tree/2`,
-  # and every later call on the field then looks like a type violation.
+  # `:gb_trees.empty/0` is called here rather than given as a struct default, for the reason
+  # `Rete.Bucket.new/1` records: a compile-time default loses the opaque type.
   def new, do: %__MODULE__{buckets: :gb_trees.empty()}
 
   @doc """
   How many activations are waiting.
 
-  Counted on demand, over the buckets. This is O(r) in the rules pending, since
-  `Rete.Bucket.size/1` is O(1). Nothing in the engine asks, because `pop/1` and
-  `peek_group/1` test the buckets for emptiness instead. A stored counter would thus be a
-  second version of a truth the buckets already hold, kept in step for no reader.
-
-  Note that `:gb_trees.size/1` would answer a different question: how many **rules** have
-  something waiting.
+  Counted over the buckets, so O(r) in the rules pending. Nothing in the engine asks, and
+  a stored count would be a second version of what the buckets already hold.
 
       iex> alias Rete.{Activation, Agenda}
       iex> Agenda.new() |> Agenda.add(%Activation{node_id: :n1}) |> Agenda.size()
@@ -144,10 +124,6 @@ defmodule Rete.Agenda do
       :empty
   """
   @spec pop(t()) :: {:ok, Activation.t(), t()} | :empty
-  # `:gb_trees.smallest/1` and not an iterator, which is the opposite of what `peek_group/1`
-  # does. That one has to keep walking, so it needs an iterator anyway and takes the leading
-  # bucket out of it for nothing. This one stops at the first bucket, and an iterator would
-  # allocate a spine it never reads. `:gb_trees.is_empty/1` is O(1), so the guard is free.
   def pop(%__MODULE__{} = agenda) do
     if :gb_trees.is_empty(agenda.buckets) do
       :empty
@@ -184,9 +160,6 @@ defmodule Rete.Agenda do
       3
   """
   @spec peek_group(t()) :: [Activation.t()]
-  # The leading bucket is taken from the iterator rather than by `:gb_trees.smallest/1`,
-  # which would walk down to it a second time. It also decides the group, so it seeds the
-  # accumulator and `take_group/4` carries on from behind it.
   def peek_group(%__MODULE__{buckets: buckets}) do
     case buckets |> :gb_trees.iterator() |> :gb_trees.next() do
       :none ->
@@ -199,20 +172,14 @@ defmodule Rete.Agenda do
 
   @doc "Every pending activation, in firing order."
   @spec to_list(t()) :: [Activation.t()]
-  # `:gb_trees.values/1` rather than `to_list/1`: both walk the whole tree in key order, and
-  # only this one leaves the keys behind. Nothing here reads a key.
   def to_list(%__MODULE__{buckets: buckets}) do
     buckets |> :gb_trees.values() |> Enum.flat_map(&Bucket.to_list/1)
   end
 
-  # Walks the buckets in key order and stops at the first key outside the leading group. An
-  # iterator rather than `:gb_trees.to_list/1`, because a group is a prefix: reading every
-  # bucket to return the front of them would cost the rules that never get a turn.
-  #
-  # The two ways to stop are spelled out rather than caught together, so that a key of any
-  # other shape raises here. Absorbing one would return `[]` for a group that has
-  # activations in it. `Rete.Engine.next_cycle/2` reads that as an empty agenda, so a fire
-  # above `concurrency: 1` would return with matches pending and report nothing.
+  # An iterator, because a group is a prefix: reading every bucket would cost the rules that
+  # never get a turn. The two ways to stop are spelled out so that a key of any other shape
+  # raises. Absorbing one would answer `[]` for a group that has activations in it, and a
+  # fire above `concurrency: 1` would then return with matches still pending.
   defp take_group(iterator, salience, internal, acc) do
     case :gb_trees.next(iterator) do
       {{^salience, ^internal, _order}, bucket, iterator} ->
@@ -226,16 +193,13 @@ defmodule Rete.Agenda do
     end
   end
 
-  # Each bucket is prepended as it is walked, so the accumulator runs backwards through the
-  # keys. One reverse and one concat put it back into firing order.
   defp firing_order(buckets), do: buckets |> Enum.reverse() |> Enum.concat()
 
-  # Drops the key when its bucket empties, because a key is what records that a bucket
-  # exists. An empty one left behind would make `pop/1` hand back a bucket with nothing
-  # in it.
+  # Drops the key when the bucket empties. The tree records which buckets exist, so an
+  # empty one left behind would make `pop/1` hand back nothing.
   #
   # Takes a bucket, not a list. Round-tripping through a list here would put an O(bucket)
-  # cost on `pop/1`, which has to stay O(1) in the pending matches of one rule.
+  # cost on `pop/1`, which has to stay O(1) in one rule's pending matches.
   defp store(%__MODULE__{} = agenda, key, remaining) do
     buckets =
       if Bucket.empty?(remaining) do

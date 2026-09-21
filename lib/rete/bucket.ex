@@ -43,9 +43,6 @@ defmodule Rete.Bucket do
           indexed?: boolean()
         }
 
-  # `new/1` is the only way to build one. Without this, `%Rete.Bucket{}` gives a bucket with
-  # no queue, and the first push or read on it fails inside `:queue` rather than where the
-  # mistake was made.
   @enforce_keys [:queue]
   defstruct [:queue, counts: %{}, dead: %{}, live: 0, dead_total: 0, indexed?: false]
 

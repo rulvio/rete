@@ -2206,19 +2206,15 @@ defmodule Rete.EngineTest do
     end
 
     # The list of rules is cut to five. A cut that says nothing reads as the whole
-    # story, and a loop of five rules is a different problem from one of fifty.
-    #
-    # The pending list is cut too and does not say so. It is a sample of whatever
-    # happened to be queued when the cap hit, so its length describes the fan-out
-    # rather than the loop. `fired n cycles` already gives the scale.
+    # story, and a loop of five rules is a different problem from one of fifty. The
+    # pending list is cut too and carries no count.
     test "a truncated list of rules says how much it left out" do
       defmodule Fanout do
         use Rete.Ruleset
 
-        # Five rules on what the loop produces, so six reach the tally and the list of
-        # the worst has to cut one. They are written *before* the loop deliberately.
-        # Equal salience fires in compile order, so a `grow` written first would win
-        # every cycle and no other rule would ever reach the tally.
+        # Five rules on what the loop produces, so six reach the tally. Written before
+        # the loop deliberately: equal salience fires in compile order, so a `grow`
+        # written first would win every cycle and nothing else would reach the tally.
         defrule n1({:counter, n}), do: {:noted, 1, n}
         defrule n2({:counter, n}), do: {:noted, 2, n}
         defrule n3({:counter, n}), do: {:noted, 3, n}
