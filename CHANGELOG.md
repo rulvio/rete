@@ -15,10 +15,11 @@ All notable changes to `rete` are recorded here. The format follows
 
   Activations reach the agenda in compile order, which is the order the keys sort in, so
   each rule's first activation walked the whole list. Firing one match of each of 1,024
-  rules cost 19.49 ms, and the same rules fed in reverse cost 6.86 ms, because each key then
-  went at the front. The two directions now cost 8.32 ms and 7.89 ms. A tree is a little
-  slower in the direction a list was good at. What it removes is the ×2.84 gap between the
-  two, so the order rules are written in is no longer a performance decision.
+  rules cost 19.22 ms, and the same rules fed in reverse cost 6.03 ms, because each key then
+  went at the front. The two directions now cost 8.71 ms and 8.66 ms, which is level within
+  the noise of a run. A tree is a little slower in the direction a list was good at. What it
+  removes is the threefold gap between the two, so the order rules are written in is no
+  longer a performance decision.
 
   This is internal. No public function changed, and no ruleset is affected.
 
@@ -38,8 +39,8 @@ All notable changes to `rete` are recorded here. The format follows
   scenario scales the facts and holds the ruleset still, and most hold one rule.
   `activate one match of each of r rules` grows r rules over r fact types, one fact each, so
   r rules are pending at once. `1,024 rules activated in compile order and in reverse` is its
-  control, and it is what found the shape above. The scaling scenario reads `~n^1.10` where
-  it read `~n^1.41`. See `docs/design/engine.md` §13.
+  control, and it is what found the shape above. The scaling scenario reads `~n^1.07` where
+  it read `~n^1.40`. See `docs/design/engine.md` §13.
 
 ## 0.9.0
 

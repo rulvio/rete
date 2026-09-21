@@ -1046,8 +1046,14 @@ Bench.scenario(
   end,
   # `isolate: true`, for the reason the compile scenario gives. This settles a whole session
   # of r rules per call. Five of them in the bench process grow its heap with `r`, and
-  # collecting that heap then costs more at every later size. It read ~n^1.5 that way and
-  # ~n^1.05 on a fresh heap, with the engine linear underneath both.
+  # collecting that heap then costs more at every later size. It read over the n^1.5 gate
+  # that way, and ~n^1.07 on a fresh heap, with the engine linear underneath both.
+  #
+  # `facts/1` is built inside the timed function here, where the A/B below hoists it out.
+  # A scenario reports an **exponent**, and the build is O(r) against a body that is O(r)
+  # too — about 3% of the call at every size. A constant fraction cancels out of a ratio of
+  # two sizes, so it moves the exponent by nothing. A ratio of two *variants* is the case
+  # that shared work distorts, and that is the one below.
   isolate: true,
   note:
     "r rules pending at once, so the agenda holds r sort keys — every scenario above " <>
@@ -1063,13 +1069,18 @@ Bench.scenario(
 # descending, and each one goes at the head. An ordered tree is flat both ways. So the two
 # rows sitting level is the property, and a forward row that is a multiple of the reverse
 # row means the agenda is back to a linear insertion.
+#
+# Each direction is a variant argument, so both lists are built **before** the timing. A
+# ratio is what this reports, and work shared by the two rows pulls a ratio toward 1.0 —
+# which is the direction that flatters the fix. Building 1,024 interpolated atoms inside
+# the timed function did that by about 2%.
+forward_facts = Bench.Rules.facts(1_024)
+reverse_facts = Enum.reverse(forward_facts)
+
 Bench.compare(
   "1,024 rules activated in compile order and in reverse",
-  [{"compile order", :forward}, {"reverse", :reverse}],
-  fn direction ->
-    facts = Bench.Rules.facts(1_024)
-    facts = if direction == :reverse, do: Enum.reverse(facts), else: facts
-
+  [{"compile order", forward_facts}, {"reverse", reverse_facts}],
+  fn facts ->
     1_024
     |> Bench.Rules.get()
     |> Bench.session()

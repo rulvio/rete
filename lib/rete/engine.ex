@@ -516,11 +516,10 @@ defmodule Rete.Engine do
     """
   end
 
-  # Both lists are cut to @runaway_shown, and only the rules say so. A cut list of rules
-  # reads as the whole story without it, because the count of rules in the loop is the
-  # thing being reported. The pending list is a sample of an arbitrary queue, so its length
-  # describes the fan-out at the moment the cap hit and not the loop. `fired n cycles`
-  # already gives the scale.
+  # Both lists are cut to @runaway_shown, and only the rules say so. How many rules are in
+  # the loop is the thing being reported, so a silent cut there reads as the whole story.
+  # The pending list is a sample of an arbitrary queue, and its length describes the
+  # fan-out rather than the loop.
   defp of_total(total, noun) when total > @runaway_shown,
     do: " (#{@runaway_shown} of #{total} #{noun})"
 

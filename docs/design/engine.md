@@ -756,20 +756,27 @@ every call and then one time. It compares this against one call that carries all
 The three collection rows are one fix, and the only one that changed what the engine
 guarantees. See `network.md` §3.
 
-### A third pass, in the rule count
+### Scaling the rule count
 
-Both passes above scale the **facts**. Every one of their scenarios holds the ruleset still,
-and most hold one rule. So nothing measured what a session costs as the *rules* grow while
-it fires. `Bench.Width` grows the rule count and times the compiler. `Bench.Spread` grows
-the module count and fires nothing.
+The two passes above scale the **facts**. Every one of their scenarios holds the ruleset
+still, and most hold one rule. So nothing measured what a session costs as the *rules* grow
+while it fires. `Bench.Width` grows the rule count and times the compiler. `Bench.Spread`
+grows the module count and fires nothing.
 
-`Bench.Rules` is the scenario that closes that gap. It builds r rules on r fact types and
-gives each one fact, so r rules are pending at once and the agenda holds r sort keys. It
-found one thing, in the key list of `Rete.Agenda`.
+This section is where that dimension is measured. A later finding in it belongs here, and
+not in a section of its own. `Bench.Rules` is the scenario that opens it. It builds r rules
+on r fact types and gives each one fact, so r rules are pending at once and the agenda holds
+r sort keys. It has found one thing so far, in the key list of `Rete.Agenda`.
 
 | scenario | was | now |
 |---|---|---|
-| activate one match of each of r rules | `~n^1.41`, 13.04 ms at r = 1,024 | `~n^1.10`, 5.60 ms |
+| activate one match of each of r rules | `~n^1.40`, 12.35 ms at r = 1,024 | `~n^1.07`, 5.61 ms |
+
+Both columns there are measured **on a fresh heap**, which `isolate: true` asks for. The
+scenario settles a whole session of r rules per call. Five of those in the bench process
+grow its heap with r, and collecting that heap costs more at every later size. It reads over
+the n^1.5 gate that way, with the engine linear underneath, which is the trap the compile
+scenario documents.
 
 Its control is the same 1,024 rules fed in each direction, and it is the clearer reading of
 the two. Activations reach the agenda in compile order, which is the order the keys sort in,
@@ -778,19 +785,24 @@ front:
 
 | 1,024 rules activated | sorted list | `:gb_trees` |
 |---|---|---|
-| in compile order | 19.49 ms | 8.32 ms |
-| in reverse | 6.86 ms | 7.89 ms |
-| ratio | ×2.84 | ×1.05 |
+| in compile order | 19.22 ms | 8.71 ms |
+| in reverse | 6.03 ms | 8.66 ms |
+| ratio | ×3.19 | ×1.01 |
 
 A tree is slower in the direction a list was good at, and that is the trade. It costs
 O(log r) wherever a key lands. So the ratio is what the fix is for, and not the millisecond
-column. The engine no longer has a direction it is ×2.84 worse in, and the order rules are
-written in is no longer a performance decision.
+column. The engine no longer has a direction it is three times worse in, and the order
+rules are written in is no longer a performance decision.
 
-**Both readings are on a fresh heap**, which `isolate: true` asks for. This scenario settles
-a whole session of r rules per call. Five of those in the bench process grow its heap with
-r, and collecting that heap costs more at every later size. It reads ~n^1.5 that way with
-the engine linear underneath, which is the same trap the compile scenario documents.
+Read the right-hand column as level, and not as a 1% difference. Two rows of one shape move
+by several percent between runs, so 8.71 against 8.66 carries no signal beyond "the same".
+The left column does: a factor of three is far outside that.
+
+That control is a ratio at one size, so it takes `compare/4` and is **not** isolated. Both
+of its rows run on the same heap and are affected alike. What a ratio cannot absorb is work
+the two rows *share*, which pulls it toward 1.0 and flatters the fix. So both fact lists are
+built before the timing starts. Building them inside the timed function moved the left
+column from ×3.19 to ×2.84.
 
 ### What is left in a collection is the rule body
 

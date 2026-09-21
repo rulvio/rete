@@ -2206,11 +2206,11 @@ defmodule Rete.EngineTest do
     end
 
     # The list of rules is cut to five. A cut that says nothing reads as the whole
-    # story, and five rules in the loop is a different problem from fifty.
+    # story, and a loop of five rules is a different problem from one of fifty.
     #
     # The pending list is cut too and does not say so. It is a sample of whatever
     # happened to be queued when the cap hit, so its length describes the fan-out
-    # rather than the loop, and `fired n cycles` already gives the scale.
+    # rather than the loop. `fired n cycles` already gives the scale.
     test "a truncated list of rules says how much it left out" do
       defmodule Fanout do
         use Rete.Ruleset
