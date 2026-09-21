@@ -22,6 +22,16 @@ All notable changes to `rete` are recorded here. The format follows
 
   This is internal. No public function changed, and no ruleset is affected.
 
+* The runaway error of `fire_rules/2` no longer counts the pending activations. The line
+  read `Still pending (5 of 12 activations):` and reads `Still pending:` now. The list of
+  rules that fired most still says what it cut, because how many rules are in the loop is
+  the thing being reported. How many activations happened to be queued when the cap hit
+  describes the fan-out rather than the loop, and `fired n cycles` already gives the scale.
+
+  `Rete.Agenda` kept a running count of its activations only to answer that line.
+  `Rete.Agenda.size/1` counts over the buckets now, which is O(r) in the rules pending and
+  has no caller in the engine at all.
+
 ### Added
 
 * Two `mix bench` scenarios in the rule count, which nothing measured before. Every existing

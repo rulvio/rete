@@ -16,10 +16,10 @@ defmodule Rete.Agenda do
   so retracting the support of a rule with many of them was quadratic. See
   `docs/design/engine.md` §7.
 
-  The buckets themselves sit in a `:gb_trees`, keyed by sort key. So `add/2`, `pop/1` and
+  The buckets are held in a `:gb_trees`, ordered by that sort key. So `add/2`, `pop/1` and
   `remove/2` cost O(log r) in the **rules** pending, and O(1) amortized in the bucket.
 
-  That tree replaced a sorted list of the keys, which was the wrong shape in one direction.
+  That replaced a sorted list of the keys, which was the wrong shape in one direction.
   Activations reach the agenda in compile order, which is the order the keys sort in, so
   each new rule's first activation walked the whole list. Fed in reverse, each key went at
   the front instead. Firing one match of each of 1,024 rules therefore cost 19.49 ms one
@@ -43,12 +43,15 @@ defmodule Rete.Agenda do
 
   @type key :: {integer(), integer(), non_neg_integer()}
 
-  @type t :: %__MODULE__{
-          tree: :gb_trees.tree(key(), Bucket.t()),
-          size: non_neg_integer()
-        }
+  @typedoc "One `Rete.Bucket` per sort key, ordered by it."
+  @type t :: %__MODULE__{buckets: :gb_trees.tree(key(), Bucket.t())}
 
-  defstruct [:tree, size: 0]
+  # `new/0` is the only way to build one. Without this, `%Rete.Agenda{}` gives a struct with
+  # no buckets, and the first `pop/1` on it fails inside `:gb_trees` rather than where the
+  # mistake was made. The old shape had no such state: its fields defaulted to an empty list
+  # and an empty map, which was a legitimately empty agenda.
+  @enforce_keys [:buckets]
+  defstruct [:buckets]
 
   @doc "An empty agenda."
   @spec new() :: t()
@@ -56,36 +59,45 @@ defmodule Rete.Agenda do
   # `Rete.Bucket.new/1` builds its queue. Elixir evaluates a default at compile time and
   # embeds the literal it produces, which throws away the opaqueness of `:gb_trees.tree/2`
   # and makes every later call on the field look like a type violation.
-  def new, do: %__MODULE__{tree: :gb_trees.empty()}
+  def new, do: %__MODULE__{buckets: :gb_trees.empty()}
 
   @doc """
   How many activations are waiting.
 
-  The agenda counts activations as they arrive, so reporting the size of a runaway agenda
-  is cheap.
+  Counted on demand, over the buckets. This is O(r) in the rules pending, since
+  `Rete.Bucket.size/1` is O(1). Nothing in the engine asks — `pop/1` and `peek_group/1`
+  test the buckets for emptiness instead — so a stored counter would be a second version
+  of a truth the buckets already hold, kept in step for no reader.
+
+  Note that `:gb_trees.size/1` would answer a different question: how many **rules** have
+  something waiting.
 
       iex> alias Rete.{Activation, Agenda}
       iex> Agenda.new() |> Agenda.add(%Activation{node_id: :n1}) |> Agenda.size()
       1
   """
   @spec size(t()) :: non_neg_integer()
-  def size(%__MODULE__{size: size}), do: size
+  def size(%__MODULE__{buckets: buckets}) do
+    buckets
+    |> :gb_trees.to_list()
+    |> Enum.reduce(0, fn {_key, bucket}, total -> total + Bucket.size(bucket) end)
+  end
 
   @doc "Adds an activation, behind the ones already queued for its rule."
   @spec add(t(), Activation.t()) :: t()
   def add(%__MODULE__{} = agenda, %Activation{} = activation) do
     key = Activation.key(activation)
 
-    tree =
-      case :gb_trees.lookup(key, agenda.tree) do
+    buckets =
+      case :gb_trees.lookup(key, agenda.buckets) do
         {:value, bucket} ->
-          :gb_trees.update(key, Bucket.push_one(bucket, activation), agenda.tree)
+          :gb_trees.update(key, Bucket.push_one(bucket, activation), agenda.buckets)
 
         :none ->
-          :gb_trees.insert(key, Bucket.new([activation]), agenda.tree)
+          :gb_trees.insert(key, Bucket.new([activation]), agenda.buckets)
       end
 
-    %__MODULE__{agenda | tree: tree, size: agenda.size + 1}
+    %__MODULE__{agenda | buckets: buckets}
   end
 
   @doc """
@@ -109,7 +121,7 @@ defmodule Rete.Agenda do
   def remove(%__MODULE__{} = agenda, %Activation{} = activation) do
     key = Activation.key(activation)
 
-    case :gb_trees.lookup(key, agenda.tree) do
+    case :gb_trees.lookup(key, agenda.buckets) do
       :none ->
         {agenda, :missing}
 
@@ -118,10 +130,10 @@ defmodule Rete.Agenda do
           {:ok, bucket} ->
             {store(agenda, key, bucket), :removed}
 
-          # The bucket comes back too, because the miss is what built its index. Kept
-          # without going through `store/3`, which would also decrement the size.
+          # The bucket comes back too, because the miss is what built its index.
           {:error, bucket} ->
-            {%__MODULE__{agenda | tree: :gb_trees.update(key, bucket, agenda.tree)}, :missing}
+            {%__MODULE__{agenda | buckets: :gb_trees.update(key, bucket, agenda.buckets)},
+             :missing}
         end
     end
   end
@@ -134,10 +146,10 @@ defmodule Rete.Agenda do
   """
   @spec pop(t()) :: {:ok, Activation.t(), t()} | :empty
   def pop(%__MODULE__{} = agenda) do
-    if :gb_trees.is_empty(agenda.tree) do
+    if :gb_trees.is_empty(agenda.buckets) do
       :empty
     else
-      {key, bucket} = :gb_trees.smallest(agenda.tree)
+      {key, bucket} = :gb_trees.smallest(agenda.buckets)
       {:ok, activation, rest} = Bucket.pop(bucket)
 
       {:ok, activation, store(agenda, key, rest)}
@@ -170,18 +182,18 @@ defmodule Rete.Agenda do
   """
   @spec peek_group(t()) :: [Activation.t()]
   def peek_group(%__MODULE__{} = agenda) do
-    if :gb_trees.is_empty(agenda.tree) do
+    if :gb_trees.is_empty(agenda.buckets) do
       []
     else
-      {{salience, internal, _order}, _bucket} = :gb_trees.smallest(agenda.tree)
+      {{salience, internal, _order}, _bucket} = :gb_trees.smallest(agenda.buckets)
 
-      agenda.tree |> :gb_trees.iterator() |> take_group(salience, internal, [])
+      agenda.buckets |> :gb_trees.iterator() |> take_group(salience, internal, [])
     end
   end
 
-  # Walks the tree in key order and stops at the first key outside the leading group. An
-  # iterator rather than `:gb_trees.to_list/1`, because a group is a prefix: reading the
-  # whole tree to return the front of it would cost the rules that never get a turn.
+  # Walks the buckets in key order and stops at the first key outside the leading group. An
+  # iterator rather than `:gb_trees.to_list/1`, because a group is a prefix: reading every
+  # bucket to return the front of them would cost the rules that never get a turn.
   defp take_group(iterator, salience, internal, acc) do
     case :gb_trees.next(iterator) do
       {{^salience, ^internal, _order}, bucket, iterator} ->
@@ -194,26 +206,27 @@ defmodule Rete.Agenda do
 
   @doc "Every pending activation, in firing order."
   @spec to_list(t()) :: [Activation.t()]
-  def to_list(%__MODULE__{tree: tree}) do
-    tree
+  def to_list(%__MODULE__{buckets: buckets}) do
+    buckets
     |> :gb_trees.to_list()
     |> Enum.flat_map(fn {_key, bucket} -> Bucket.to_list(bucket) end)
   end
 
-  # Drops the key when the bucket empties. The tree records which buckets exist, so an
-  # empty one left behind would make `pop/1` hand back a bucket with nothing in it.
+  # Drops the key when its bucket empties, because a key is what records that a bucket
+  # exists. An empty one left behind would make `pop/1` hand back a bucket with nothing
+  # in it.
   #
   # Takes a bucket, not a list. Round-tripping through a list here would put an O(bucket)
   # cost on `pop/1`, which has to stay O(1) in the pending matches of one rule.
   defp store(%__MODULE__{} = agenda, key, remaining) do
-    tree =
+    buckets =
       if Bucket.empty?(remaining) do
-        :gb_trees.delete(key, agenda.tree)
+        :gb_trees.delete(key, agenda.buckets)
       else
-        :gb_trees.update(key, remaining, agenda.tree)
+        :gb_trees.update(key, remaining, agenda.buckets)
       end
 
-    %__MODULE__{agenda | tree: tree, size: agenda.size - 1}
+    %__MODULE__{agenda | buckets: buckets}
   end
 
   # Two activations are the same when they are the same rule, reached by the same match.
