@@ -2279,14 +2279,17 @@ defmodule Rete.EngineTest do
       assert Exception.message(error) =~ "Oscillate.grow"
     end
 
+    # Past the default on purpose. A depth under it would pass with the cap in
+    # place, and pin nothing. This costs about a third of a second, which is the
+    # price of covering the one option that turns the guard off.
     test "max_cycles: :infinity removes the cap" do
       session =
         [Bounded]
         |> Session.new()
-        |> Session.insert([{:limit, 5_000}, {:n, 0}])
+        |> Session.insert([{:limit, 120_000}, {:n, 0}])
         |> Session.fire_rules(max_cycles: :infinity)
 
-      assert {:n, 5_000} in Session.facts(session)
+      assert {:n, 120_000} in Session.facts(session)
     end
 
     # `fired >= nil` is false for every integer under Erlang term order, so an

@@ -996,6 +996,18 @@ A body that only computes facts is safe to write however you like. One that writ
 database, or calls a service, should be idempotent, and it should expect at-least-once
 execution.
 
+Raising `:concurrency` above its default of `1` is worth it only when the body is
+expensive: I/O, or real computation. A body that just builds a tuple costs about 1.5% of
+firing — and handing it to a task costs more than that.
+
+Two things follow from a body running on a task.
+
+`Logger.metadata` is not inherited. Read it before firing, if the body logs.
+
+The engine also copies the bindings to the task. This is free for scalars, but not for a
+**collection binding**: handing a 2,000-element list to each task made one benchmark 16×
+slower. See `docs/design/engine.md` §11.
+
 ### The return value must follow from the bindings
 
 Two runs of one body, on equal bindings, must return equal facts. Side effects are yours
@@ -1012,18 +1024,6 @@ tell which one belongs to the occurrence that left. The counts stay right, and t
 still drains to empty. But `Rete.Inspect.explain/1,2` names the wrong match for the fact.
 Read a clock or a counter **before** firing, and insert the value as a fact the rule
 matches on.
-
-Raising `:concurrency` above its default of `1` is worth it only when the body is
-expensive: I/O, or real computation. A body that just builds a tuple costs about 1.5% of
-firing — and handing it to a task costs more than that.
-
-Two things follow from a body running on a task.
-
-`Logger.metadata` is not inherited. Read it before firing, if the body logs.
-
-The engine also copies the bindings to the task. This is free for scalars, but not for a
-**collection binding**: handing a 2,000-element list to each task made one benchmark 16×
-slower. See `docs/design/engine.md` §11.
 
 ## Condition order
 
@@ -1061,7 +1061,7 @@ unbound.
 | limit | value | what happens |
 |---|---|---|
 | branches from one gate | 256 | `ArgumentError` at compile time, naming the gate |
-| activations per `fire_rules/2` | uncapped; `:max_cycles` to bound it | `RuntimeError` leading with the rules that fired most |
+| cycles per `fire_rules/2` | 100,000, or `:max_cycles` | `RuntimeError` leading with the rules that fired most |
 
 The branch limit is about compile time. Distribution is the one step that can explode: a
 conjunction of `k` disjunctions of `m` branches becomes `m^k`. Negation is linear, and it
