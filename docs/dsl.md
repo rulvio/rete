@@ -123,8 +123,8 @@ defrule symmetric({:edge, a, b}), do: {:edge, b, a}   # never settles
 ```
 
 Every occurrence it concludes is a new match, which concludes another occurrence.
-`fire_rules(session, max_cycles: n)` is how to catch this. It raises, and names the rules
-that fired most. The default is `:infinity`, which spins instead.
+`fire_rules/2` caps a call at `100_000` cycles, so this raises rather than spins, and the
+error names the rules that fired most. Pass `max_cycles: n` to catch it sooner.
 
 `derive/2` can create this where the two types do not look alike. A derived type reaches a
 condition written against its ancestor. So under `derive :premium, :customer`, a rule that
@@ -964,15 +964,16 @@ facts change is the engine's job, not yours.
 
 Two consequences surprise people:
 
-* **a conclusion cannot hold itself up.** If a rule's match already rests on the fact it
-  concludes, that fact does not get a second support. So retracting what you inserted
-  really does empty the session. `symmetric({:edge, a, b}) -> {:edge, b, a}` does not
-  leave two immortal facts behind. A rule with **no conditions** is the one exception: its
-  support is the root token rather than a fact, so its conclusion stays.
-* **a rule that concludes something its own left hand side matches on will loop.**
-  `fire_rules/2` runs to quiescence, and it does not cap activations unless you ask it to.
-  Pass `:max_cycles` for a cap — it defaults to `:infinity`. Give it an integer, and it
-  raises an error naming the rules that fired most.
+* **a conclusion cannot hold itself up.** Every fact a rule concludes rests on the
+  occurrence the match read, and that occurrence rests on the one before it. The chain ends
+  at what you asserted, so retracting what you inserted really does empty the session. A
+  rule with **no conditions** is the one exception: its support is the root token rather
+  than a fact, so its conclusion stays.
+* **a rule that concludes something its own left hand side matches on will loop.** The
+  chain above then has no end. `symmetric({:edge, a, b}) -> {:edge, b, a}` concludes a new
+  occurrence for every occurrence it reads. `fire_rules/2` caps this at `100_000` cycles
+  and raises an error naming the rules that fired most. Pass `:max_cycles` to catch it
+  sooner, or `:infinity` to remove the cap.
 
 The body may read only the variables the left hand side binds, on the path that reached
 it. It runs inside the ruleset module, so it may call that module's functions. Nothing
@@ -980,9 +981,9 @@ orders it against any other rule, except salience.
 
 ### A body may run more than once
 
-The engine truth-maintains the body's **return value**, so nothing gets concluded twice.
-It does not truth-maintain a **side effect**. A side effect can happen more often than the
-conclusions suggest, in two ways:
+The engine truth-maintains the body's **return value**. It does not truth-maintain a
+**side effect**. A side effect can happen more often than the conclusions suggest, in two
+ways:
 
 * retracting and reinserting the facts behind a match runs the body again, for that match.
 * under `fire_rules(session, concurrency: n)`, the bodies of one activation group run at
@@ -994,6 +995,23 @@ conclusions suggest, in two ways:
 A body that only computes facts is safe to write however you like. One that writes to a
 database, or calls a service, should be idempotent, and it should expect at-least-once
 execution.
+
+### The return value must follow from the bindings
+
+Two runs of one body, on equal bindings, must return equal facts. Side effects are yours
+to choose, but the value is not. The engine records what a body returned against the match
+that produced it, and two equal matches share that record. Two occurrences of one fact
+make two equal matches, so this is ordinary rather than rare.
+
+```elixir
+defrule audit({:order, id}), do: {:audit, id, System.unique_integer()}   # do not do this
+```
+
+Retracting one occurrence then takes back one of the two records, and the engine cannot
+tell which one belongs to the occurrence that left. The counts stay right, and the session
+still drains to empty. But `Rete.Inspect.explain/1,2` names the wrong match for the fact.
+Read a clock or a counter **before** firing, and insert the value as a fact the rule
+matches on.
 
 Raising `:concurrency` above its default of `1` is worth it only when the body is
 expensive: I/O, or real computation. A body that just builds a tuple costs about 1.5% of

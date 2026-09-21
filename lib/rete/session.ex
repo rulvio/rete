@@ -119,11 +119,11 @@ defmodule Rete.Session do
 
     * `:max_cycles` — how many **cycles** one call may fire. A cycle is one pass of the
       fire loop: one activation at the default concurrency, one whole activation group
-      above it. `:infinity` by default: the engine runs to quiescence, and an oscillating
-      ruleset spins rather than raising. Give it an integer to bound the call. A ruleset
-      that exceeds it raises with the rules that fired most. One that fires the whole
-      allowance and then settles is fine. See `docs/design/observability.md` §3 for how to
-      pick a number.
+      above it. `100_000` by default, which no settling ruleset has reached. A ruleset that
+      exceeds it raises with the rules that fired most. One that fires the whole allowance
+      and then settles is fine. Give it a smaller integer to catch a loop sooner, or
+      `:infinity` to remove the cap. See `docs/design/observability.md` §3 for how to pick
+      a number.
     * `:concurrency` — how many rule bodies of one activation group run at once. `1` by
       default, which fires them one at a time. Raise it when a body does I/O or real
       computation. The bodies of a group then run on tasks, and their conclusions are

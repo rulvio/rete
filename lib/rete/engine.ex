@@ -29,7 +29,10 @@ defmodule Rete.Engine do
   alias Rete.Network.Node
   alias Rete.Taxonomy
 
-  @default_max_cycles :infinity
+  # A rule that reads the type its own body concludes never settles, and nothing detects
+  # that shape. So the cap is what turns a hang into an error that names the rule. See
+  # `docs/design/observability.md` §3 for the number, and for what it costs either way.
+  @default_max_cycles 100_000
   @default_concurrency 1
   @default_timeout :infinity
 
@@ -194,10 +197,10 @@ defmodule Rete.Engine do
 
     * `:max_cycles` — how many **cycles** one call may fire. A cycle is one pass of the
       fire loop: one activation at the default concurrency, one whole activation group
-      above it. `:infinity` by default, so an oscillating ruleset spins rather than
-      raising. Firing that many and still having work pending raises with the rules that
-      fired most. Firing that many and settling is fine. See
-      `docs/design/observability.md` §3.
+      above it. `100_000` by default, so a ruleset that never settles raises instead of
+      spinning. Firing that many and still having work pending raises with the rules that
+      fired most. Firing that many and settling is fine. Pass `:infinity` to remove the
+      cap. See `docs/design/observability.md` §3.
     * `:concurrency` — how many rule bodies of one activation group run at once. `1` by
       default, which is the sequential path. Above `1`, the bodies of a group run on tasks
       and their conclusions are applied in group order. Worth raising only when a body is

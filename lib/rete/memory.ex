@@ -261,9 +261,9 @@ defmodule Rete.Memory do
 
   **Newest first.** `take_insertion/3` therefore gives back the newest batch, and the order
   is not observable. Every batch under one key is the conclusion of an equal match at one
-  node. A rule body is a pure function of its bindings, so those batches are equal. The
-  list used to be appended to, which cost a pass over it per activation — quadratic in the
-  occurrences of one fact.
+  node, and `docs/dsl.md` requires a body's return value to follow from its bindings. So
+  those batches are equal. The list used to be appended to, which cost a pass over it per
+  activation — quadratic in the occurrences of one fact.
   """
   @spec add_insertion(t(), node_id(), Token.t(), [term()]) :: t()
   def add_insertion(%__MODULE__{} = memory, node_id, token, facts) do
@@ -312,16 +312,15 @@ defmodule Rete.Memory do
   Empty for a fact the user asserted. A fact two rules concluded has two entries, and one
   rule may appear twice if it concluded the fact on two activations of the same match.
 
-  This is the index behind well-founded support. To read it is a map lookup, and that is
-  the purpose of it. Before, the engine recomputed the answer from every insertion record in
-  the session, for every conclusion that was already present.
+  This is the index behind `Rete.Inspect.explain/1,2`, which asks it once per matched fact.
+  To read it is a map lookup, and that is the purpose of it. Without the index, the answer
+  comes from a pass over every insertion record in the session.
 
-  This falls back to that recomputation when the index is not built, so a reader that asks
-  one time gets a correct answer without forcing a build on a session that would never need
-  one. **A caller that asks repeatedly must call `index_inserters/1` first, and keep what it
-  returns.** The fallback is a pass over every insertion record, so asking per fact without
-  the index is quadratic in the size of the session. `Rete.Inspect.explain/1,2` builds it
-  for that reason.
+  This falls back to that pass when the index is not built, so a reader that asks one time
+  gets a correct answer without forcing a build on a session that would never need one.
+  **A caller that asks repeatedly must call `index_inserters/1` first, and keep what it
+  returns.** Asking per fact without the index is quadratic in the size of the session.
+  `Rete.Inspect.explain/1,2` builds it for that reason.
   """
   @spec inserters(t(), term()) :: [inserter()]
   def inserters(%__MODULE__{inserters: nil, insertions: insertions}, fact) do

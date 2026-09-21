@@ -53,8 +53,8 @@ reach a listener, which follows from the two loops rather than from the list.
 Only two of them reach a listener outside a fire. `insert/2` and `retract/2` emit
 `:fact_inserted` and `:fact_retracted`, because they update working memory at once. One
 event per occurrence: a fact inserted twice emits two. Everything else happens inside
-`fire_rules/2`, which is the only call that propagates. That covers every `:propagated` event and every `:activation_*` one. See
-`engine.md` §2.
+`fire_rules/2`, which is the only call that propagates. That covers every `:propagated`
+event and every `:activation_*` one. See `engine.md` §2.
 
 That is what lets a listener see a whole settle. Attach it to a fresh session. No matching
 has happened yet, so the listener misses nothing.
@@ -185,33 +185,37 @@ here asks for a node id or a join key that only the compiler knows.
 
 ## 3. The loop guard
 
-`fire_rules/2` runs to quiescence. It caps cycles only when you ask it to, with
-`:max_cycles` — `:infinity` by default. It raises an error when the cap is hit.
+`fire_rules/2` fires until the agenda is empty. `:max_cycles` bounds that, and it is
+**100,000 by default**. The engine raises an error when the cap is hit, and the error names
+the rules that fired most. Pass `:infinity` to remove the cap.
 
 A **cycle** is one pass of the fire loop. At the default concurrency, one pass takes one
 activation. Above the default, one pass takes one whole activation group. The cap bounds
 passes, not activations. So raising `:concurrency` fires the same work in fewer, larger
 cycles, instead of consuming the allowance faster. See `engine.md` §11.
 
-**This is opt-in, not on by default** — the same call Clara makes. Its
+**The default is a cap, and Clara has none.** Its
 `clara.tools.loop-detector/with-loop-detection` wraps a session and takes `max-cycles` as
-a required argument, with no default anywhere.
+a required argument. This engine departs from Clara here, and 0.9.0 is where it did.
 
 A count cannot tell two cases apart. Twelve thousand activations could be four thousand
 facts moving through a three-rule chain. It could also be a loop that has gone round
-twelve thousand times. So any default is a guess about how much legitimate work is too
-much. That guess fails on the session that outgrows it: the engine returns an answer that
-is not late, but *wrong*, because it stopped part way through settling.
+twelve thousand times. So any cap is a guess about how much legitimate work is too much.
+That guess fails on the session that outgrows it, and the failure is loud: a
+`RuntimeError` on work that was fine, telling the caller to raise the limit.
 
-An uncapped run has the opposite failure. An oscillating ruleset spins with no output,
-until something interrupts it.
+An uncapped run fails the other way, and quietly. A ruleset that never settles spins with
+no output, and it grows working memory until something interrupts it. Nothing in the
+engine detects the shape that causes it, which `engine.md` §8 states. Before 0.9.0 the
+well-founded check made the commonest such rule settle on a truncated answer, so an
+uncapped default was survivable. That check is gone, so the rule now spins.
 
-Between a wrong answer and a visible hang, this engine chooses the hang. It hands the
-judgment to the caller, who knows whether they are running a test suite or a batch job.
+Between a false alarm that says what to do and a silent hang, this engine chooses the
+false alarm. A caller who knows their ruleset settles can still say `:infinity`.
 
 ### Choosing a number
 
-Set `:max_cycles` wherever a hang costs more than a false alarm: a test suite, a request
+Lower `:max_cycles` wherever a hang costs more than a false alarm: a test suite, a request
 handler, or the first run of a rule someone just wrote.
 
 The cost of setting it too high is whatever the worst runaway does before it trips. The
@@ -224,6 +228,12 @@ thousand activations:
 | 10,000 | 35 ms | 0.5 MB |
 | 100,000 | 270 ms | 46 MB |
 | 500,000 | 1.7 s | 230 MB |
+
+The default is the middle row, and the row above it is why. A **cycle is one activation**
+at the default concurrency. 10,000 of them is a batch of 4,000 facts moving through a
+three-rule chain, which `mix bench` does in "truth maintenance through a chain" with no
+loop in sight. The default has to clear ordinary settling work by a wide margin, and
+100,000 clears that scenario eight times over.
 
 Against that, the cost of setting it too low is a `RuntimeError` on work that was actually
 fine. The error tells you to raise the limit, so that mistake announces itself. A hang

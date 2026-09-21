@@ -2249,12 +2249,11 @@ defmodule Rete.EngineTest do
       end
     end
 
-    # The guard is opt-in. A count cannot separate a runaway from a large
-    # settling pass, so any default eventually raises on correct code — and a
-    # rules engine that stops part way through settling has returned an answer
-    # that is wrong, not late. 20,000 activations would have tripped both of the
-    # defaults this has had.
-    test "a long settling pass is not capped by default" do
+    # A count cannot separate a runaway from a large settling pass, so the
+    # default is a margin and not a judgment. 20,000 activations is a batch load
+    # through a short chain, which the cap must clear. A cap of 10,000 was tried
+    # before 0.1.0 and this tripped it, which is why the number is 100,000.
+    test "a long settling pass clears the default cap" do
       session =
         [Bounded]
         |> Session.new()
@@ -2264,7 +2263,23 @@ defmodule Rete.EngineTest do
       assert {:n, 20_000} in Session.facts(session)
     end
 
-    test "max_cycles: :infinity says the default out loud" do
+    # The other half of the same claim, and the reason the default is finite at
+    # all. Nothing detects a rule that reads what it writes, so without a cap
+    # this call never returns. The number is not asserted, only that one exists.
+    test "a ruleset that never settles raises without being asked to" do
+      error =
+        assert_raise RuntimeError, fn ->
+          [Oscillate]
+          |> Session.new()
+          |> Session.insert({:counter, 0})
+          |> Session.fire_rules()
+        end
+
+      assert Exception.message(error) =~ "without the agenda emptying"
+      assert Exception.message(error) =~ "Oscillate.grow"
+    end
+
+    test "max_cycles: :infinity removes the cap" do
       session =
         [Bounded]
         |> Session.new()

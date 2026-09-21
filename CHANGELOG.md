@@ -43,6 +43,19 @@ Multiplicity thus means one thing everywhere. `n` occurrences of a fact are `n` 
 * `Rete.Listener` no longer emits `{:fact_duplicated, fact}`. Every insert emits
   `:fact_inserted` and every retraction of a fact the session holds emits `:fact_retracted`,
   so there is no longer a case where nothing propagates.
+* **`:max_cycles` defaults to `100_000`, and not to `:infinity`.** A rule that reads the
+  type its own body concludes used to settle, because the check below made it. It now
+  spins, and a cap is what turns that into an error naming the rule. A cycle is one
+  activation at the default concurrency, so the number is a wide margin over ordinary
+  settling work — eight times the largest scenario in `bench/run.exs`. A settling pass
+  that exceeds it raises, and the error says to raise the limit. Pass
+  `max_cycles: :infinity` for the old behavior. `docs/design/observability.md` §3 gives
+  the cost either way.
+* A rule body's **return value** must follow from its bindings. Two equal matches share
+  one truth-maintenance record, and two occurrences of a fact make two equal matches. A
+  body returning a fresh value on each run leaves `Rete.Inspect.explain/1,2` naming the
+  wrong match. Counts and draining are not affected. Side effects are unaffected, and
+  `docs/dsl.md` states the rule.
 
 ### Removed
 
@@ -65,8 +78,9 @@ Multiplicity thus means one thing everywhere. `n` occurrences of a fact are `n` 
 
   **A ruleset that settles today is unaffected.** The check only ever fired where the
   conclusion was in its own support closure, and re-driving that closure is what keeps a
-  ruleset from settling. Use `fire_rules(session, max_cycles: n)` to catch one that does not,
-  and see `docs/dsl.md` for how to repeat a fact a bounded number of times.
+  ruleset from settling. One that does not settle now raises at `:max_cycles`, which the
+  section above covers. See `docs/dsl.md` for how to repeat a fact a bounded number of
+  times.
 
 ### Fixed
 

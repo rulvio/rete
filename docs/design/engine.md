@@ -446,6 +446,14 @@ are the ones that actually catch engine bugs:
   node takes its elements from one alpha, so this is exact. It catches a node that
   propagated an element twice and a node that dropped one, which is the failure the fact
   counts alone are slowest to show.
+
+  **This covers `elements` and not `tokens`,** and no invariant states a token count
+  directly. A token is a combination across conditions, so the count at a node is a product
+  the memory alone cannot check. A duplicated token is caught one step later instead: it
+  fires a production once too often, which gives a conclusion one support too many. The
+  oracle in `Rete.PropertyTest` compares every support count against a model of the
+  ruleset, so it sees that. Before 0.9.0 a direct check was possible here, because no
+  memory was allowed to hold the same token twice.
 * **round trip.** Insert X, fire, retract X, fire, and compare against the state before.
   Exact while the session holds nothing twice. Once something is held twice, the comparison
   is up to arrival order. A bucket gives back the *oldest* occurrence of an equal value, so
@@ -489,11 +497,12 @@ node.rhs |> apply([node.hash, activation.token.bindings])  # pure: hash + frozen
 |> check_facts!(state, node, token)                         # reads the immutable taxonomy
 ```
 
-All three lines run on a task. Applying what they return does not, because one activation's
-conclusions can retract the support of another. `Rete.Agenda.remove/2`'s `:removed`/`:missing`
-split detects exactly that case. So the engine applies conclusions
-one at a time, with a `drain()` between each. A rule still sees a settled network this
-way.
+Only the first two lines run on a task. `check_facts!/4` reads the taxonomy off the state,
+so it runs where the conclusions are applied. Applying them is not parallel either,
+because one activation's conclusions can retract the support of another.
+`Rete.Agenda.remove/2`'s `:removed`/`:missing` split detects exactly that case. So the
+engine applies conclusions one at a time, with a `drain()` between each. A rule still sees
+a settled network this way.
 
 The task closure captures `{rhs, hash, bindings}`, and nothing else. Closing over the
 state or the network would copy the whole compiled network into every task.
@@ -648,22 +657,22 @@ the rule instead.
 
 * **A rule that reads the type its own body concludes does not settle.** Every occurrence it
   inserts is a match of its own, and that match inserts another. The engine does not detect
-  this, and Clara does not either. `:max_cycles` is `:infinity` by default, so such a ruleset
-  spins rather than raising. See §8, and `docs/dsl.md` for how to bound a rule that has to
-  repeat a fact.
+  this, and Clara does not either. `:max_cycles` catches it after the fact, at 100,000
+  cycles by default. See §8, and `docs/dsl.md` for how to bound a rule that has to repeat
+  a fact.
 * **The loop guard counts activations, not activation-group transitions.** Clara's signal
   is better in principle — a ruleset that legitimately fires 50,000 activations in one
   settling pass is fine. But Clara's signal misses a loop confined to a single salience
   level, and that is the common runaway. See `observability.md` §3.
 
-  This gap is resolved by not guessing at a default. The default cap was 10,000, until
-  `mix bench` reached it with 4,000 facts moving through a three-rule chain — 12,000
-  activations, with no loop in sight. The guard is now `:infinity` by default, the same
-  opt-in call Clara makes. A count cannot separate a runaway from a large settling pass.
-  So any default eventually fails correct code, and stopping part way through settling
-  returns an answer that is wrong, not just late. The cost: an oscillating ruleset now
-  spins until something interrupts it. `observability.md` §3 carries the numbers for
-  choosing a cap where that matters.
+  A count cannot separate a runaway from a large settling pass, so the default is a margin
+  rather than a judgment. A cap of 10,000 was tried before 0.1.0, and `mix bench` reached
+  it with 4,000 facts moving through a three-rule chain — 12,000 activations, with no loop
+  in sight. The guard was then `:infinity` up to 0.8.0, the same opt-in call Clara makes,
+  because the well-founded check made the commonest runaway settle. 0.9.0 removed that
+  check, so the same rule now spins, and the default is 100,000 — eight times that bench
+  scenario. The remaining cost is a false alarm on a settling pass larger than any measured
+  here, and the error says to raise the limit. `observability.md` §3 carries the numbers.
 * **An unfired session answers no query. This diverges from Clara.** Clara's
   `test_negation/test-simple-negation` queries `empty-session`. Nobody inserted into it,
   and nobody fired it. The test expects one row. Clara plants the root token when it builds
