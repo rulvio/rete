@@ -155,7 +155,7 @@ defmodule Rete.ObservabilityTest do
       assert {:derived, %{rule: {Rules, :escalate}}} = retracted[{:escalated, 1}]
     end
 
-    test "a duplicate insert is reported and propagates nothing" do
+    test "every occurrence of a fact is reported, and every one propagates" do
       session =
         [Rules]
         |> Session.new()
@@ -163,10 +163,17 @@ defmodule Rete.ObservabilityTest do
         |> Session.insert([{:order, 1, 250}, {:order, 1, 250}])
         |> Session.fire_rules()
 
-      assert [{:fact_duplicated, {:order, 1, 250}}] ==
-               Listener.Collect.by_tag(session, :fact_duplicated)
+      inserted =
+        session
+        |> Listener.Collect.by_tag(:fact_inserted)
+        |> Enum.filter(fn {_tag, fact, _origin} -> fact == {:order, 1, 250} end)
 
-      assert 1 == session |> Listener.Collect.by_tag(:activation_fired) |> Enum.count(&flagged?/1)
+      assert [
+               {:fact_inserted, {:order, 1, 250}, :asserted},
+               {:fact_inserted, {:order, 1, 250}, :asserted}
+             ] == inserted
+
+      assert 2 == session |> Listener.Collect.by_tag(:activation_fired) |> Enum.count(&flagged?/1)
     end
 
     defp flagged?({:activation_fired, _source, _token, facts}), do: {:flagged, 1} in facts

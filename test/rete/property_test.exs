@@ -5,12 +5,13 @@ defmodule Rete.PropertyTest do
 
   Two things make these tests worth more than the example-based suite.
 
-  The first is the **lens**. `Rete.Session.facts/1` is a set, so a node that
-  propagates a token it had already propagated collapses into a count bump and
-  looks perfect. The corruption only surfaces later, as a fact that survives the
-  retraction that should have removed it. Everything here compares
-  `session.state.memory` — the fact *multiset*, and beneath it the elements,
-  tokens, collection groups and truth-maintenance records.
+  The first is the **lens**. `Rete.Session.facts/1` answers what a session holds,
+  and not how it holds it. A node that propagates a token it had already
+  propagated thus reads there as one more occurrence of an ordinary fact. The
+  corruption only surfaces later, as a fact that survives the retraction that
+  should have removed it. Everything here compares `session.state.memory` — the
+  fact *multiset*, and beneath it the elements, tokens, collection groups and
+  truth-maintenance records.
 
   Two memories built from the same facts in different orders are not `==`,
   because a node's element list is appended to as facts arrive, and a collection
@@ -179,28 +180,34 @@ defmodule Rete.PropertyTest do
   # What the ruleset means over a fact multiset: the asserted facts with their
   # multiplicities, plus one support per match of every rule.
   defp expected(multiset) do
-    Map.merge(Enum.frequencies(multiset), derived(Enum.uniq(multiset)), fn _f, a, b -> a + b end)
+    Map.merge(Enum.frequencies(multiset), derived(multiset), fn _f, a, b -> a + b end)
   end
 
   # The model: one comprehension per rule of the ruleset under test, written out
   # rather than derived, because a model that shared the engine's structure
   # would share its bugs.
+  #
+  # Every list below is a multiset, and nothing dedups one. Each occurrence of a
+  # fact is a match of its own, so two equal facts make twice the matches,
+  # exactly as a cross product of two multisets would. The one `Enum.uniq/1`
+  # left is in `stock/3`, over a collection's group keys, which are distinct by
+  # definition. See the comment there.
   # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
-  defp derived(set) do
-    thresholds = for {:threshold, t} <- set, do: t
-    orders = for {:order, c, a} <- set, do: {c, a}
-    refunds = for {:refund, c} <- set, do: c
-    caps = for {:cap, c, l} <- set, do: {c, l}
-    depots = for {:depot, d} <- set, do: d
-    items = for {:item, d, s, _ref} <- set, do: {d, s}
-    holds = for {:hold, d, s} <- set, do: {d, s}
-    branches = for({:gold, c} <- set, do: c) ++ for {:silver, c} <- set, do: c
+  defp derived(multiset) do
+    thresholds = for {:threshold, t} <- multiset, do: t
+    orders = for {:order, c, a} <- multiset, do: {c, a}
+    refunds = for {:refund, c} <- multiset, do: c
+    caps = for {:cap, c, l} <- multiset, do: {c, l}
+    depots = for {:depot, d} <- multiset, do: d
+    items = for {:item, d, s, _ref} <- multiset, do: {d, s}
+    holds = for {:hold, d, s} <- multiset, do: {d, s}
+    branches = for({:gold, c} <- multiset, do: c) ++ for {:silver, c} <- multiset, do: c
 
     # `derive :premium, :customer` and `derive :customer, :party`, so each of
     # these facts is a separate match of the condition written against the
     # ancestor. Two of them for one id is two supports, not one.
-    customers = for({:customer, c} <- set, do: c) ++ for {:premium, c} <- set, do: c
-    parties = for({:party, c} <- set, do: c) ++ customers
+    customers = for({:customer, c} <- multiset, do: c) ++ for {:premium, c} <- multiset, do: c
+    parties = for({:party, c} <- multiset, do: c) ++ customers
 
     flagged = for t <- thresholds, {c, a} <- orders, a > t, do: {:flagged, c, a}
 
@@ -211,7 +218,7 @@ defmodule Rete.PropertyTest do
 
     Enum.frequencies(
       flagged ++
-        for({:flagged, c, _} <- Enum.uniq(flagged), do: {:escalated, c}) ++
+        for({:flagged, c, _} <- flagged, do: {:escalated, c}) ++
         for(c <- customers, do: {:loyalty, c, Enum.count(orders, &(elem(&1, 0) == c))}) ++
         for(c <- customers, not has_order?(orders, c), do: {:dormant, c}) ++
         for(p <- markers, do: {@marker, %{pid: p}}) ++
@@ -227,6 +234,10 @@ defmodule Rete.PropertyTest do
   # one that creates them: a hold whose sku no item mentions produces nothing.
   # The second collection joins on the sku the first bound, introduces no
   # variable of its own and so propagates `[]` for a group with no holds.
+  #
+  # `Enum.uniq/1` over the skus, and nowhere else here. A sku is a **group key**,
+  # so two items of one sku are two members of one group, not two groups. A
+  # duplicated depot is still two matches, because `depots` keeps its duplicates.
   defp stock(depots, items, holds) do
     for d <- depots,
         sku <- Enum.uniq(for {id, sku} <- items, id == d, do: sku) do
@@ -262,23 +273,35 @@ defmodule Rete.PropertyTest do
   # --- 1. insert/retract symmetry -----------------------------------------------------------
 
   describe "insert then retract" do
-    property "inserting and retracting an extra fact restores the session exactly" do
+    property "inserting and retracting an extra fact restores the session" do
       check all(facts <- multiset(), extra <- fact(), max_runs: 60) do
         base = build(facts)
+        grown = base |> Session.insert(extra) |> Session.fire_rules()
+        cycled = grown |> Session.retract(extra) |> Session.fire_rules()
 
-        cycled =
-          base
-          |> Session.insert(extra)
-          |> Session.fire_rules()
-          |> Session.retract(extra)
-          |> Session.fire_rules()
-
-        # Exact, not canonical: the element the extra fact created was stored
-        # and then removed, so even arrival order has to come back. Compared as
-        # a dump, because a bucket that has taken a retraction carries a
-        # tombstone until it compacts — invisible in what the session holds, and
-        # pinned separately by the bucket invariant below.
-        assert Rete.Memory.dump(base.state.memory) == Rete.Memory.dump(cycled.state.memory)
+        # **Exact** while the session holds nothing twice: every element the
+        # extra fact created was appended and then removed, so even arrival
+        # order has to come back. Compared as a dump, because a bucket that has
+        # taken a retraction carries a tombstone until it compacts — invisible
+        # in what the session holds, and pinned separately by the bucket
+        # invariant below.
+        #
+        # **Canonical** once anything is held twice, and that is the semantics
+        # rather than a weakness. `Rete.Bucket.take/2` removes the *oldest*
+        # occurrence of an equal value, which rotates the bucket instead of
+        # undoing the append. Nothing can pick out "the one just added", because
+        # two occurrences of one fact are equal terms, and nothing downstream can
+        # tell the two apart either. `docs/design/engine.md` §7 says arrival
+        # order is not a contract.
+        #
+        # The grown session is what decides, not the base. A new fact can
+        # conclude something the base already held once, and that is a second
+        # occurrence the base cannot show.
+        if Enum.any?(grown.state.memory.facts, fn {_fact, held} -> held > 1 end) do
+          assert canon(base) == canon(cycled)
+        else
+          assert dump(base) == dump(cycled)
+        end
       end
     end
 
@@ -451,26 +474,29 @@ defmodule Rete.PropertyTest do
       end
     end
 
-    property "no match ever inserts twice, and no memory holds a duplicate" do
-      # The direct form of "a node propagated a token it had already
-      # propagated". One match at one production owns one batch of facts. Two
-      # batches under one token is the support imbalance itself, before it has
-      # had time to disguise itself as a count.
+    property "a node holds one element for each occurrence of a fact, and no more" do
+      # The direct form of "a node propagated an element it had already
+      # propagated", and of losing one. An element is a fact plus the bindings
+      # one alpha read off it, and a beta node takes its elements from one alpha.
+      # So the occurrences of an element at a node are the occurrences of its
+      # fact in working memory — no fewer, and not one more.
+      #
+      # This is the check that catches the imbalance before it has had time to
+      # disguise itself as a count. `insertions` is left to the two properties
+      # above. A match may now own several batches, because two equal tokens at
+      # one production are two matches that the store cannot tell apart.
       check all(facts <- multiset(), max_runs: 60) do
         memory =
           facts |> build() |> Map.fetch!(:state) |> Map.fetch!(:memory) |> Rete.Memory.dump()
 
-        for {node_id, by_token} <- memory.insertions, {token, batches} <- by_token do
-          assert length(batches) == 1,
-                 "node #{inspect(node_id)} inserted #{length(batches)} batches for one match: " <>
-                   inspect(token)
-        end
+        for {node_id, by_key} <- memory.elements,
+            {key, list} <- by_key,
+            {element, held} <- Enum.frequencies(list) do
+          occurrences = Map.fetch!(memory.facts, element.fact)
 
-        for store <- [memory.elements, memory.tokens],
-            {node_id, by_key} <- store,
-            {key, list} <- by_key do
-          assert list == Enum.uniq(list),
-                 "node #{inspect(node_id)} holds a duplicate under #{inspect(key)}"
+          assert held == occurrences,
+                 "node #{inspect(node_id)} holds #{held} of #{inspect(element.fact)} under " <>
+                   "#{inspect(key)}, which the session holds #{occurrences} times"
         end
       end
     end
@@ -478,22 +504,23 @@ defmodule Rete.PropertyTest do
     property "the inserters index says exactly what the insertion records say" do
       # `inserters` is `insertions` turned around. It is built on first use and
       # maintained in step after that, which means it can drift in a way nothing
-      # else notices: the engine reads it only for a conclusion that is already
-      # present, so a stale entry stays invisible until the one ruleset that
-      # re-concludes something trips over it. Rebuild it the slow way and compare,
-      # after retractions have had a chance to leave one behind.
+      # else notices: only `Rete.Inspect` reads it, so a stale entry stays
+      # invisible until somebody explains a session a second time. Rebuild it the
+      # slow way and compare, after retractions have had a chance to leave one
+      # behind.
       #
-      # `index_inserters/1` returns the memory unchanged when the session already
-      # built one, so this checks the *maintained* index wherever the run reached
-      # for it, and a fresh build where it never did. `Everything` re-concludes —
-      # two thresholds under one order flag the same fact twice — so the
-      # maintained path is the usual one here.
+      # Both lifecycles, because they run different code. `:fresh` never builds
+      # until the end, so every insert and retract before that is a no-op against
+      # a `nil` index and the whole thing comes from one pass over the records.
+      # `:maintained` builds first, exactly as reading a session with
+      # `Rete.Inspect` does, so the retraction below goes through `index_drop/3`
+      # instead. Only `:maintained` can drift.
       check all(facts <- multiset(), facts != [], max_runs: 60) do
-        session = build(facts)
-
-        for dropped <- Enum.uniq(facts) do
+        for lifecycle <- [:fresh, :maintained], dropped <- Enum.uniq(facts) do
           memory =
-            session
+            facts
+            |> build()
+            |> then(&if lifecycle == :maintained, do: explained(&1), else: &1)
             |> Session.retract(dropped)
             |> Session.fire_rules()
             |> Map.fetch!(:state)
@@ -501,9 +528,17 @@ defmodule Rete.PropertyTest do
             |> Rete.Memory.index_inserters()
 
           assert rebuilt_inserters(memory) == memory.inserters,
-                 "the index disagrees with the records after retracting #{inspect(dropped)}"
+                 "the #{lifecycle} index disagrees with the records after " <>
+                   "retracting #{inspect(dropped)}"
         end
       end
+    end
+
+    # A session whose index is built, which is what a session somebody has read
+    # with `Rete.Inspect` is. Everything after this maintains the index rather
+    # than leaving it `nil`.
+    defp explained(%Session{state: %{memory: %Rete.Memory{} = memory} = state} = session) do
+      %Session{session | state: %{state | memory: Rete.Memory.index_inserters(memory)}}
     end
 
     property "an unbuilt index answers the same as a built one" do
@@ -521,7 +556,7 @@ defmodule Rete.PropertyTest do
         for fact <- Rete.Memory.facts(memory) do
           assert Enum.sort(Rete.Memory.inserters(unbuilt, fact)) ==
                    Enum.sort(Rete.Memory.inserters(built, fact)),
-                 "the scan and the index disagree about #{inspect(fact)}"
+                 "the scan and the index disagree about who inserted #{inspect(fact)}"
         end
       end
     end
@@ -810,14 +845,17 @@ defmodule Rete.PropertyTest do
   # --- queries follow the same facts ------------------------------------------------------------------
 
   describe "queries" do
+    # One row per match, and a fact held twice is matched twice. So the oracle
+    # repeats a row as many times as the multiset holds the fact behind it.
+    # Reading the keys alone would ask for one row per distinct fact, which is a
+    # different claim and a weaker one.
     property "a query returns exactly the matches the rules give it" do
       check all(facts <- multiset(), max_runs: 40) do
         wanted =
           facts
           |> expected()
-          |> Map.keys()
           |> Enum.flat_map(fn
-            {:flagged, cid, amt} -> [{cid, amt}]
+            {{:flagged, cid, amt}, held} -> List.duplicate({cid, amt}, held)
             _ -> []
           end)
           |> Enum.sort()

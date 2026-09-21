@@ -405,7 +405,7 @@ defmodule Rete.EngineTest do
 
     # Changing one group must leave the others untouched. A node that re-sends
     # every group on every change gives the unchanged ones a second support, and
-    # the facts look right until something is retracted and refuses to go.
+    # a third occurrence of the fact is what that would look like here.
     test "changing one group does not re-send the others" do
       session =
         run([Grouped], [
@@ -414,7 +414,8 @@ defmodule Rete.EngineTest do
           {:order, 1, :tue, 20}
         ])
 
-      assert [{:per_day, 1, 1, 0}] == derived(session, :per_day)
+      # Two groups of one order each, so two matches that agree on their answer.
+      assert [{:per_day, 1, 1, 0}, {:per_day, 1, 1, 0}] == derived(session, :per_day)
 
       session = session |> Session.insert({:order, 1, :mon, 30}) |> Session.fire_rules()
       assert [{:per_day, 1, 1, 0}, {:per_day, 1, 2, 0}] == derived(session, :per_day)
@@ -717,13 +718,15 @@ defmodule Rete.EngineTest do
       assert [{:tagged, 1, 10}, {:tagged, 2, 20}] == derived(session, :tagged)
     end
 
-    test "a fact matching both branches does not double the conclusion" do
+    test "a fact matching both branches is two matches, and two supports" do
       session = run([Or], [{:gold, 1}, {:silver, 1}, {:order, 1, 10}])
 
-      assert [{:tagged, 1, 10}] == derived(session, :tagged)
+      # Each branch is a match of its own, so the rule concludes the same fact
+      # twice. The two branches must not collapse into one match, and must not
+      # invent a third.
+      assert [{:tagged, 1, 10}, {:tagged, 1, 10}] == derived(session, :tagged)
 
-      # Two branches matched, so the conclusion has two supports and needs both
-      # to go before it does.
+      # Two supports, so the conclusion needs both to go before it does.
       session = session |> Session.retract({:gold, 1}) |> Session.fire_rules()
       assert [{:tagged, 1, 10}] == derived(session, :tagged)
 
@@ -774,14 +777,17 @@ defmodule Rete.EngineTest do
       assert Session.settled?(Session.fire_rules(retracted))
     end
 
-    # A duplicate bumps a count and queues nothing, so it cannot unsettle a session that
-    # was already settled. The `:fact_duplicated` event says the same thing to a listener.
-    test "settled?/1 stays true when an insert queues nothing" do
+    # An insert of a fact the session already holds is a second occurrence of it, and a
+    # second occurrence has matches of its own to make. So it unsettles a settled session
+    # in the same way a new fact does. Retracting one that is not there is the only call
+    # that queues nothing, and the test above it covers that.
+    test "settled?/1 goes false for a second occurrence, as for a new fact" do
       settled =
         Session.new([Deferred]) |> Session.insert({:cust, 1}) |> Session.fire_rules()
 
-      assert Session.settled?(Session.insert(settled, {:cust, 1}))
+      refute Session.settled?(Session.insert(settled, {:cust, 1}))
       refute Session.settled?(Session.insert(settled, {:cust, 2}))
+      assert Session.settled?(Session.retract(settled, {:cust, 99}))
     end
 
     # `docs/design/engine.md` §2 claims this. The queued insert and the queued retract keep
@@ -1408,11 +1414,11 @@ defmodule Rete.EngineTest do
       end
     end
 
-    # Two rules independently concluding the same thing is not the same as one
-    # rule concluding it twice. Removing one support must leave the fact standing.
+    # Two rules independently concluding the same thing. Each match holds its own
+    # occurrence, so removing one support must leave the fact standing.
     test "a fact with two supports survives losing one" do
       session = run([TwoSupports], [{:x, 1}, {:y, 1}])
-      assert [{:derived, 1}] == derived(session, :derived)
+      assert [{:derived, 1}, {:derived, 1}] == derived(session, :derived)
 
       session = session |> Session.retract({:x, 1}) |> Session.fire_rules()
       assert [{:derived, 1}] == derived(session, :derived)
@@ -1433,12 +1439,35 @@ defmodule Rete.EngineTest do
     end
   end
 
-  # --- support has to be well founded, not just counted --------------------------------------
+  # --- rules that feed themselves ---------------------------------------------------------
 
-  describe "self supporting conclusions" do
+  describe "rules that feed themselves" do
     defp memories(session) do
       memory = session.state.memory
       Map.take(memory, [:facts, :elements, :tokens, :accum, :insertions, :inserters])
+    end
+
+    # Every ruleset below concludes a fact its own left hand side rests on. Each
+    # occurrence it concludes is a new match, which concludes another occurrence, so
+    # none of them reaches quiescence. `:max_cycles` is how a caller catches that.
+    #
+    # The engine used to drop such a conclusion, and these rulesets used to settle on a
+    # truncated answer. That check went in 0.9.0, because a new occurrence is not the
+    # fact itself: it rests on the occurrence before it, and that chain is grounded. See
+    # `docs/design/engine.md` §8.
+    defp runs_away!(module, facts, rule) do
+      error =
+        assert_raise RuntimeError, fn ->
+          [module]
+          |> Session.new()
+          |> Session.insert(facts)
+          |> Session.fire_rules(max_cycles: 200)
+        end
+
+      message = Exception.message(error)
+
+      assert message =~ "without the agenda emptying"
+      assert message =~ rule, "the error does not name #{rule}:\n#{message}"
     end
 
     defmodule Symmetric do
@@ -1449,31 +1478,8 @@ defmodule Rete.EngineTest do
       end
     end
 
-    # `{:edge, 2, 1}` is concluded from `{:edge, 1, 2}` and then concludes it
-    # right back. Counting that as a support gives the user's own fact a second
-    # one, and the count can never reach zero again.
-    test "a conclusion that re-derives its premise does not support it" do
-      session = run([Symmetric], [{:edge, 1, 2}])
-
-      assert [{:edge, 1, 2}, {:edge, 2, 1}] == session |> Session.facts() |> Enum.sort()
-      assert %{{:edge, 1, 2} => 1, {:edge, 2, 1} => 1} == session.state.memory.facts
-    end
-
-    test "retracting the only asserted fact empties every memory" do
-      session = run([Symmetric], [{:edge, 1, 2}])
-      session = session |> Session.retract({:edge, 1, 2}) |> Session.fire_rules()
-
-      assert [] == Session.facts(session)
-
-      assert %{
-               facts: %{},
-               elements: %{},
-               tokens: %{},
-               accum: %{},
-               insertions: %{},
-               inserters: nil
-             } ==
-               memories(session)
+    test "a rule that re-derives its own premise does not settle" do
+      runs_away!(Symmetric, [{:edge, 1, 2}], "Symmetric.symmetric")
     end
 
     defmodule Idem do
@@ -1484,14 +1490,9 @@ defmodule Rete.EngineTest do
       end
     end
 
-    # The degenerate case: a rule concluding exactly what it matched. One
-    # insertion must still take one retraction.
-    test "a rule concluding its own premise leaves it singly held" do
-      session = run([Idem], [{:a, 1}])
-      assert %{{:a, 1} => 1} == session.state.memory.facts
-
-      session = session |> Session.retract({:a, 1}) |> Session.fire_rules()
-      assert [] == Session.facts(session)
+    # The degenerate case: a rule concluding exactly what it matched.
+    test "a rule concluding exactly its own premise does not settle" do
+      runs_away!(Idem, [{:a, 1}], "Idem.idem")
     end
 
     defmodule Cycle do
@@ -1510,26 +1511,25 @@ defmodule Rete.EngineTest do
       end
     end
 
-    # Not a special case of one or two steps: the support of a match is
-    # everything it rests on, however far back that goes.
-    test "a longer derivation cycle is not self supporting either" do
-      session = run([Cycle], [{:a, 1}])
+    # Not a special case of one or two steps. The loop is through three rules, and no
+    # single rule reads what it wrote.
+    test "a derivation cycle across three rules does not settle" do
+      runs_away!(Cycle, [{:a, 1}], "Cycle.")
+    end
 
-      assert %{{:a, 1} => 1, {:b, 1} => 1, {:c, 1} => 1} == session.state.memory.facts
+    # A collection match rests on every fact it gathered, not on the list. Concluding a
+    # member changes the group, so the node retracts the old match and sends a new one,
+    # and this oscillates rather than growing.
+    defmodule Gathered do
+      use Rete.Ruleset
 
-      session = session |> Session.retract({:a, 1}) |> Session.fire_rules()
+      defrule regather({:batch, id}, items = [{:item, id, _n}]) do
+        for {:item, _, n} <- items, do: {:item, id, n}
+      end
+    end
 
-      assert [] == Session.facts(session)
-
-      assert %{
-               facts: %{},
-               elements: %{},
-               tokens: %{},
-               accum: %{},
-               insertions: %{},
-               inserters: nil
-             } ==
-               memories(session)
+    test "a collection re-concluding one of its own members does not settle" do
+      runs_away!(Gathered, [{:batch, 1}, {:item, 1, 10}], "Gathered.regather")
     end
 
     defmodule Mirror do
@@ -1540,9 +1540,9 @@ defmodule Rete.EngineTest do
       end
     end
 
-    # The other side of the same coin: a conclusion the rule does *not* rest on
-    # is a genuine second support, even when the fact is already there. Rejecting
-    # it would be as wrong as counting a circular one.
+    # The other side of the coin, and the reason none of this is about "a fact that is
+    # already there". This rule does not rest on what it concludes, so it settles, and
+    # the user's own copy is a second support rather than a loop.
     test "a conclusion the user also asserted still has two supports" do
       session = run([Mirror], [{:seed, 1}, {:mirror, 1}])
       assert %{{:seed, 1} => 1, {:mirror, 1} => 2} == session.state.memory.facts
@@ -1553,23 +1553,37 @@ defmodule Rete.EngineTest do
       session = session |> Session.retract({:seed, 1}) |> Session.fire_rules()
       assert [] == Session.facts(session)
     end
+  end
 
-    # A collection match rests on every fact it gathered, not on the list.
-    defmodule Gathered do
+  # --- repeating a fact on purpose ---------------------------------------------------------
+
+  describe "bounded repetition" do
+    # How to insert one fact n times and still settle: carry the bound in a **different**
+    # fact, and let the rule rest on that one. The rule never reads `{:x}`, so a new
+    # occurrence of `{:x}` makes no new match, and the counter is what stops it.
+    defmodule Repeat do
       use Rete.Ruleset
 
-      defrule regather({:batch, id}, items = [{:item, id, _n}]) do
-        for {:item, _, n} <- items, do: {:item, id, n}
+      defrule fill({:n, i} when i < 5) do
+        [{:x}, {:n, i + 1}]
       end
     end
 
-    test "a collection re-concluding one of its own members does not support it" do
-      session = run([Gathered], [{:batch, 1}, {:item, 1, 10}])
-      assert %{{:batch, 1} => 1, {:item, 1, 10} => 1} == session.state.memory.facts
+    test "a counter bounds how many occurrences a rule inserts" do
+      session = run([Repeat], [{:n, 0}])
 
-      session = session |> Session.retract([{:batch, 1}, {:item, 1, 10}]) |> Session.fire_rules()
+      assert 5 == session.state.memory.facts[{:x}]
+      assert 5 == session |> Session.facts() |> Enum.count(&(&1 == {:x}))
+    end
 
-      assert [] == Session.facts(session)
+    # The chain the removed check used to forbid, end to end. Occurrence k of `{:n, k}`
+    # holds up occurrence k + 1, down to the one the caller asserted. Retracting that one
+    # has to unwind all five, which is the whole argument for dropping the check.
+    test "retracting the seed unwinds every occurrence it supports" do
+      session = run([Repeat], [{:n, 0}])
+      drained = session |> Session.retract({:n, 0}) |> Session.fire_rules()
+
+      assert [] == Session.facts(drained)
 
       assert %{
                facts: %{},
@@ -1579,7 +1593,67 @@ defmodule Rete.EngineTest do
                insertions: %{},
                inserters: nil
              } ==
-               memories(session)
+               memories(drained)
+    end
+
+    # The same bound, but the rule also reads the fact it repeats. Every occurrence it
+    # inserts is a new match, and those pair with every counter, so the guard cannot
+    # close it. This is the shape to reach for `Repeat` instead of.
+    defmodule RepeatReadingItself do
+      use Rete.Ruleset
+
+      defrule fill({:x}, {:n, i} when i < 5) do
+        [{:x}, {:n, i + 1}]
+      end
+    end
+
+    test "a rule that also reads the fact it repeats does not settle" do
+      runs_away!(RepeatReadingItself, [{:x}, {:n, 0}], "RepeatReadingItself.fill")
+    end
+
+    # A recursive rule has to read its own type, so it takes the other form. The bound goes
+    # **in** the fact, and a further step is then a different fact. This is the
+    # `docs/dsl.md` example, pinned here so that the guidance cannot rot.
+    defmodule Reachable do
+      use Rete.Ruleset
+
+      defrule base({:edge, x, y}) do
+        {:path, x, y, 1}
+      end
+
+      defrule step({:path, x, y, n} when n < 4, {:edge, ^y, z}) do
+        {:path, x, z, n + 1}
+      end
+    end
+
+    # One self-edge is what makes the unbounded form spin forever. The hop count is what
+    # stops this one.
+    test "a hop count settles a recursive rule over a self edge" do
+      session = run([Reachable], [{:edge, 1, 1}])
+
+      assert [{:path, 1, 1, 1}, {:path, 1, 1, 2}, {:path, 1, 1, 3}, {:path, 1, 1, 4}] ==
+               session
+               |> Session.facts()
+               |> Enum.filter(&match?({:path, _, _, _}, &1))
+               |> Enum.sort()
+    end
+
+    test "a hop count settles a recursive rule over a cyclic graph" do
+      session = run([Reachable], [{:edge, 1, 2}, {:edge, 2, 3}, {:edge, 3, 1}])
+
+      reachable =
+        session
+        |> Session.facts()
+        |> Enum.flat_map(fn
+          {:path, x, y, _n} -> [{x, y}]
+          _ -> []
+        end)
+        |> Enum.uniq()
+        |> Enum.sort()
+
+      # Every node reaches every node, itself included, within four hops.
+      assert [{1, 1}, {1, 2}, {1, 3}, {2, 1}, {2, 2}, {2, 3}, {3, 1}, {3, 2}, {3, 3}] ==
+               reachable
     end
   end
 
@@ -1784,12 +1858,14 @@ defmodule Rete.EngineTest do
       end
     end
 
-    test "inserting the same fact twice does not double its matches" do
+    test "inserting the same fact twice doubles its matches" do
       session = run([Dup], [{:thing, 1}, {:thing, 1}])
-      assert [{:seen, 1}] == derived(session, :seen)
+
+      assert [{:seen, 1}, {:seen, 1}] == derived(session, :seen)
+      assert 2 == session.state.memory.facts[{:seen, 1}]
     end
 
-    test "one retraction of a twice inserted fact leaves it present" do
+    test "one retraction of a twice inserted fact leaves one occurrence, and one match" do
       session = run([Dup], [{:thing, 1}, {:thing, 1}])
       session = session |> Session.retract({:thing, 1}) |> Session.fire_rules()
 
@@ -1804,6 +1880,64 @@ defmodule Rete.EngineTest do
 
       assert session |> Session.retract({:thing, 99}) |> Session.fire_rules() |> Session.facts() ==
                Session.facts(session)
+    end
+
+    defmodule Sums do
+      use Rete.Ruleset
+
+      defrule foobar_rule({:foo, val1}, {:bar, val2}) do
+        {:foobar, val1 + val2}
+      end
+
+      defquery get_foobar({:foobar, value}) do
+        %{foobar: value}
+      end
+    end
+
+    # The join makes four matches, and two of them agree on their answer. Both
+    # answers count. The engine used to propagate the first `{:foobar, 300}` and
+    # collapse the second into a support count, so the query lost a row that a
+    # rule had genuinely concluded.
+    test "two matches concluding one value give two occurrences, and two query rows" do
+      facts = [{:foo, 100}, {:bar, 100}, {:foo, 200}, {:bar, 200}]
+      session = [Sums] |> Session.new() |> Session.insert(facts) |> Session.fire_rules()
+
+      assert [%{foobar: 200}, %{foobar: 300}, %{foobar: 300}, %{foobar: 400}] ==
+               session |> Sums.get_foobar() |> Enum.sort()
+
+      assert 2 == session.state.memory.facts[{:foobar, 300}]
+
+      # `{:foo, 100}` supports the 200 and one of the 300s, and nothing else.
+      dropped = session |> Session.retract({:foo, 100}) |> Session.fire_rules()
+
+      assert [%{foobar: 300}, %{foobar: 400}] == dropped |> Sums.get_foobar() |> Enum.sort()
+      assert 1 == dropped.state.memory.facts[{:foobar, 300}]
+
+      # And the session drains to exactly a fresh one, so neither occurrence left
+      # anything behind.
+      drained = dropped |> Session.retract(tl(facts)) |> Session.fire_rules()
+
+      assert [Sums]
+             |> Session.new()
+             |> Session.fire_rules()
+             |> Map.fetch!(:state)
+             |> Map.get(:memory) ==
+               drained.state.memory
+    end
+
+    test "each match of the rule fires, however many agree on the answer" do
+      facts = [{:foo, 100}, {:bar, 100}, {:foo, 200}, {:bar, 200}]
+
+      fired =
+        [Sums]
+        |> Session.new()
+        |> Session.with_listener(Collect, [])
+        |> Session.insert(facts)
+        |> Session.fire_rules()
+        |> Collect.by_tag(:activation_fired)
+        |> Enum.map(fn {_tag, _source, _token, concluded} -> concluded end)
+
+      assert [[foobar: 200], [foobar: 300], [foobar: 300], [foobar: 400]] == Enum.sort(fired)
     end
   end
 
@@ -2115,12 +2249,11 @@ defmodule Rete.EngineTest do
       end
     end
 
-    # The guard is opt-in. A count cannot separate a runaway from a large
-    # settling pass, so any default eventually raises on correct code — and a
-    # rules engine that stops part way through settling has returned an answer
-    # that is wrong, not late. 20,000 activations would have tripped both of the
-    # defaults this has had.
-    test "a long settling pass is not capped by default" do
+    # A count cannot separate a runaway from a large settling pass, so the
+    # default is a margin and not a judgment. 20,000 activations is a batch load
+    # through a short chain, which the cap must clear. A cap of 10,000 was tried
+    # before 0.1.0 and this tripped it, which is why the number is 100,000.
+    test "a long settling pass clears the default cap" do
       session =
         [Bounded]
         |> Session.new()
@@ -2130,14 +2263,33 @@ defmodule Rete.EngineTest do
       assert {:n, 20_000} in Session.facts(session)
     end
 
-    test "max_cycles: :infinity says the default out loud" do
+    # The other half of the same claim, and the reason the default is finite at
+    # all. Nothing detects a rule that reads what it writes, so without a cap
+    # this call never returns. The number is not asserted, only that one exists.
+    test "a ruleset that never settles raises without being asked to" do
+      error =
+        assert_raise RuntimeError, fn ->
+          [Oscillate]
+          |> Session.new()
+          |> Session.insert({:counter, 0})
+          |> Session.fire_rules()
+        end
+
+      assert Exception.message(error) =~ "without the agenda emptying"
+      assert Exception.message(error) =~ "Oscillate.grow"
+    end
+
+    # Past the default on purpose. A depth under it would pass with the cap in
+    # place, and pin nothing. This costs about a third of a second, which is the
+    # price of covering the one option that turns the guard off.
+    test "max_cycles: :infinity removes the cap" do
       session =
         [Bounded]
         |> Session.new()
-        |> Session.insert([{:limit, 5_000}, {:n, 0}])
+        |> Session.insert([{:limit, 120_000}, {:n, 0}])
         |> Session.fire_rules(max_cycles: :infinity)
 
-      assert {:n, 5_000} in Session.facts(session)
+      assert {:n, 120_000} in Session.facts(session)
     end
 
     # `fired >= nil` is false for every integer under Erlang term order, so an

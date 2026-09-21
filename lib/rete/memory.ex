@@ -12,7 +12,7 @@ defmodule Rete.Memory do
       tokens      node_id => join_key => Bucket of Token     left of a beta node
       accum       node_id => join_key => group_key => [member] what a collection gathered
       insertions  node_id => token => [[fact]]               truth maintenance
-      facts       fact => count                              what it was told
+      facts       fact => occurrences                        what it was told
 
       inserters   fact => {node_id, token} => count          `insertions`, reversed
 
@@ -30,9 +30,11 @@ defmodule Rete.Memory do
   planted. This must happen exactly once per session. See `docs/design/engine.md` §6.
 
       iex> alias Rete.Memory
-      iex> {memory, :new} = Memory.add_fact(Memory.new(), {:order, 1})
-      iex> {memory, :duplicate} = Memory.add_fact(memory, {:order, 1})
-      iex> {memory, :remaining} = Memory.remove_fact(memory, {:order, 1})
+      iex> memory = Memory.add_fact(Memory.new(), {:order, 1})
+      iex> memory = Memory.add_fact(memory, {:order, 1})
+      iex> Memory.facts(memory)
+      [{:order, 1}, {:order, 1}]
+      iex> {memory, :removed} = Memory.remove_fact(memory, {:order, 1})
       iex> Memory.facts(memory)
       [{:order, 1}]
   """
@@ -254,7 +256,14 @@ defmodule Rete.Memory do
   Records the facts one activation of a production inserted.
 
   This is stored as a list of lists. The same token can activate a production more than
-  once, over a session's life, and each activation owns its own batch.
+  once, and each activation owns its own batch. Two equal facts do that on one fire: they
+  are two occurrences, so they make two matches that this store cannot tell apart.
+
+  **Newest first.** `take_insertion/3` therefore gives back the newest batch, and the order
+  is not observable. Every batch under one key is the conclusion of an equal match at one
+  node, and `docs/dsl.md` requires a body's return value to follow from its bindings. So
+  those batches are equal. The list used to be appended to, which cost a pass over it per
+  activation — quadratic in the occurrences of one fact.
   """
   @spec add_insertion(t(), node_id(), Token.t(), [term()]) :: t()
   def add_insertion(%__MODULE__{} = memory, node_id, token, facts) do
@@ -263,7 +272,7 @@ defmodule Rete.Memory do
         memory.insertions,
         node_id,
         %{token => [facts]},
-        &Map.update(&1, token, [facts], fn batches -> batches ++ [facts] end)
+        &Map.update(&1, token, [facts], fn batches -> [facts | batches] end)
       )
 
     %__MODULE__{
@@ -274,11 +283,11 @@ defmodule Rete.Memory do
   end
 
   @doc """
-  Takes back one batch of facts a token's activation inserted.
+  Takes back the newest batch of facts a token's activation inserted.
 
   Returns `{memory, facts}`, or `{memory, []}` when the token never inserted anything.
   That case is a production retracted before it fired, or one whose body returned
-  nothing.
+  nothing. See `add_insertion/4` for why the newest is as good as any.
   """
   @spec take_insertion(t(), node_id(), Token.t()) :: {t(), [term()]}
   def take_insertion(%__MODULE__{} = memory, node_id, token) do
@@ -303,16 +312,15 @@ defmodule Rete.Memory do
   Empty for a fact the user asserted. A fact two rules concluded has two entries, and one
   rule may appear twice if it concluded the fact on two activations of the same match.
 
-  This is the index behind well-founded support. To read it is a map lookup, and that is
-  the purpose of it. Before, the engine recomputed the answer from every insertion record in
-  the session, for every conclusion that was already present.
+  This is the index behind `Rete.Inspect.explain/1,2`, which asks it once per matched fact.
+  To read it is a map lookup, and that is the purpose of it. Without the index, the answer
+  comes from a pass over every insertion record in the session.
 
-  This falls back to that recomputation when the index is not built, so a reader that asks
-  one time gets a correct answer without forcing a build on a session that would never need
-  one. **A caller that asks repeatedly must call `index_inserters/1` first, and keep what it
-  returns.** The fallback is a pass over every insertion record, so asking per fact without
-  the index is quadratic in the size of the session. `Rete.Inspect.explain/1,2` builds it
-  for that reason.
+  This falls back to that pass when the index is not built, so a reader that asks one time
+  gets a correct answer without forcing a build on a session that would never need one.
+  **A caller that asks repeatedly must call `index_inserters/1` first, and keep what it
+  returns.** Asking per fact without the index is quadratic in the size of the session.
+  `Rete.Inspect.explain/1,2` builds it for that reason.
   """
   @spec inserters(t(), term()) :: [inserter()]
   def inserters(%__MODULE__{inserters: nil, insertions: insertions}, fact) do
@@ -331,8 +339,8 @@ defmodule Rete.Memory do
 
   One pass over every insertion record. After this, `add_insertion/4` and
   `take_insertion/3` keep it in step. The pass thus happens one time in a session at most.
-  It does not happen at all in a session where no rule concludes what another rule already
-  concluded, because only that consults the index.
+  It does not happen at all unless something asks where a fact came from, and
+  `Rete.Inspect` is the only caller.
   """
   @spec index_inserters(t()) :: t()
   def index_inserters(%__MODULE__{inserters: nil} = memory) do
@@ -353,38 +361,38 @@ defmodule Rete.Memory do
   # --- the fact multiset ----------------------------------------------------------
 
   @doc """
-  Records a fact, returning `{memory, :new | :duplicate}`.
+  Records one occurrence of a fact.
 
-  Only `:new` propagates. A second insertion of an equal fact bumps its count instead, so
-  that one retraction does not remove it. The matches it would make already exist.
+  Every occurrence counts, and every occurrence propagates. A fact equal to one already
+  present is a second occurrence of it, not a repeat of the first.
   """
-  @spec add_fact(t(), term()) :: {t(), :new | :duplicate}
+  @spec add_fact(t(), term()) :: t()
   def add_fact(%__MODULE__{facts: facts} = memory, fact) do
-    case Map.get(facts, fact) do
-      nil -> {%__MODULE__{memory | facts: Map.put(facts, fact, 1)}, :new}
-      n -> {%__MODULE__{memory | facts: Map.put(facts, fact, n + 1)}, :duplicate}
-    end
+    %__MODULE__{memory | facts: Map.update(facts, fact, 1, &(&1 + 1))}
   end
 
   @doc """
-  Drops one occurrence of a fact, returning `{memory, :gone | :remaining | :absent}`.
+  Drops one occurrence of a fact, returning `{memory, :removed | :absent}`.
 
-  Only `:gone` propagates — that is, only the last occurrence.
+  Only `:removed` propagates. `:absent` says the session never held the fact, so there is
+  no match to take back.
   """
-  @spec remove_fact(t(), term()) :: {t(), :gone | :remaining | :absent}
+  @spec remove_fact(t(), term()) :: {t(), :removed | :absent}
   def remove_fact(%__MODULE__{facts: facts} = memory, fact) do
     case Map.get(facts, fact) do
       nil -> {memory, :absent}
-      1 -> {%__MODULE__{memory | facts: Map.delete(facts, fact)}, :gone}
-      n -> {%__MODULE__{memory | facts: Map.put(facts, fact, n - 1)}, :remaining}
+      1 -> {%__MODULE__{memory | facts: Map.delete(facts, fact)}, :removed}
+      n -> {%__MODULE__{memory | facts: Map.put(facts, fact, n - 1)}, :removed}
     end
   end
 
   @doc """
-  Every distinct fact the session holds.
+  Every fact the session holds, one entry for each occurrence.
   """
   @spec facts(t()) :: [term()]
-  def facts(%__MODULE__{facts: facts}), do: Map.keys(facts)
+  def facts(%__MODULE__{facts: facts}) do
+    Enum.flat_map(facts, fn {fact, count} -> List.duplicate(fact, count) end)
+  end
 
   # --- reading the whole thing -------------------------------------------------------
 

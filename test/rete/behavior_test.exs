@@ -415,13 +415,13 @@ defmodule Rete.BehaviorTest do
     # There is no `:exists`, and `{:not, [{:not, [x]}]}` is **not** a
     # substitute. `Rete.DSL.Normalize` collapses `not(not(x))` to `x` — which is
     # right propositionally and wrong existentially: `x` binds and produces one
-    # match per fact, where existence produces at most one. The fact set hides
-    # the difference (equal facts collapse), so the assertion has to be on the
-    # support count.
+    # match per fact, where existence produces at most one. Two orders are thus
+    # two matches, and the conclusion is held twice. The test below it is the
+    # spelling that gives one.
     test "a double negation collapses to the condition and matches once per fact" do
       session = run(DoubleNegation, [{:cust, 1}, {:order, 1, 10}, {:order, 1, 20}])
 
-      assert [{:has_order, 1}] == tagged(session, :has_order)
+      assert [{:has_order, 1}, {:has_order, 1}] == tagged(session, :has_order)
       assert 2 == session.state.memory.facts[{:has_order, 1}]
     end
 
@@ -1067,11 +1067,10 @@ defmodule Rete.BehaviorTest do
       end
     end
 
-    # Facts are a multiset for retraction, but the network sees one element per
-    # distinct fact — an equal insert bumps a count rather than propagating. So
-    # a collection holds a duplicated fact once, and it takes two retractions to
-    # get it out.
-    test "a fact inserted twice appears once in a collection and needs two retractions" do
+    # A collection gathers occurrences, not distinct values. Two equal facts are
+    # two members, and each retraction takes one member out. A collection that
+    # held the fact once would report a length nothing in the session explains.
+    test "a fact inserted twice appears twice in a collection, and leaves one at a time" do
       gathered = fn s ->
         [os] = CollDup.gathered(s)
         Enum.sort(os)
@@ -1079,7 +1078,7 @@ defmodule Rete.BehaviorTest do
 
       session = run(CollDup, [{:o, 1}, {:o, 1}, {:o, 2}])
 
-      assert [{:o, 1}, {:o, 2}] == gathered.(session)
+      assert [{:o, 1}, {:o, 1}, {:o, 2}] == gathered.(session)
       assert 2 == session.state.memory.facts[{:o, 1}]
 
       session = session |> Session.retract({:o, 1}) |> Session.fire_rules()
@@ -1175,15 +1174,16 @@ defmodule Rete.BehaviorTest do
     end
 
     # clara test_truth_maintenance/test-tiered-identical-insertions-with-retractions.
-    # A duplicated premise is one element in the network and two occurrences in
-    # the multiset, so the first retraction changes nothing downstream and the
-    # second takes the entire tier with it.
-    test "a duplicated premise supports one derivation tier, released only at the last copy" do
+    # A duplicated premise is two matches, and the tier multiplies: `r1` fires
+    # twice and concludes two `{:second}` each time, then `r2` fires on all four.
+    # One retraction takes back exactly the half that rested on the occurrence
+    # that left, and the second takes the rest.
+    test "a duplicated premise supports its own derivation tier, released with it" do
       session = run(Tiered, [{:first}, {:first}])
-      assert %{{:first} => 2, {:second} => 2, {:third} => 1} == session.state.memory.facts
+      assert %{{:first} => 2, {:second} => 4, {:third} => 4} == session.state.memory.facts
 
       session = session |> Session.retract({:first}) |> Session.fire_rules()
-      assert %{{:first} => 1, {:second} => 2, {:third} => 1} == session.state.memory.facts
+      assert %{{:first} => 1, {:second} => 2, {:third} => 2} == session.state.memory.facts
 
       session = session |> Session.retract({:first}) |> Session.fire_rules()
       assert Session.new([Tiered]).state.memory == session.state.memory
@@ -1220,6 +1220,10 @@ defmodule Rete.BehaviorTest do
       assert %{{:cw, 10, 10} => 1, {:cold, 10} => 1} == session.state.memory.facts
     end
 
+    # Through `Rete.Memory.dump/1`, not the struct. The second occurrence really
+    # was stored and really was taken back, so the bucket that held it carries a
+    # tombstone until it compacts. That is derived state, invisible in what the
+    # session holds, and the dump is the view that means something.
     test "an equal fact arriving and leaving after the rule fired changes nothing" do
       base = run(Downstream, [{:cw, 10, 10}])
 
@@ -1230,7 +1234,7 @@ defmodule Rete.BehaviorTest do
         |> Session.fire_rules()
 
       assert [10] == Downstream.colds(cycled)
-      assert base.state.memory == cycled.state.memory
+      assert Rete.Memory.dump(base.state.memory) == Rete.Memory.dump(cycled.state.memory)
     end
 
     defmodule Many do

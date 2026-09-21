@@ -681,11 +681,14 @@ defmodule Rete.NetworkTest do
   end
 
   describe "validation" do
+    # The rules conclude a different type from the one they match. A rule that echoed its
+    # own premise would never settle, which is a property of that rule and not of the name
+    # collision these two modules are here to exercise.
     defmodule DupA do
       use Rete.Ruleset
 
       defrule same({:a, x}) do
-        {:a, x}
+        {:seen_a, x}
       end
 
       defquery both({:a, x}) do
@@ -697,7 +700,7 @@ defmodule Rete.NetworkTest do
       use Rete.Ruleset
 
       defrule same({:b, x}) do
-        {:b, x}
+        {:seen_b, x}
       end
 
       defquery both({:b, x}) do

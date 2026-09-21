@@ -4,6 +4,97 @@ All notable changes to `rete` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.9.0
+
+**This release has breaking changes**, and they follow from one decision: an occurrence of a
+fact is a thing in its own right. Working memory was always a multiset, and it counted
+occurrences, but it collapsed them at the network boundary and the engine second-guessed
+them at the truth-maintenance boundary. Both are gone.
+
+That lost conclusions. Two matches of one rule that agree on their answer are two
+conclusions, and only one of them reached the network:
+
+```elixir
+defrule foobar_rule({:foo, v1}, {:bar, v2}), do: {:foobar, v1 + v2}
+defquery get_foobar({:foobar, value}), do: %{foobar: value}
+
+Session.new([Rules])
+|> Session.insert([{:foo, 100}, {:bar, 100}, {:foo, 200}, {:bar, 200}])
+|> Session.fire_rules()
+|> Rules.get_foobar()
+```
+
+The join makes four matches and the rule fires four times, on `200`, `300`, `300` and `400`.
+The query used to answer three rows. It answers four now.
+
+Multiplicity thus means one thing everywhere. `n` occurrences of a fact are `n` elements,
+`n` tokens and `n` query rows.
+
+### Changed
+
+* Inserting a fact equal to one already present now propagates. The rules get a second
+  match of it, a collection gathers a second member, and a rule below it fires twice. It
+  still takes two retractions to remove, as before.
+* Retracting one occurrence of a fact held twice now propagates that one retraction. Before,
+  only the last occurrence propagated.
+* `Rete.Session.facts/1` returns one entry for each occurrence. A fact held twice appears
+  twice. Support counts in working memory are unchanged. A conclusion held twice was always
+  held twice, and what changed is that the second occurrence now reaches the network.
+* `Rete.Listener` no longer emits `{:fact_duplicated, fact}`. Every insert emits
+  `:fact_inserted` and every retraction of a fact the session holds emits `:fact_retracted`,
+  so there is no longer a case where nothing propagates.
+* **`:max_cycles` defaults to `100_000`, and not to `:infinity`.** A rule that reads the
+  type its own body concludes used to settle, because the check below made it. It now
+  spins, and a cap is what turns that into an error naming the rule. A cycle is one
+  activation at the default concurrency, so the number is a wide margin over ordinary
+  settling work — eight times the largest scenario in `bench/run.exs`. A settling pass
+  that exceeds it raises, and the error says to raise the limit. Pass
+  `max_cycles: :infinity` for the old behavior. `docs/design/observability.md` §3 gives
+  the cost either way.
+* A rule body's **return value** must follow from its bindings. Two equal matches share
+  one truth-maintenance record, and two occurrences of a fact make two equal matches. A
+  body returning a fresh value on each run leaves `Rete.Inspect.explain/1,2` naming the
+  wrong match. Counts and draining are not affected. Side effects are unaffected, and
+  `docs/dsl.md` states the rule.
+
+### Removed
+
+* **The well-founded support check.** The engine no longer weighs a conclusion against the
+  match that produced it, and it never discards one. A rule that reads the type its own body
+  concludes therefore does not settle:
+
+  ```elixir
+  defrule symmetric({:edge, a, b}), do: {:edge, b, a}   # used to settle, now spins
+  ```
+
+  Nothing needs weighing, because a record holds up an **occurrence** and not a fact. A match
+  that rests on occurrence 1 and concludes occurrence 2 grounds occurrence 2 on occurrence 1,
+  and retracting occurrence 1 unwinds the chain. No count is ever held up by itself.
+
+  What the check did instead was truncate. The rule above settled on one `{:edge, 2, 1}`, and
+  a rule asking for five occurrences of a fact got one. No event said so. The check also
+  never reconsidered what it dropped, so a fact could vanish on a retraction that left a
+  second route to it intact.
+
+  **A ruleset that settles today is unaffected.** The check only ever fired where the
+  conclusion was in its own support closure, and re-driving that closure is what keeps a
+  ruleset from settling. One that does not settle now raises at `:max_cycles`, which the
+  section above covers. See `docs/dsl.md` for how to repeat a fact a bounded number of
+  times.
+
+### Fixed
+
+* An activation's insertion record is prepended rather than appended. Equal tokens reaching
+  one production share a key in the truth-maintenance store, which two occurrences of a fact
+  now make routine. Appending cost a pass over that list per activation. `bench/run.exs`
+  covers this as "inserting n occurrences of one fact", and it reads linear.
+
+### Internal
+
+* `Rete.Memory.add_fact/2` returns the memory. `remove_fact/2` returns `:removed` or
+  `:absent`. The `:new`/`:duplicate` and `:gone`/`:remaining` distinctions decided whether to
+  propagate, and nothing decides that any more.
+
 ## 0.8.0
 
 **This release has breaking changes**, and they fall in two places. The head of a query is

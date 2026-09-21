@@ -76,8 +76,8 @@ defmodule Rete.Session do
   @doc """
   Inserts one fact or a list of them, returning a new session.
 
-  Facts are a multiset. Inserting a fact equal to one already present bumps its count
-  instead of duplicating its matches, so retracting one occurrence leaves the other.
+  Facts are a multiset, and every occurrence matches. Inserting a fact equal to one already
+  present gives the rules a second match of it, and it takes a second retraction to remove.
 
   Inserting does not match anything. It records the fact and queues the work.
   `fire_rules/2` is what matches, and until you call it no rule has seen the fact.
@@ -119,11 +119,11 @@ defmodule Rete.Session do
 
     * `:max_cycles` — how many **cycles** one call may fire. A cycle is one pass of the
       fire loop: one activation at the default concurrency, one whole activation group
-      above it. `:infinity` by default: the engine runs to quiescence, and an oscillating
-      ruleset spins rather than raising. Give it an integer to bound the call. A ruleset
-      that exceeds it raises with the rules that fired most. One that fires the whole
-      allowance and then settles is fine. See `docs/design/observability.md` §3 for how to
-      pick a number.
+      above it. `100_000` by default, which no settling ruleset has reached. A ruleset that
+      exceeds it raises with the rules that fired most. One that fires the whole allowance
+      and then settles is fine. Give it a smaller integer to catch a loop sooner, or
+      `:infinity` to remove the cap. See `docs/design/observability.md` §3 for how to pick
+      a number.
     * `:concurrency` — how many rule bodies of one activation group run at once. `1` by
       default, which fires them one at a time. Raise it when a body does I/O or real
       computation. The bodies of a group then run on tasks, and their conclusions are
@@ -233,9 +233,10 @@ defmodule Rete.Session do
     do: Engine.query(state, ref, params)
 
   @doc """
-  Every fact the session holds, inserted or concluded.
+  Every fact the session holds, inserted or concluded, one entry for each occurrence.
 
-  Unordered. A session is a set of facts, not a sequence.
+  Unordered. A session is a multiset of facts, not a sequence. A fact held twice appears
+  twice here, whether two inserts put it there or two matches concluded it.
 
   The two halves answer on different clocks. `insert/2` and `retract/2` update working
   memory at once, so an inserted fact appears here before anything matches it. A concluded

@@ -26,9 +26,8 @@ defmodule Rete.Listener do
   |---|---|
   | `{:fire_started, opts}` | `fire_rules/2` begins |
   | `{:fire_finished, fired}` | the agenda is empty; `fired` is how many activations ran |
-  | `{:fact_inserted, fact, origin}` | a fact is added to working memory |
-  | `{:fact_retracted, fact, origin}` | a fact leaves working memory |
-  | `{:fact_duplicated, fact}` | an equal fact was already present, so nothing propagated |
+  | `{:fact_inserted, fact, origin}` | one occurrence of a fact is added to working memory |
+  | `{:fact_retracted, fact, origin}` | one occurrence of a fact leaves working memory |
   | `{:propagated, op, node_id, count}` | a node consumed `count` items |
   | `{:activation_added, source, token}` | a production's LHS became satisfied |
   | `{:activation_removed, source, token}` | a pending activation was cancelled |
@@ -56,7 +55,6 @@ defmodule Rete.Listener do
           | {:fire_finished, non_neg_integer()}
           | {:fact_inserted, term(), origin()}
           | {:fact_retracted, term(), origin()}
-          | {:fact_duplicated, term()}
           | {:propagated, atom(), term(), non_neg_integer()}
           | {:activation_added, source(), Rete.Token.t()}
           | {:activation_removed, source(), Rete.Token.t()}
@@ -150,8 +148,6 @@ defmodule Rete.Listener.Trace do
 
   defp describe({:fact_retracted, fact, {:derived, source}}),
     do: "  - #{inspect(fact)} (support from #{rule(source)} gone)"
-
-  defp describe({:fact_duplicated, fact}), do: "  = #{inspect(fact)} (already present)"
 
   defp describe({:activation_added, source, token}),
     do: "  ready  #{rule(source)} #{inspect(token.bindings)}"

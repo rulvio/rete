@@ -105,8 +105,53 @@ nothing, and it would do so silently. You could not tell that case apart from a 
 does not apply. Pass `:fact_type_fn` to `Rete.Session.new/2` if your facts use some other
 typing scheme.
 
-Facts form a **multiset**. Inserting the same fact twice needs two retractions to remove
-it. The second insert queues nothing, because the matches it would make already exist.
+Facts form a **multiset**, and every occurrence matches. Inserting the same fact twice
+gives the rules two matches of it, and it takes two retractions to remove it. A collection
+gathers two members, and a rule that reads the fact fires twice.
+
+This applies to what a rule concludes as well. Two matches that conclude the same value
+conclude it twice, so a query over that fact returns two rows. Write the values that tell
+the matches apart into the fact if you need to read them back.
+
+### A rule that reads what it writes does not settle
+
+The engine inserts what a rule returns, and it never drops a conclusion. So a rule whose
+left hand side matches the type its own body concludes feeds itself forever:
+
+```elixir
+defrule symmetric({:edge, a, b}), do: {:edge, b, a}   # never settles
+```
+
+Every occurrence it concludes is a new match, which concludes another occurrence.
+`fire_rules/2` caps a call at `100_000` cycles, so this raises rather than spins, and the
+error names the rules that fired most. Pass `max_cycles: n` to catch it sooner.
+
+`derive/2` can create this where the two types do not look alike. A derived type reaches a
+condition written against its ancestor. So under `derive :premium, :customer`, a rule that
+matches `{:customer, id}` and concludes `{:premium, id}` reads what it writes.
+
+To repeat one fact a bounded number of times, carry the bound in a **different** fact and
+rest the rule on that one:
+
+```elixir
+defrule fill({:n, i} when i < 5), do: [{:x}, {:n, i + 1}]
+```
+
+This settles, holding `{:x}` five times. The rule never reads `{:x}`, so the occurrences it
+inserts make no new match, and the counter is what stops it. Adding `{:x}` to the left hand
+side breaks that, whatever the guard says.
+
+A recursive rule has to read its own type, so it takes the other form. Put the bound **in
+the fact**. A further step is then a different fact, and not another occurrence of the
+same one.
+
+```elixir
+defrule base({:edge, x, y}), do: {:path, x, y, 1}
+defrule step({:path, x, y, n} when n < 4, {:edge, ^y, z}), do: {:path, x, z, n + 1}
+```
+
+Reachability over a graph with a cycle in it needs this. Without the hop count, one
+`{:edge, 1, 1}` is enough to keep the rule going forever.
 
 ## Left hand side elements
 
@@ -919,15 +964,16 @@ facts change is the engine's job, not yours.
 
 Two consequences surprise people:
 
-* **a conclusion cannot hold itself up.** If a rule's match already rests on the fact it
-  concludes, that fact does not get a second support. So retracting what you inserted
-  really does empty the session. `symmetric({:edge, a, b}) -> {:edge, b, a}` does not
-  leave two immortal facts behind. A rule with **no conditions** is the one exception: its
-  support is the root token rather than a fact, so its conclusion stays.
-* **a rule that concludes something its own left hand side matches on will loop.**
-  `fire_rules/2` runs to quiescence, and it does not cap activations unless you ask it to.
-  Pass `:max_cycles` for a cap — it defaults to `:infinity`. Give it an integer, and it
-  raises an error naming the rules that fired most.
+* **a conclusion cannot hold itself up.** Every fact a rule concludes rests on the
+  occurrence the match read, and that occurrence rests on the one before it. The chain ends
+  at what you asserted, so retracting what you inserted really does empty the session. A
+  rule with **no conditions** is the one exception: its support is the root token rather
+  than a fact, so its conclusion stays.
+* **a rule that concludes something its own left hand side matches on will loop.** The
+  chain above then has no end. `symmetric({:edge, a, b}) -> {:edge, b, a}` concludes a new
+  occurrence for every occurrence it reads. `fire_rules/2` caps this at `100_000` cycles
+  and raises an error naming the rules that fired most. Pass `:max_cycles` to catch it
+  sooner, or `:infinity` to remove the cap.
 
 The body may read only the variables the left hand side binds, on the path that reached
 it. It runs inside the ruleset module, so it may call that module's functions. Nothing
@@ -935,9 +981,9 @@ orders it against any other rule, except salience.
 
 ### A body may run more than once
 
-The engine truth-maintains the body's **return value**, so nothing gets concluded twice.
-It does not truth-maintain a **side effect**. A side effect can happen more often than the
-conclusions suggest, in two ways:
+The engine truth-maintains the body's **return value**. It does not truth-maintain a
+**side effect**. A side effect can happen more often than the conclusions suggest, in two
+ways:
 
 * retracting and reinserting the facts behind a match runs the body again, for that match.
 * under `fire_rules(session, concurrency: n)`, the bodies of one activation group run at
@@ -961,6 +1007,23 @@ Two things follow from a body running on a task.
 The engine also copies the bindings to the task. This is free for scalars, but not for a
 **collection binding**: handing a 2,000-element list to each task made one benchmark 16×
 slower. See `docs/design/engine.md` §11.
+
+### The return value must follow from the bindings
+
+Two runs of one body, on equal bindings, must return equal facts. Side effects are yours
+to choose, but the value is not. The engine records what a body returned against the match
+that produced it, and two equal matches share that record. Two occurrences of one fact
+make two equal matches, so this is ordinary rather than rare.
+
+```elixir
+defrule audit({:order, id}), do: {:audit, id, System.unique_integer()}   # do not do this
+```
+
+Retracting one occurrence then takes back one of the two records, and the engine cannot
+tell which one belongs to the occurrence that left. The counts stay right, and the session
+still drains to empty. But `Rete.Inspect.explain/1,2` names the wrong match for the fact.
+Read a clock or a counter **before** firing, and insert the value as a fact the rule
+matches on.
 
 ## Condition order
 
@@ -998,7 +1061,7 @@ unbound.
 | limit | value | what happens |
 |---|---|---|
 | branches from one gate | 256 | `ArgumentError` at compile time, naming the gate |
-| activations per `fire_rules/2` | uncapped; `:max_cycles` to bound it | `RuntimeError` leading with the rules that fired most |
+| cycles per `fire_rules/2` | 100,000, or `:max_cycles` | `RuntimeError` leading with the rules that fired most |
 
 The branch limit is about compile time. Distribution is the one step that can explode: a
 conjunction of `k` disjunctions of `m` branches becomes `m^k`. Negation is linear, and it

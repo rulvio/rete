@@ -28,9 +28,11 @@ defmodule Rete.Engine do
   alias Rete.Network
   alias Rete.Network.Node
   alias Rete.Taxonomy
-  alias Rete.Token
 
-  @default_max_cycles :infinity
+  # A rule that reads the type its own body concludes never settles, and nothing detects
+  # that shape. So the cap is what turns a hang into an error that names the rule. See
+  # `docs/design/observability.md` §3 for the number, and for what it costs either way.
+  @default_max_cycles 100_000
   @default_concurrency 1
   @default_timeout :infinity
 
@@ -52,8 +54,8 @@ defmodule Rete.Engine do
   @doc """
   Records facts and queues their propagation.
 
-  A fact equal to one already present bumps its count and queues nothing. The matches it
-  would make already exist.
+  Every occurrence propagates. A fact equal to one already present is a second occurrence
+  of it, and the network gets a second element for it. See `docs/design/engine.md` §4.
 
   This does **not** propagate. `Rete.Memory` holds the fact at once, so `facts/1` sees it.
   The alpha work waits in the queue until `fire_rules/2` drains it. See
@@ -65,14 +67,11 @@ defmodule Rete.Engine do
   def insert(%State{} = state, facts, origin) do
     {state, batches} =
       Enum.reduce(facts, {state, []}, fn fact, {%State{} = state, batches} ->
-        case Memory.add_fact(state.memory, fact) do
-          {memory, :new} ->
-            state = emit(%State{state | memory: memory}, fn -> {:fact_inserted, fact, origin} end)
-            {state, [alpha_ops(state, fact, :right) | batches]}
+        state =
+          %State{state | memory: Memory.add_fact(state.memory, fact)}
+          |> emit(fn -> {:fact_inserted, fact, origin} end)
 
-          {memory, :duplicate} ->
-            {emit(%State{state | memory: memory}, fn -> {:fact_duplicated, fact} end), batches}
-        end
+        {state, [alpha_ops(state, fact, :right) | batches]}
       end)
 
     State.enqueue(state, ordered_ops(batches))
@@ -81,8 +80,9 @@ defmodule Rete.Engine do
   @doc """
   Removes facts and queues the retraction.
 
-  Only the last occurrence of a fact queues anything. The engine retracts anything
-  concluded from it in turn, once `fire_rules/2` drains the queue and the network settles.
+  Every occurrence a session holds queues a retraction of its own. A fact it never held
+  queues nothing. The engine retracts anything concluded from an occurrence in turn, once
+  `fire_rules/2` drains the queue and the network settles.
 
   This does **not** propagate, for the reason `insert/3` gives. Queuing an insert and then
   a retract of the same fact drains to a net no-op. The queued work for one node keeps the
@@ -95,13 +95,13 @@ defmodule Rete.Engine do
     {state, batches} =
       Enum.reduce(facts, {state, []}, fn fact, {%State{} = state, batches} ->
         case Memory.remove_fact(state.memory, fact) do
-          {memory, :gone} ->
+          {memory, :removed} ->
             state =
               emit(%State{state | memory: memory}, fn -> {:fact_retracted, fact, origin} end)
 
             {state, [alpha_ops(state, fact, :right_retract) | batches]}
 
-          {memory, _} ->
+          {memory, :absent} ->
             {%State{state | memory: memory}, batches}
         end
       end)
@@ -197,10 +197,10 @@ defmodule Rete.Engine do
 
     * `:max_cycles` — how many **cycles** one call may fire. A cycle is one pass of the
       fire loop: one activation at the default concurrency, one whole activation group
-      above it. `:infinity` by default, so an oscillating ruleset spins rather than
-      raising. Firing that many and still having work pending raises with the rules that
-      fired most. Firing that many and settling is fine. See
-      `docs/design/observability.md` §3.
+      above it. `100_000` by default, so a ruleset that never settles raises instead of
+      spinning. Firing that many and still having work pending raises with the rules that
+      fired most. Firing that many and settling is fine. Pass `:infinity` to remove the
+      cap. See `docs/design/observability.md` §3.
     * `:concurrency` — how many rule bodies of one activation group run at once. `1` by
       default, which is the sequential path. Above `1`, the bodies of a group run on tasks
       and their conclusions are applied in group order. Worth raising only when a body is
@@ -396,7 +396,7 @@ defmodule Rete.Engine do
   end
 
   @doc """
-  Every fact the session holds, inserted or concluded.
+  Every fact the session holds, inserted or concluded, one entry for each occurrence.
 
   This excludes the marker facts an extracted compound negation inserts. They express a
   negated conjunction to the network, and no rule of the user's concluded them. Everywhere
@@ -538,10 +538,10 @@ defmodule Rete.Engine do
   end
 
   # A rule body is a pure function of its hash and its already frozen bindings. So the
-  # bodies of a group may run at once. Everything after them threads state instead —
-  # `well_founded` reads memory, and one conclusion can retract the support of a later
-  # activation in the same group. So the engine applies conclusions in group order, with a
-  # drain between each.
+  # bodies of a group may run at once. Applying what they returned is not parallel: one
+  # conclusion can retract the support of a later activation in the same group, and that
+  # activation must then not fire. So the engine applies conclusions in group order, with a
+  # drain between each, and `Rete.Agenda.remove/2` reports which case each one is.
   #
   # Only `{rhs, hash, bindings}` is captured, never the state or the network. A closure
   # over either would copy the whole compiled network into every task.
@@ -601,11 +601,7 @@ defmodule Rete.Engine do
   # The engine records facts against the token before inserting them. So retracting the
   # token later finds them, even if the insertion cascades.
   defp conclude(%State{} = state, %Activation{token: token}, node, result) do
-    {state, facts} =
-      result
-      |> unwrap!(node, token)
-      |> check_facts!(state, node, token)
-      |> well_founded(state, token)
+    facts = result |> unwrap!(node, token) |> check_facts!(state, node, token)
 
     case facts do
       [] ->
@@ -637,63 +633,6 @@ defmodule Rete.Engine do
           "#{Network.ref_string({node.module, node.name})} did not finish: " <>
             "#{inspect(reason)}. It fired on #{inspect(token.bindings)}. " <>
             "Raise :timeout, or remove it to wait indefinitely."
-  end
-
-  # Drops a conclusion the match already rests on, so it cannot support itself. This runs
-  # only when the fact is already present, since that is the only way the cycle can
-  # close. See `docs/design/engine.md` §8.
-  #
-  # Returns the state, because reaching the support index is what builds it. A ruleset
-  # where no rule ever re-concludes never gets here, and so never pays for it.
-  defp well_founded(facts, %State{} = state, token) do
-    if Enum.any?(facts, &Map.has_key?(state.memory.facts, &1)) do
-      state = %State{state | memory: Memory.index_inserters(state.memory)}
-      support = support_closure(state, token)
-
-      {state, Enum.reject(facts, &MapSet.member?(support, &1))}
-    else
-      {state, facts}
-    end
-  end
-
-  # Every fact the match rests on. This is the facts it matched, plus what the match that
-  # concluded each of those rested on, down to what the user asserted.
-  #
-  # Walks `Rete.Memory.inserters/2`, which is maintained as insertions are recorded. This
-  # used to build that index on the spot, from every insertion record in the session, on
-  # every conclusion that was already present — which made two rules concluding one fact
-  # quadratic in the number of conclusions.
-  defp support_closure(%State{memory: memory}, token) do
-    walk(MapSet.new(), matched_facts(token), memory)
-  end
-
-  @spec walk(MapSet.t(), [term()], Memory.t()) :: MapSet.t()
-  defp walk(seen, [], _memory), do: seen
-
-  defp walk(seen, [fact | rest], memory) do
-    if MapSet.member?(seen, fact) do
-      walk(seen, rest, memory)
-    else
-      supports =
-        memory
-        |> Memory.inserters(fact)
-        |> Enum.flat_map(fn {_node_id, token} -> matched_facts(token) end)
-
-      walk(MapSet.put(seen, fact), supports ++ rest, memory)
-    end
-  end
-
-  # `MapSet.t()` is opaque, with two internal representations. Dialyzer loses track of
-  # which one a set threaded through a local recursion holds. This set never leaves these
-  # two functions, and only `MapSet.new/0` and `MapSet.put/2` build it.
-  @dialyzer {:no_opaque, walk: 3, well_founded: 3}
-
-  # A collection match holds the list it gathered, and rests on every member of it.
-  defp matched_facts(%Token{} = token) do
-    Enum.flat_map(Token.facts(token), fn
-      facts when is_list(facts) -> facts
-      fact -> [fact]
-    end)
   end
 
   # A rule may return one fact, a list of them, or nothing.
