@@ -4,7 +4,14 @@ All notable changes to `rete` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 1.0.0
+
+The public API is stable from here. Semantic versioning covers the seven modules the README
+lists under "What is public". The internals stay outside that promise, and may still change
+in a future release.
+
+No public function changed in this release. The two entries below are an internal
+performance fix and one error message.
 
 ### Changed
 
