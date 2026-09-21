@@ -4,6 +4,35 @@ All notable changes to `rete` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+
+* `Rete.Agenda` holds its buckets in a `:gb_trees`, where they were a map plus a sorted list
+  of the keys. `add/2`, `pop/1` and `remove/2` now cost O(log r) in the **rules** pending,
+  where they cost O(r) before. Firing order does not change, since Erlang term order on
+  `{-salience, -internal_salience, order}` is the order the list was kept in.
+
+  Keys arrive ascending in compile order, so each rule's first activation walked the whole
+  list. Firing one match of each of 1,024 rules cost 19.22 ms that way and 6.03 ms in
+  reverse. Both cost about 8.7 ms now. A tree is a little slower in the direction a list was
+  good at, and what it removes is the threefold gap between the two.
+
+  This is internal. No public function changed, and no ruleset is affected.
+
+* The runaway error of `fire_rules/2` no longer counts the pending activations. The line
+  read `Still pending (5 of 12 activations):` and reads `Still pending:` now. The list of
+  rules that fired most still says what it cut. `Rete.Agenda.size/1` counted over a stored
+  tally to answer that line, and counts over the buckets now.
+
+### Added
+
+* Two `mix bench` scenarios in the rule count, which nothing measured before. Every existing
+  scenario scales the facts and holds the ruleset still. `activate one match of each of r
+  rules` gives r rules one fact each, so r rules are pending at once, and reads `~n^1.07`
+  where it read `~n^1.40`. The A/B beside it feeds 1,024 rules in each direction. See
+  `docs/design/engine.md` §13.
+
 ## 0.9.0
 
 **This release has breaking changes**, and they follow from one decision: an occurrence of a

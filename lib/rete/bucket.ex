@@ -43,6 +43,7 @@ defmodule Rete.Bucket do
           indexed?: boolean()
         }
 
+  @enforce_keys [:queue]
   defstruct [:queue, counts: %{}, dead: %{}, live: 0, dead_total: 0, indexed?: false]
 
   @doc "A bucket holding `items`, in arrival order."

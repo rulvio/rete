@@ -507,7 +507,7 @@ defmodule Rete.Engine do
     Fired most#{of_total(map_size(tally), "rules")}:
     #{worst}
 
-    Still pending#{of_total(Agenda.size(state.agenda), "activations")}:
+    Still pending:
     #{pending}
 
     A rule that concludes something its own left hand side matches on will do \
@@ -516,7 +516,8 @@ defmodule Rete.Engine do
     """
   end
 
-  # Both lists are cut to @runaway_shown. Say so when something was cut, and only then.
+  # Both lists are cut to @runaway_shown, and only the rules say so. The pending list is a
+  # sample of an arbitrary queue, so its length describes the fan-out and not the loop.
   defp of_total(total, noun) when total > @runaway_shown,
     do: " (#{@runaway_shown} of #{total} #{noun})"
 

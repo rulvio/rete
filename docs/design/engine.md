@@ -300,6 +300,12 @@ order all come from the node, none from the match. So there are at most as many 
 there are production nodes, however many facts a session holds. A single sorted list,
 instead, would walk past every match already queued for the same rule, on every insertion.
 
+The buckets themselves sit in a `:gb_trees`, keyed by sort key. That bounds the second
+dimension, which is the rule count rather than the fact count. The keys were a sorted list
+before, and a session that activates many rules at once paid for the whole list on each
+rule's first activation. That cost is invisible to every scenario with one rule in it,
+which is why it survived two passes. §13 has the measurement.
+
 ### Two matches of one rule
 
 Two matches of one rule fire in **arrival order**. That guarantee runs deeper than the
@@ -749,6 +755,36 @@ every call and then one time. It compares this against one call that carries all
 
 The three collection rows are one fix, and the only one that changed what the engine
 guarantees. See `network.md` §3.
+
+### Scaling the rule count
+
+Both passes above scale the **facts**, and every one of their scenarios holds the ruleset
+still. So nothing measured what a session costs as the *rules* grow while it fires.
+`Bench.Width` grows the rule count and times the compiler. `Bench.Spread` grows the module
+count and fires nothing.
+
+`Bench.Rules` is the scenario for that dimension, and a later finding in it belongs here.
+It builds r rules on r fact types and gives each one fact, so r rules are pending at once
+and the agenda holds r sort keys. One finding so far, in the key list of `Rete.Agenda`.
+
+| scenario | was | now |
+|---|---|---|
+| activate one match of each of r rules | `~n^1.40`, 12.35 ms at r = 1,024 | `~n^1.07`, 5.61 ms |
+
+Its control is the same 1,024 rules fed in each direction, and it is the clearer reading.
+Keys arrive ascending in compile order, so every new one landed at the far end of the list.
+The reverse feed put each one at the head:
+
+| 1,024 rules activated | sorted list | `:gb_trees` |
+|---|---|---|
+| in compile order | 19.22 ms | 8.71 ms |
+| in reverse | 6.03 ms | 8.66 ms |
+| ratio | ×3.19 | ×1.01 |
+
+A tree is slower in the direction a list was good at, and that is the trade. The ratio is
+what the fix is for, and not the millisecond column. Read the right-hand one as level
+rather than as a 1% difference, because two rows of one shape move by several percent
+between runs. A factor of three is far outside that.
 
 ### What is left in a collection is the rule body
 

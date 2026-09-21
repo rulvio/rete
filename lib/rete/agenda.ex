@@ -11,14 +11,15 @@ defmodule Rete.Agenda do
 
   Every activation of one production node shares a sort key. The agenda is thus a small
   number of ordered buckets, and not one sorted list. Each bucket is a `Rete.Bucket`,
-  which is the same tombstoned ordered multiset that working memory keys per join key.
-  `add/2`, `pop/1` and `remove/2` are all O(1) amortized. `remove/2` used to be linear in
-  one bucket, which is one rule's pending matches, so retracting the support of a rule
-  with many of them was quadratic. See `docs/design/engine.md` §7.
+  which is the same tombstoned ordered multiset that working memory keys per join key. The
+  buckets sit in a `:gb_trees`, so `add/2`, `pop/1` and `remove/2` cost O(log r) in the
+  rules pending, and O(1) amortized in the bucket. `remove/2` used to be linear in one
+  bucket, which is one rule's pending matches, so retracting the support of a rule with
+  many of them was quadratic. See `docs/design/engine.md` §7.
 
-  What makes `remove/2` O(1) is the bucket's index, and a bucket builds that only when
-  something is first taken from it. An agenda that is only ever added to and drained —
-  a session that never retracts — never builds one.
+  What makes the bucket half of `remove/2` O(1) is the bucket's index, and a bucket builds
+  that only when something is first taken from it. An agenda that is only ever added to and
+  drained — a session that never retracts — never builds one.
 
       iex> alias Rete.{Activation, Agenda}
       iex> urgent = %Activation{node_id: :n1, salience: 10}
@@ -33,51 +34,49 @@ defmodule Rete.Agenda do
 
   @type key :: {integer(), integer(), non_neg_integer()}
 
-  @type t :: %__MODULE__{
-          keys: [key()],
-          buckets: %{key() => Bucket.t()},
-          size: non_neg_integer()
-        }
+  @type t :: %__MODULE__{buckets: :gb_trees.tree(key(), Bucket.t())}
 
-  defstruct keys: [], buckets: %{}, size: 0
+  @enforce_keys [:buckets]
+  defstruct [:buckets]
 
   @doc "An empty agenda."
   @spec new() :: t()
-  def new, do: %__MODULE__{}
+  # `:gb_trees.empty/0` is called here rather than given as a struct default, for the reason
+  # `Rete.Bucket.new/1` records: a compile-time default loses the opaque type.
+  def new, do: %__MODULE__{buckets: :gb_trees.empty()}
 
   @doc """
   How many activations are waiting.
 
-  The agenda counts activations as they arrive, so reporting the size of a runaway agenda
-  is cheap.
+  Counted over the buckets, so O(r) in the rules pending. Nothing in the engine asks, and
+  a stored count would be a second version of what the buckets already hold.
 
       iex> alias Rete.{Activation, Agenda}
       iex> Agenda.new() |> Agenda.add(%Activation{node_id: :n1}) |> Agenda.size()
       1
   """
   @spec size(t()) :: non_neg_integer()
-  def size(%__MODULE__{size: size}), do: size
+  def size(%__MODULE__{buckets: buckets}) do
+    buckets
+    |> :gb_trees.values()
+    |> Enum.reduce(0, fn bucket, total -> total + Bucket.size(bucket) end)
+  end
 
   @doc "Adds an activation, behind the ones already queued for its rule."
   @spec add(t(), Activation.t()) :: t()
   def add(%__MODULE__{} = agenda, %Activation{} = activation) do
     key = Activation.key(activation)
 
-    case Map.fetch(agenda.buckets, key) do
-      {:ok, bucket} ->
-        %__MODULE__{
-          agenda
-          | buckets: Map.put(agenda.buckets, key, Bucket.push_one(bucket, activation)),
-            size: agenda.size + 1
-        }
+    buckets =
+      case :gb_trees.lookup(key, agenda.buckets) do
+        {:value, bucket} ->
+          :gb_trees.update(key, Bucket.push_one(bucket, activation), agenda.buckets)
 
-      :error ->
-        %__MODULE__{
-          keys: insert_key(agenda.keys, key),
-          buckets: Map.put(agenda.buckets, key, Bucket.new([activation])),
-          size: agenda.size + 1
-        }
-    end
+        :none ->
+          :gb_trees.insert(key, Bucket.new([activation]), agenda.buckets)
+      end
+
+    %__MODULE__{agenda | buckets: buckets}
   end
 
   @doc """
@@ -101,19 +100,19 @@ defmodule Rete.Agenda do
   def remove(%__MODULE__{} = agenda, %Activation{} = activation) do
     key = Activation.key(activation)
 
-    case Map.fetch(agenda.buckets, key) do
-      :error ->
+    case :gb_trees.lookup(key, agenda.buckets) do
+      :none ->
         {agenda, :missing}
 
-      {:ok, bucket} ->
+      {:value, bucket} ->
         case Bucket.take(bucket, activation) do
           {:ok, bucket} ->
             {store(agenda, key, bucket), :removed}
 
-          # The bucket comes back too, because the miss is what built its index. Kept
-          # without going through `store/3`, which would also decrement the size.
+          # The bucket comes back too, because the miss is what built its index.
           {:error, bucket} ->
-            {%__MODULE__{agenda | buckets: Map.put(agenda.buckets, key, bucket)}, :missing}
+            {%__MODULE__{agenda | buckets: :gb_trees.update(key, bucket, agenda.buckets)},
+             :missing}
         end
     end
   end
@@ -125,12 +124,15 @@ defmodule Rete.Agenda do
       :empty
   """
   @spec pop(t()) :: {:ok, Activation.t(), t()} | :empty
-  def pop(%__MODULE__{keys: []}), do: :empty
+  def pop(%__MODULE__{} = agenda) do
+    if :gb_trees.is_empty(agenda.buckets) do
+      :empty
+    else
+      {key, bucket} = :gb_trees.smallest(agenda.buckets)
+      {:ok, activation, rest} = Bucket.pop(bucket)
 
-  def pop(%__MODULE__{keys: [key | _]} = agenda) do
-    {:ok, activation, rest} = agenda.buckets |> Map.fetch!(key) |> Bucket.pop()
-
-    {:ok, activation, store(agenda, key, rest)}
+      {:ok, activation, store(agenda, key, rest)}
+    end
   end
 
   @doc """
@@ -158,47 +160,55 @@ defmodule Rete.Agenda do
       3
   """
   @spec peek_group(t()) :: [Activation.t()]
-  def peek_group(%__MODULE__{keys: []}), do: []
+  def peek_group(%__MODULE__{buckets: buckets}) do
+    case buckets |> :gb_trees.iterator() |> :gb_trees.next() do
+      :none ->
+        []
 
-  def peek_group(%__MODULE__{keys: [{salience, internal, _order} | _]} = agenda) do
-    agenda.keys
-    |> Enum.take_while(fn {s, i, _order} -> s == salience and i == internal end)
-    |> Enum.flat_map(&(agenda.buckets |> Map.fetch!(&1) |> Bucket.to_list()))
+      {{salience, internal, _order}, bucket, iterator} ->
+        take_group(iterator, salience, internal, [Bucket.to_list(bucket)])
+    end
   end
 
   @doc "Every pending activation, in firing order."
   @spec to_list(t()) :: [Activation.t()]
-  def to_list(%__MODULE__{keys: keys, buckets: buckets}) do
-    Enum.flat_map(keys, fn key -> buckets |> Map.fetch!(key) |> Bucket.to_list() end)
+  def to_list(%__MODULE__{buckets: buckets}) do
+    buckets |> :gb_trees.values() |> Enum.flat_map(&Bucket.to_list/1)
   end
 
-  # Drops the key when the bucket empties. `keys` records which buckets exist, so an
-  # empty one left behind would make `pop/1` reach for a value that is not there.
-  #
-  # Takes a bucket, not a list. Round-tripping through a list here would put an O(bucket)
-  # cost on `pop/1`, which has to stay O(1).
-  defp store(%__MODULE__{} = agenda, key, remaining) do
-    if Bucket.empty?(remaining) do
-      %__MODULE__{
-        keys: List.delete(agenda.keys, key),
-        buckets: Map.delete(agenda.buckets, key),
-        size: agenda.size - 1
-      }
-    else
-      %__MODULE__{
-        agenda
-        | buckets: Map.put(agenda.buckets, key, remaining),
-          size: agenda.size - 1
-      }
+  # An iterator, because a group is a prefix: reading every bucket would cost the rules that
+  # never get a turn. The two ways to stop are spelled out so that a key of any other shape
+  # raises. Absorbing one would answer `[]` for a group that has activations in it, and a
+  # fire above `concurrency: 1` would then return with matches still pending.
+  defp take_group(iterator, salience, internal, acc) do
+    case :gb_trees.next(iterator) do
+      {{^salience, ^internal, _order}, bucket, iterator} ->
+        take_group(iterator, salience, internal, [Bucket.to_list(bucket) | acc])
+
+      {{_salience, _internal, _order}, _bucket, _iterator} ->
+        firing_order(acc)
+
+      :none ->
+        firing_order(acc)
     end
   end
 
-  # The key list is as long as the ruleset has production nodes. So a linear insertion
-  # costs nothing that grows with the session.
-  defp insert_key([], key), do: [key]
+  defp firing_order(buckets), do: buckets |> Enum.reverse() |> Enum.concat()
 
-  defp insert_key([head | tail] = keys, key) do
-    if key < head, do: [key | keys], else: [head | insert_key(tail, key)]
+  # Drops the key when the bucket empties. The tree records which buckets exist, so an
+  # empty one left behind would make `pop/1` hand back nothing.
+  #
+  # Takes a bucket, not a list. Round-tripping through a list here would put an O(bucket)
+  # cost on `pop/1`, which has to stay O(1) in one rule's pending matches.
+  defp store(%__MODULE__{} = agenda, key, remaining) do
+    buckets =
+      if Bucket.empty?(remaining) do
+        :gb_trees.delete(key, agenda.buckets)
+      else
+        :gb_trees.update(key, remaining, agenda.buckets)
+      end
+
+    %__MODULE__{agenda | buckets: buckets}
   end
 
   # Two activations are the same when they are the same rule, reached by the same match.

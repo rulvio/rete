@@ -2205,20 +2205,24 @@ defmodule Rete.EngineTest do
       assert error.message =~ "grow"
     end
 
-    # Both lists in the message are cut to five. A cut that says nothing reads as
-    # the whole story, and "still pending: 5 activations" is a very different
-    # problem from five hundred.
-    test "a truncated list says how much it left out" do
+    # The list of rules is cut to five. A cut that says nothing reads as the whole
+    # story, and a loop of five rules is a different problem from one of fifty. The
+    # pending list is cut too and carries no count.
+    test "a truncated list of rules says how much it left out" do
       defmodule Fanout do
         use Rete.Ruleset
 
+        # Five rules on what the loop produces, so six reach the tally. Written before
+        # the loop deliberately: equal salience fires in compile order, so a `grow`
+        # written first would win every cycle and nothing else would reach the tally.
+        defrule n1({:counter, n}), do: {:noted, 1, n}
+        defrule n2({:counter, n}), do: {:noted, 2, n}
+        defrule n3({:counter, n}), do: {:noted, 3, n}
+        defrule n4({:counter, n}), do: {:noted, 4, n}
+        defrule n5({:counter, n}), do: {:noted, 5, n}
+
         defrule grow({:counter, n}) do
           {:counter, n + 1}
-        end
-
-        # Piles up activations that never get a turn, so the agenda is long.
-        defrule note({:counter, n}) do
-          {:noted, n}
         end
       end
 
@@ -2230,14 +2234,18 @@ defmodule Rete.EngineTest do
           |> Session.fire_rules(max_cycles: 30)
         end
 
-      assert error.message =~ ~r/Still pending \(5 of \d+ activations\)/
-      assert 5 == error.message |> String.split("Still pending") |> List.last() |> pending_lines()
+      assert error.message =~ ~r/Fired most \(5 of 6 rules\)/
+      assert 5 == error.message |> String.split("Fired most") |> List.last() |> worst_lines()
+
+      # The other list is cut in the same way and carries no count.
+      assert error.message =~ "Still pending:"
+      refute error.message =~ ~r/Still pending \(/
     end
 
-    defp pending_lines(tail) do
+    defp worst_lines(tail) do
       tail
       |> String.split("\n")
-      |> Enum.count(&String.starts_with?(&1, "  Rete.EngineTest.Fanout."))
+      |> Enum.count(&(&1 =~ ~r/^  \d+x  Rete\.EngineTest\.Fanout\./))
     end
 
     defmodule Bounded do
