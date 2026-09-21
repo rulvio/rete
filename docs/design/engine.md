@@ -300,6 +300,12 @@ order all come from the node, none from the match. So there are at most as many 
 there are production nodes, however many facts a session holds. A single sorted list,
 instead, would walk past every match already queued for the same rule, on every insertion.
 
+The buckets themselves sit in a `:gb_trees`, keyed by sort key. That bounds the second
+dimension, which is the rule count rather than the fact count. The keys were a sorted list
+before, and a session that activates many rules at once paid for the whole list on each
+rule's first activation. That cost is invisible to every scenario with one rule in it,
+which is why it survived two passes. §13 has the measurement.
+
 ### Two matches of one rule
 
 Two matches of one rule fire in **arrival order**. That guarantee runs deeper than the
@@ -749,6 +755,42 @@ every call and then one time. It compares this against one call that carries all
 
 The three collection rows are one fix, and the only one that changed what the engine
 guarantees. See `network.md` §3.
+
+### A third pass, in the rule count
+
+Both passes above scale the **facts**. Every one of their scenarios holds the ruleset still,
+and most hold one rule. So nothing measured what a session costs as the *rules* grow while
+it fires. `Bench.Width` grows the rule count and times the compiler. `Bench.Spread` grows
+the module count and fires nothing.
+
+`Bench.Rules` is the scenario that closes that gap. It builds r rules on r fact types and
+gives each one fact, so r rules are pending at once and the agenda holds r sort keys. It
+found one thing, in the key list of `Rete.Agenda`.
+
+| scenario | was | now |
+|---|---|---|
+| activate one match of each of r rules | `~n^1.41`, 13.04 ms at r = 1,024 | `~n^1.10`, 5.60 ms |
+
+Its control is the same 1,024 rules fed in each direction, and it is the clearer reading of
+the two. Activations reach the agenda in compile order, which is the order the keys sort in,
+so every new key landed at the far end of the list. The reverse feed put each one at the
+front:
+
+| 1,024 rules activated | sorted list | `:gb_trees` |
+|---|---|---|
+| in compile order | 19.49 ms | 8.32 ms |
+| in reverse | 6.86 ms | 7.89 ms |
+| ratio | ×2.84 | ×1.05 |
+
+A tree is slower in the direction a list was good at, and that is the trade. It costs
+O(log r) wherever a key lands. So the ratio is what the fix is for, and not the millisecond
+column. The engine no longer has a direction it is ×2.84 worse in, and the order rules are
+written in is no longer a performance decision.
+
+**Both readings are on a fresh heap**, which `isolate: true` asks for. This scenario settles
+a whole session of r rules per call. Five of those in the bench process grow its heap with
+r, and collecting that heap costs more at every later size. It reads ~n^1.5 that way with
+the engine linear underneath, which is the same trap the compile scenario documents.
 
 ### What is left in a collection is the rule body
 

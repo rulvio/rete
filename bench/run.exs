@@ -551,6 +551,56 @@ defmodule Bench.Width do
   end
 end
 
+defmodule Bench.Rules do
+  @moduledoc false
+
+  # r rules, each on a fact type of its own, each activated exactly once. Generated,
+  # because the shape only shows at a rule count nobody writes by hand.
+  #
+  # This measures **firing**, and specifically the agenda. Every rule has its own sort key,
+  # so r rules pending at once means r keys in the agenda. No other scenario reaches that
+  # dimension. `Bench.Agenda` has one rule, and `Bench.Width` fires nothing.
+  #
+  # One type per rule is the whole point of the fixture. r rules over *one* type route
+  # every fact to all r alphas, which is O(r²) by design — see §13, "firing is linear in
+  # the rule count, and inherently so". That cost would bury the one being measured. A
+  # distinct type per rule keeps the taxonomy lookup at one alpha per fact.
+  def module(r) do
+    name = Module.concat(Bench.Rules.Generated, "R#{r}")
+
+    defs =
+      for i <- 1..r do
+        quote do
+          defrule unquote(:"r#{i}")({unquote(:"f#{i}"), x}) do
+            {:out, unquote(i), x}
+          end
+        end
+      end
+
+    Module.create(
+      name,
+      quote do
+        use Rete.Ruleset
+        unquote_splicing(defs)
+      end,
+      Macro.Env.location(__ENV__)
+    )
+
+    name
+  end
+
+  # One fact per rule, so each of the r rules gets exactly one match.
+  def facts(r), do: for(i <- 1..r, do: {:"f#{i}", 1})
+
+  # Through `:persistent_term`, for the reason `Bench.Explain` gives. The scaling scenario
+  # takes `isolate: true`, spawning copies the closure, and a closure over a map of r
+  # networks would copy every one of them at every repeat. A `:persistent_term` is read
+  # without copying. Written once, and never updated, so the global cost of an update is
+  # not paid.
+  def put(r), do: :persistent_term.put({__MODULE__, r}, Rete.Compiler.build([module(r)]))
+  def get(r), do: :persistent_term.get({__MODULE__, r})
+end
+
 defmodule Bench.Spread do
   @moduledoc false
 
@@ -976,6 +1026,57 @@ Bench.scenario(
   note:
     "every rule hangs off the beta root, so sharing has to look past all the others — " <>
       "was O(r\u00B2) while that was a scan"
+)
+
+# Compiled up front, for the reason the width scenario gives: the scenario times firing,
+# not the build that made the network.
+rule_sizes = [128, 256, 512, 1024]
+
+for r <- rule_sizes, do: Bench.Rules.put(r)
+
+Bench.scenario(
+  "activate one match of each of r rules",
+  rule_sizes,
+  fn r ->
+    r
+    |> Bench.Rules.get()
+    |> Bench.session()
+    |> Rete.Session.insert(Bench.Rules.facts(r))
+    |> Rete.Session.fire_rules()
+  end,
+  # `isolate: true`, for the reason the compile scenario gives. This settles a whole session
+  # of r rules per call. Five of them in the bench process grow its heap with `r`, and
+  # collecting that heap then costs more at every later size. It read ~n^1.5 that way and
+  # ~n^1.05 on a fresh heap, with the engine linear underneath both.
+  isolate: true,
+  note:
+    "r rules pending at once, so the agenda holds r sort keys — every scenario above " <>
+      "has one rule, and this is the dimension none of them varies"
+)
+
+# An A/B rather than a shape. Both directions activate the same r rules and settle to the
+# same session, so the exponent would say the same thing twice. What separates them is
+# where each new sort key lands, and that is a ratio.
+#
+# A sorted key list is asymmetric here. Activations arrive in compile order, so their keys
+# arrive ascending and each insertion walks the whole list. Fed in reverse they arrive
+# descending, and each one goes at the head. An ordered tree is flat both ways. So the two
+# rows sitting level is the property, and a forward row that is a multiple of the reverse
+# row means the agenda is back to a linear insertion.
+Bench.compare(
+  "1,024 rules activated in compile order and in reverse",
+  [{"compile order", :forward}, {"reverse", :reverse}],
+  fn direction ->
+    facts = Bench.Rules.facts(1_024)
+    facts = if direction == :reverse, do: Enum.reverse(facts), else: facts
+
+    1_024
+    |> Bench.Rules.get()
+    |> Bench.session()
+    |> Rete.Session.insert(facts)
+    |> Rete.Session.fire_rules()
+  end,
+  note: "the same r activations, reaching the agenda from the two ends of its ordering"
 )
 
 # Compiled up front, for the reason the width scenario gives: the scenario times matching,
