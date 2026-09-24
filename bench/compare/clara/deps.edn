@@ -1,0 +1,15 @@
+;; The clara side of the comparison bench. See ../README.md.
+;;
+;; This names which clara-rules the bench measures. The clara side reads the version it
+;; loaded off the jar, and ../report.exs records it next to the numbers.
+{:paths ["src"]
+ ;; Clojure is pinned, so the version of the Clojure CLI does not choose it.
+ :deps {org.clojure/clojure {:mvn/version "1.12.6"}
+        com.github.gateless/clara-rules {:mvn/version "1.7.0"}
+        criterium/criterium {:mvn/version "0.4.6"}}
+
+ :aliases
+ ;; The heap is pinned so that heap growth does not land in a timing. It is pre-touched so
+ ;; that the pages of the heap are faulted in at start, and not during a timed run.
+ {:bench {:jvm-opts ["-Xms2g" "-Xmx2g" "-XX:+AlwaysPreTouch"]
+          :main-opts ["-m" "bench.clara"]}}}
