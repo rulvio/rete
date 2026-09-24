@@ -41,7 +41,8 @@ defmodule Rete.MixProject do
       {:stream_data, "~> 1.2", only: :test, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
-      {:ex_doc, "~> 0.34", only: :dev, runtime: false}
+      {:ex_doc, "~> 0.34", only: :dev, runtime: false},
+      {:benchee, "~> 1.5", only: :dev, runtime: false}
     ]
   end
 

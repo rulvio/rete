@@ -1,8 +1,11 @@
-# Joins the two result files and writes RESULTS.md. `elixir bench/compare/report.exs`
+# Joins the result files and writes RESULTS.md. `elixir bench/compare/report.exs`
 #
 # Both sides write the number of matches their counting query holds. Two engines that
 # report different counts for one scenario ran two different workloads, and a ratio between
 # those is worse than no ratio at all. So a mismatch fails the run.
+#
+# With `--smoke` it checks the counts and prints the table, and writes nothing. A smoke run
+# times nothing, so a RESULTS.md written from it would hold no result.
 
 defmodule Report do
   @moduledoc false
@@ -12,7 +15,9 @@ defmodule Report do
 
   @variants ["clara-record", "clara-map"]
 
-  def run do
+  def run(argv) do
+    smoke? = "--smoke" in argv
+
     rows =
       Enum.flat_map(
         ["rete.tsv", "clara-record.tsv", "clara-map.tsv"],
@@ -24,23 +29,16 @@ defmodule Report do
 
     check_counts!(order, by_scenario)
 
-    body = [
-      preamble(),
-      environment(),
-      "\n## Medians\n\n",
-      table(order, by_scenario, :median),
-      "\n## Minimums\n\n",
-      "The least noisy reading of the eleven. A JIT runtime is noisy upward and never\n" <>
-        "downward, so the gap between a minimum and its median is how much of that median\n" <>
-        "is noise.\n\n",
-      table(order, by_scenario, :min),
-      "\n",
-      notes()
-    ]
+    table = table(order, by_scenario, smoke?)
 
-    File.write!(@out, IO.iodata_to_binary(body))
-    IO.puts(IO.iodata_to_binary(table(order, by_scenario, :median)))
-    IO.puts("wrote #{@out}")
+    if smoke? do
+      IO.puts(IO.iodata_to_binary(table))
+      IO.puts("counts agree")
+    else
+      File.write!(@out, IO.iodata_to_binary([preamble(), environment(), "## Results\n\n", table]))
+      IO.puts(IO.iodata_to_binary(table))
+      IO.puts("wrote #{@out}")
+    end
   end
 
   defp read(path) do
@@ -49,15 +47,15 @@ defmodule Report do
     |> String.split("\n", trim: true)
     |> tl()
     |> Enum.map(fn line ->
-      [engine, scenario, n, count, median, min] = String.split(line, "\t")
+      [engine, scenario, n, count, mean, rsd] = String.split(line, "\t")
 
       %{
         engine: engine,
         scenario: scenario,
         n: String.to_integer(n),
         count: String.to_integer(count),
-        median: String.to_float(median),
-        min: String.to_float(min)
+        mean: String.to_float(mean),
+        rsd: String.to_float(rsd)
       }
     end)
   end
@@ -81,9 +79,9 @@ defmodule Report do
     end
   end
 
-  defp table(order, by_scenario, field) do
+  defp table(order, by_scenario, smoke?) do
     header = ["scenario", "n", "matches", "rete", "clara-record", "×", "clara-map", "×"]
-    rows = Enum.map(order, &row(&1, Map.fetch!(by_scenario, &1), field))
+    rows = Enum.map(order, &row(&1, Map.fetch!(by_scenario, &1), smoke?))
     widths = widths([header | rows])
 
     [
@@ -95,26 +93,31 @@ defmodule Report do
     ]
   end
 
-  defp row(scenario, entries, field) do
-    of = fn engine -> entries |> Enum.find(&(&1.engine == engine)) |> Map.fetch!(field) end
+  defp row(scenario, entries, smoke?) do
+    of = fn engine -> Enum.find(entries, &(&1.engine == engine)) end
     rete = of.("rete")
     [first, second] = Enum.map(@variants, of)
-    sample = hd(entries)
 
-    [
-      scenario,
-      to_string(sample.n),
-      to_string(sample.count),
-      ms(rete),
-      ms(first),
-      ratio(scenario, first, rete),
-      ms(second),
-      ratio(scenario, second, rete)
-    ]
+    timings =
+      if smoke? do
+        List.duplicate("—", 5)
+      else
+        [
+          timing(rete),
+          timing(first),
+          ratio(first.mean, rete.mean),
+          timing(second),
+          ratio(second.mean, rete.mean)
+        ]
+      end
+
+    [scenario, to_string(rete.n), to_string(rete.count) | timings]
   end
 
-  defp ratio(_scenario, _clara, rete) when rete == 0.0, do: "—"
-  defp ratio(_scenario, clara, rete), do: :erlang.float_to_binary(clara / rete, decimals: 2)
+  defp timing(entry), do: "#{ms(entry.mean)} ±#{round(entry.rsd * 100)}%"
+
+  defp ratio(_clara, rete) when rete == 0.0, do: "—"
+  defp ratio(clara, rete), do: :erlang.float_to_binary(clara / rete, decimals: 2)
 
   # Two decimals lose their meaning below a millisecond, where a build lands. Three more
   # would be noise on a reading of a hundred.
@@ -138,19 +141,12 @@ defmodule Report do
     """
     # rete against clara-rules
 
-    Written by `bench/compare/report.exs`. Read `bench/compare/README.md` first: it says
-    what each scenario does and what the numbers do not mean.
+    Written by `bench/compare/report.exs`. `bench/compare/README.md` says what each
+    scenario does, how it is measured, and what the numbers do not mean.
 
-    Every figure is milliseconds for one run of the whole scenario, so a smaller number is
-    faster. The `×` columns are clara divided by rete, so above 1.00 means rete is ahead.
-    The `matches` column is what each engine's counting query held after the scenario
-    settled. The three engines agree on it, which is what makes the comparison a comparison.
-
-    The `calibrate` row is not a result. It is an integer loop with no engine in it, and it
-    reports how fast the process that ran the rest of the column was going. Its own `×` says
-    nothing about either engine. Compare it against the same figure in an earlier run: a
-    column whose `calibrate` has moved has moved everywhere, and that run is to be repeated
-    rather than read.
+    Each timing is the mean in milliseconds for one run of the whole scenario. The `±` is
+    the relative standard deviation. The `×` columns are the clara mean divided by the rete
+    mean. The `matches` column is the count that every engine's counting query held.
 
     """
   end
@@ -162,33 +158,13 @@ defmodule Report do
     | | |
     |---|---|
     | date | #{Date.utc_today()} |
-    | model | #{hardware("Model Name")} (#{hardware("Model Identifier")}) |
-    | chip | #{hardware("Chip")} |
-    | cores | #{cores()} |
-    | memory | #{hardware("Memory")} |
-    | os | #{cmd("sw_vers", ["-productName"])} #{cmd("sw_vers", ["-productVersion"])} \
-    (#{cmd("sw_vers", ["-buildVersion"])}) |
-
+    #{machine_rows()}
     ## What ran
-
-    Each side asks its own runtime what it is and writes the answer next to its timings.
-    A version read off the `PATH` instead would be the one installed, and not necessarily
-    the one that ran.
 
     | | |
     |---|---|
     | rete | #{cmd("git", ["rev-parse", "--short", "HEAD"])} |
-    #{env_rows("rete-env.tsv")}\
-    | clara-rules | #{clara_version()} |
-    #{env_rows("clara-env.tsv")}
-    A table of milliseconds only means something next to the machine that produced it. A run
-    on another machine overwrites this file, and that is correct.
-
-    **Run it on a quiet machine.** The JVM side is far more sensitive to a busy one than the
-    BEAM side, because its compiler and collector threads compete for the same cores. With
-    another application holding half a core, clara read 70% slower while rete moved by 12%.
-    A table taken then flatters rete. The `calibrate` row is how such a run is spotted.
-
+    #{env_rows("rete-env.tsv")}#{env_rows("clara-env.tsv")}
     """
   end
 
@@ -208,13 +184,79 @@ defmodule Report do
     end
   end
 
-  # `system_profiler` prints an indented `Key: value` block.
-  defp hardware(key) do
-    case Regex.run(~r/^\s*#{Regex.escape(key)}:\s*(.+)$/m, hardware_profile()) do
-      [_match, value] -> String.trim(value)
+  defp machine_rows do
+    machine()
+    |> Enum.map_join(fn {key, value} -> "| #{key} | #{value} |\n" end)
+  end
+
+  defp machine do
+    case :os.type() do
+      {:unix, :darwin} -> darwin_machine()
+      {:unix, :linux} -> linux_machine()
+      _other -> [{"os", "unknown"}]
+    end
+  end
+
+  defp darwin_machine do
+    [
+      {"model", "#{hardware("Model Name")} (#{hardware("Model Identifier")})"},
+      {"chip", hardware("Chip")},
+      {"cores", darwin_cores()},
+      {"memory", hardware("Memory")},
+      {"os",
+       "#{cmd("sw_vers", ["-productName"])} #{cmd("sw_vers", ["-productVersion"])} " <>
+         "(#{cmd("sw_vers", ["-buildVersion"])})"}
+    ]
+  end
+
+  # A cloud machine or a container often hides the DMI model or the CPU model. So every row
+  # falls back to "unknown" on its own.
+  defp linux_machine do
+    [
+      {"model", file_line("/sys/devices/virtual/dmi/id/product_name")},
+      {"chip", field(cmd_all("lscpu", []), "Model name")},
+      {"cores", cmd("nproc", [])},
+      {"memory", linux_memory()},
+      {"os",
+       "#{"/etc/os-release" |> read_file() |> field("PRETTY_NAME", "=") |> String.trim("\"")} " <>
+         "(#{cmd("uname", ["-r"])})"}
+    ]
+  end
+
+  defp linux_memory do
+    case "/proc/meminfo" |> read_file() |> field("MemTotal") |> Integer.parse() do
+      {kb, _unit} -> "#{round(kb / 1024 / 1024)} GB"
+      :error -> "unknown"
+    end
+  end
+
+  defp file_line(path) do
+    case read_file(path) do
+      "unknown" -> "unknown"
+      contents -> contents |> String.split("\n", trim: true) |> List.first("unknown")
+    end
+  end
+
+  defp read_file(path) do
+    case File.read(path) do
+      {:ok, contents} -> String.trim(contents)
+      {:error, _reason} -> "unknown"
+    end
+  end
+
+  # One `Key: value` line out of a block of them. `system_profiler`, `lscpu` and
+  # /proc/meminfo all print that shape. /etc/os-release uses `=` instead.
+  defp field(text, key, separator \\ ":") do
+    pattern = ~r/^\s*#{Regex.escape(key)}#{separator}\s*(.+)$/m
+
+    # `lscpu` prints `-` for a model name that a virtual machine does not report.
+    case Regex.run(pattern, text) do
+      [_match, value] -> if String.trim(value) == "-", do: "unknown", else: String.trim(value)
       nil -> "unknown"
     end
   end
+
+  defp hardware(key), do: field(hardware_profile(), key)
 
   defp hardware_profile do
     case Process.get(:hardware_profile) do
@@ -230,7 +272,7 @@ defmodule Report do
 
   # Apple silicon runs two kinds of core at two speeds, and which kind a thread lands on is
   # worth more to a reader than the total. `hw.perflevel0` is the faster of the two.
-  defp cores do
+  defp darwin_cores do
     total = cmd("sysctl", ["-n", "hw.ncpu"])
 
     levels = Enum.map([0, 1], &perflevel/1)
@@ -250,68 +292,23 @@ defmodule Report do
     end
   end
 
-  defp notes do
-    """
-    ## What this does not say
-
-    **Two runtimes.** rete runs on the BEAM and clara runs on the JVM. Every ratio here
-    mixes engine design with runtime design, and no column separates the two.
-
-    **A steady state, not a start.** Each side warms up before it times anything, so these
-    are the numbers a long-running process sees. Neither the JVM's start nor the BEAM's is
-    measured.
-
-    **No memory column.** `:erts_debug.size_shared/1` counts shared BEAM terms and a JVM
-    heap reading counts reachable objects. The two numbers do not divide.
-
-    **The build row is one ruleset, of four rules.** Both engines expand their rule macros
-    ahead of it, so what it times is the same phase on both sides: rule data to a live
-    session. The gap is runtime code generation. `mk-session` evaluates the condition and
-    action forms of each rule, and rete has nothing to evaluate, because Elixir emitted
-    those as functions when it compiled the ruleset module. A larger ruleset moves this row,
-    and nothing here says how.
-
-    **clara can go faster on one row.** The `collection` scenario uses
-    `clara.rules.accumulators/all` and sums in the right hand side, because a rete collection
-    is collect-all and has no other form. `acc/sum` is the faster clara answer, and it has no
-    counterpart here.
-    """
-  end
-
   defp cmd(command, args) do
     case cmd_all(command, args) do
       "unknown" -> "unknown"
-      output -> output |> String.split("\n", trim: true) |> List.first() |> String.trim()
+      output -> output |> String.split("\n", trim: true) |> List.first("unknown") |> String.trim()
     end
   end
 
+  # `System.cmd/3` raises when the command does not exist. That is not an error here. It is
+  # a machine that answers in another way, and its row reads "unknown".
   defp cmd_all(command, args) do
     case System.cmd(command, args, stderr_to_stdout: true) do
       {output, 0} -> String.trim(output)
       _ -> "unknown"
     end
-  end
-
-  # Which clara-rules the bench measured, read out of the dependency that names it. The
-  # bench takes it either way: a released version off Clojars, or a checkout on disk. A
-  # checkout has no version to print, so `git describe` names the commit instead.
-  @clara_deps "bench/compare/clara/deps.edn"
-
-  defp clara_version do
-    deps = File.read!(@clara_deps)
-
-    cond do
-      captures = Regex.run(~r/:mvn\/version\s+"([^"]+)"/, deps) ->
-        "#{Enum.at(captures, 1)} (Clojars)"
-
-      captures = Regex.run(~r/:local\/root\s+"([^"]+)"/, deps) ->
-        root = Enum.at(captures, 1)
-        "#{cmd("git", ["-C", root, "describe", "--tags", "--always", "--dirty"])} (#{root})"
-
-      true ->
-        "unknown"
-    end
+  rescue
+    ErlangError -> "unknown"
   end
 end
 
-Report.run()
+Report.run(System.argv())

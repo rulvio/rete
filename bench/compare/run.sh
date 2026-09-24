@@ -18,4 +18,4 @@ mix run bench/compare/rete.exs "$@"
 (cd bench/compare/clara && clojure -M:bench record "$@")
 (cd bench/compare/clara && clojure -M:bench map "$@")
 
-elixir bench/compare/report.exs
+elixir bench/compare/report.exs "$@"

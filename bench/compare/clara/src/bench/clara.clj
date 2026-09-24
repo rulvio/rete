@@ -12,6 +12,7 @@
             [clara.rules.accumulators :as acc]
             [clara.rules.compiler :as com]
             [clara.rules.dsl :as dsl]
+            [criterium.core :as crit]
             [clojure.java.io :as io]
             [clojure.string :as str])
   (:gen-class))
@@ -216,29 +217,35 @@
 
 ;; --- the harness --------------------------------------------------------------------
 ;;
-;; The same protocol as ../../rete.exs: warm up, then time 11 runs and report the median
-;; and the minimum. The minimum is reported because a JIT runtime is noisy upward and never
-;; downward, so the two numbers together say how much of the median is noise.
+;; Criterium does the warm-up, the sampling and the statistics. It is the standard tool on
+;; the JVM, and ../../rete.exs hands the same job to Benchee. `quick-benchmark` warms the
+;; JIT up for seconds and then takes a few samples, each a batch of runs.
 
-(def ^:private warmup-ms 3000)
-(def ^:private warmup-runs 50)
-(def ^:private repeats 11)
+(defn- measure [f]
+  (let [result (crit/quick-benchmark* f {})
+        mean (first (:mean result))]
+    {:mean (* 1e3 mean)
+     :rsd (/ (Math/sqrt (first (:variance result))) mean)}))
+
+;; Criterium ends its warm-up only once the JVM stops loading classes. A scenario that calls
+;; `eval` on every run loads new classes on every run, so that warm-up never ends. Such a
+;; scenario takes this plain timer: warm up for as long as Criterium would, then time each
+;; run on its own.
+(def ^:private plain-warmup-ms 5000)
+(def ^:private plain-runs 100)
 
 (defn- now-ms [] (/ (System/nanoTime) 1e6))
 
-(defn- measure [f]
-  (let [deadline (+ (now-ms) warmup-ms)]
-    (loop [i 0]
-      (when (and (< i warmup-runs) (< (now-ms) deadline))
-        (f)
-        (recur (inc i)))))
-  (let [times (sort (for [_ (range repeats)]
-                      (do (System/gc)
-                          (Thread/sleep 5)
-                          (let [t0 (System/nanoTime)]
-                            (f)
-                            (/ (- (System/nanoTime) t0) 1e6)))))]
-    {:median (nth (vec times) (quot repeats 2)) :min (first times)}))
+(defn- measure-plain [f]
+  (let [deadline (+ (now-ms) plain-warmup-ms)]
+    (while (< (now-ms) deadline) (f)))
+  (let [times (vec (for [_ (range plain-runs)]
+                     (let [t0 (System/nanoTime)]
+                       (f)
+                       (/ (- (System/nanoTime) t0) 1e6))))
+        mean (/ (reduce + times) plain-runs)
+        variance (/ (reduce + (map #(Math/pow (- % mean) 2) times)) (dec plain-runs))]
+    {:mean mean :rsd (/ (Math/sqrt variance) mean)}))
 
 ;; --- the scenarios ----------------------------------------------------------------------
 ;;
@@ -260,12 +267,12 @@
     :prepare (fn [_] #(reduce (fn [acc i] (+ acc (rem i 7))) 0 (range 1 2000001)))
     :tally (fn [total] total)}
 
-   {:id "build" :n 0
+   {:id "build" :n 0 :measure measure-plain
     :prepare (fn [v]
                (let [rules (full-rules v)]
                  #(build v rules [:compiler-cache false])))
-    ;; A freshly built session holds no match, so the count is 0 on both engines. The
-    ;; workload is the rulebase, and the report prints this row without a ratio.
+    ;; A fresh session holds no match, so the count is 0 on both engines. The workload is
+    ;; rule data to a live session.
     :tally (fn [_] 0)}
 
    {:id "insert-fire" :n 10000
@@ -376,26 +383,35 @@
 
 (defn- run-variant [variant smoke?]
   (let [v (with-generated-types variant)]
-    (vec (for [{:keys [id n prepare tally]} scenarios]
+    (vec (for [{:keys [id n prepare tally] :as scenario} scenarios]
            (let [thunk (prepare v)
                  count* (tally (thunk))]
              (println (format "  %-14s n=%-6d count=%d" id n count*))
              (flush)
              (merge {:engine (:name variant) :scenario id :n n :count count*}
                     (if smoke?
-                      {:median 0.0 :min 0.0}
-                      (measure thunk))))))))
+                      {:mean 0.0 :rsd 0.0}
+                      ((:measure scenario measure) thunk))))))))
 
 (defn- write-tsv [path rows]
   (io/make-parents path)
   (spit path
-        (str (str/join "\t" ["engine" "scenario" "n" "count" "median_ms" "min_ms"]) "\n"
+        (str (str/join "\t" ["engine" "scenario" "n" "count" "mean_ms" "rsd"]) "\n"
              (str/join "\n"
-                       (for [{:keys [engine scenario n count median min]} rows]
+                       (for [{:keys [engine scenario n count mean rsd]} rows]
                          (str/join "\t" [engine scenario n count
-                                         (format "%.3f" median)
-                                         (format "%.3f" min)])))
+                                         (format "%.3f" mean)
+                                         (format "%.4f" rsd)])))
              "\n")))
+
+(defn- jar-version
+  "The version of a library, read off the pom.properties in the jar that was loaded. The
+  version in deps.edn is the one asked for, and this is the one that ran."
+  [group artifact]
+  (if-let [props (io/resource (str "META-INF/maven/" group "/" artifact "/pom.properties"))]
+    (with-open [in (io/input-stream props)]
+      (.getProperty (doto (java.util.Properties.) (.load in)) "version"))
+    "unknown"))
 
 (defn- write-env
   "What this JVM is, asked of the JVM. `../report.exs` could shell out for a version
@@ -408,7 +424,9 @@
         ;; Two arguments are noise. `-Djdk.attach` comes from JAVA_TOOL_OPTIONS in the
         ;; shell, and `-Dclojure.basis` is a cache path the CLI passes and nothing reads.
         noise ["-Djdk.attach" "-Dclojure.basis"]
-        env [["clojure" (clojure-version)]
+        env [["clara-rules" (jar-version "com.github.gateless" "clara-rules")]
+             ["criterium" (jar-version "criterium" "criterium")]
+             ["clojure" (clojure-version)]
              ["java" (str (System/getProperty "java.runtime.version") " "
                           (System/getProperty "java.vendor.version"))]
              ["jvm" (str (System/getProperty "java.vm.name") ", "

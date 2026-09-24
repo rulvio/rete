@@ -10,33 +10,23 @@
 defmodule Cmp.Bench do
   @moduledoc false
 
-  # Warm up for this long, or this many runs, whichever ends first. Then time this many
-  # runs. clara/src/bench/clara.clj holds the same three numbers, because a comparison of
-  # two measurements taken under different protocols is not a comparison.
-  @warmup_ms 3_000
-  @warmup_runs 50
-  @repeats 11
-
+  # Benchee does the warm-up, the sampling and the statistics. clara/src/bench/clara.clj
+  # hands the same job to Criterium, the standard tool on the JVM. Each runtime gets its
+  # own standard tool, with settings of the same order: a warm-up of seconds, then seconds
+  # of sampling.
   def measure(fun) do
-    warm(fun, 0, System.monotonic_time(:millisecond) + @warmup_ms)
+    suite =
+      Benchee.run(%{"scenario" => fun},
+        warmup: 2,
+        time: 5,
+        memory_time: 0,
+        formatters: [],
+        print: [benchmarking: false, configuration: false, fast_warning: false]
+      )
 
-    times =
-      for _ <- 1..@repeats do
-        :erlang.garbage_collect()
-        Process.sleep(5)
-        {us, _} = :timer.tc(fun)
-        us / 1000
-      end
-      |> Enum.sort()
-
-    %{median: Enum.at(times, div(@repeats, 2)), min: hd(times)}
-  end
-
-  defp warm(fun, runs, deadline) do
-    if runs < @warmup_runs and System.monotonic_time(:millisecond) < deadline do
-      fun.()
-      warm(fun, runs + 1, deadline)
-    end
+    [scenario] = suite.scenarios
+    stats = scenario.run_time_data.statistics
+    %{mean: stats.average / 1.0e6, rsd: stats.std_dev_ratio}
   end
 
   # The network is built once, and each run gets an empty session over it. Otherwise every
@@ -198,9 +188,9 @@ scenarios = [
   %{
     id: "build",
     n: 0,
-    prepare: fn -> fn -> Rete.Compiler.build([Cmp.Full]) end end,
-    # A freshly built network holds no match, so the count is 0 on both engines. The
-    # workload is the rulebase, and the report prints this row without a ratio.
+    prepare: fn -> fn -> Cmp.Bench.session(Cmp.Full) end end,
+    # A fresh session holds no match, so the count is 0 on both engines. The workload is
+    # rule data to a live session, the same phase that `mk-session` covers on the clara side.
     tally: fn _ -> 0 end
   },
   %{
@@ -357,21 +347,21 @@ rows =
       "  #{String.pad_trailing(id, 14)} n=#{String.pad_trailing(to_string(n), 6)} count=#{count}"
     )
 
-    timing = if smoke?, do: %{median: 0.0, min: 0.0}, else: Cmp.Bench.measure(thunk)
+    timing = if smoke?, do: %{mean: 0.0, rsd: 0.0}, else: Cmp.Bench.measure(thunk)
 
     [
       "rete",
       id,
       to_string(n),
       to_string(count),
-      :erlang.float_to_binary(timing.median, decimals: 3),
-      :erlang.float_to_binary(timing.min, decimals: 3)
+      :erlang.float_to_binary(timing.mean, decimals: 3),
+      :erlang.float_to_binary(timing.rsd, decimals: 4)
     ]
     |> Enum.join("\t")
   end)
 
 File.mkdir_p!(Path.dirname(out))
-header = Enum.join(["engine", "scenario", "n", "count", "median_ms", "min_ms"], "\t")
+header = Enum.join(["engine", "scenario", "n", "count", "mean_ms", "rsd"], "\t")
 File.write!(out, Enum.join([header | rows], "\n") <> "\n")
 IO.puts("wrote #{out}")
 
@@ -383,7 +373,8 @@ env = [
   {"erlang", "OTP #{:erlang.system_info(:otp_release)}, erts #{:erlang.system_info(:version)}"},
   {"beam",
    "#{:erlang.system_info(:emu_flavor)}, #{:erlang.system_info(:wordsize) * 8}-bit, " <>
-     "#{:erlang.system_info(:schedulers_online)} schedulers"}
+     "#{:erlang.system_info(:schedulers_online)} schedulers"},
+  {"benchee", to_string(Application.spec(:benchee, :vsn))}
 ]
 
 env_out = Path.join(Path.dirname(out), "rete-env.tsv")
