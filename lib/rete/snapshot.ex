@@ -44,8 +44,7 @@ defmodule Rete.Snapshot do
     offers = Map.new(Network.modules(network), &{&1, Image.fetch(&1)})
 
     with {:ok, rule_modules} <- Image.captures(%Network{network | taxonomy: nil}),
-         :ok <- check_fresh(network.image_names, offers, rule_modules),
-         {:ok, ruleset_images} <- ruleset_images(offers, rule_modules),
+         {:ok, ruleset_images} <- ruleset_images(built_offers(network, offers), rule_modules),
          state = %State{state | network: Image.retarget(network, ruleset_images)},
          {:ok, captured} <- Image.captures(state),
          {:ok, images} <- snapshot_images(offers, captured) do
@@ -92,17 +91,11 @@ defmodule Rete.Snapshot do
 
   def message({:no_image, _module, reason}), do: reason
 
-  def message({:stale, module}) do
-    "The session was built from another version of #{inspect(module)} than this node " <>
-      "runs. So dump/2 cannot carry the rules that the session runs. Dump the session on " <>
-      "a node that runs the version it was built from, or build a new session."
-  end
-
   def message({:no_beam, image}) do
     "The session runs the rules of #{inspect(image)}, and this node has no beam of it. So " <>
       "dump/2 cannot carry those rules. This happens to a session that reached this node " <>
-      "by distribution from a node that loaded a snapshot. Load the " <>
-      "snapshot on this node with load/2, and dump the session that it returns."
+      "by distribution from a node that runs other rules. Dump the session on the node " <>
+      "that built or loaded it."
   end
 
   def message(:invalid), do: "The binary is not a snapshot that Rete.Session.dump/2 wrote."
@@ -170,26 +163,27 @@ defmodule Rete.Snapshot do
   defp shape(value) when is_map(value), do: "a map"
   defp shape(_value), do: "a value of another type"
 
-  # The network runs the code its modules had when it was built. A module that now offers
-  # another image has other code, so its image cannot stand in for that code. A loaded
-  # session captures images and not modules, so this never refuses it. A module that had
-  # no image then and has none now passes, and `ruleset_images/2` reports it.
-  defp check_fresh(image_names, offers, captured) do
-    stale =
-      captured
-      |> Enum.sort()
-      |> Enum.find(fn module ->
-        case Map.fetch(image_names, module) do
-          {:ok, built} -> built != offered_name(Map.get(offers, module))
-          :error -> false
-        end
-      end)
-
-    if stale, do: {:error, {:stale, stale}}, else: :ok
+  # The network runs the code its modules had when it was built, so that is the image it
+  # takes. Under `images: false`, the module can offer another image after an upgrade. The
+  # registry keeps the built beam, because `Rete.Image.register/1` wrote it. A network with
+  # no record, such as one built by hand, takes what the module offers now.
+  defp built_offers(%Network{built_images: built}, offers) do
+    Map.new(offers, fn {module, offer} ->
+      {module, built_offer(Map.fetch(built, module), offer)}
+    end)
   end
 
-  defp offered_name({:ok, {name, _beam}}), do: name
-  defp offered_name(_no_image), do: nil
+  defp built_offer(:error, offer), do: offer
+  defp built_offer({:ok, {:ok, name}}, {:ok, {name, _beam}} = offer), do: offer
+
+  defp built_offer({:ok, {:ok, name}}, _offer) do
+    case Image.beam(name) do
+      nil -> {:no_beam, name}
+      beam -> {:ok, {name, beam}}
+    end
+  end
+
+  defp built_offer({:ok, recorded}, _offer), do: recorded
 
   # Only a module that the network still captures counts. A loaded session captures images,
   # so the module of this node does not matter to it.
@@ -200,6 +194,7 @@ defmodule Rete.Snapshot do
       {module, {:ok, image}}, {:ok, acc} -> {:cont, {:ok, Map.put(acc, module, image)}}
       {_module, :none}, acc -> {:cont, acc}
       {module, {:error, reason}}, _acc -> {:halt, {:error, {:no_image, module, reason}}}
+      {_module, {:no_beam, image}}, _acc -> {:halt, {:error, {:no_beam, image}}}
     end)
   end
 

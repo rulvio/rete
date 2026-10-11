@@ -2535,12 +2535,13 @@ defmodule Rete.EngineTest do
     end
 
     # The generated `__rhs_<name>__` frame is what names the rule, so a task must not
-    # swallow the stacktrace and leave an opaque exit behind.
+    # swallow the stacktrace and leave an opaque exit behind. With images, the frame names
+    # the image of `Boom`, so this builds without them to match the module exactly.
     test "a raising body still names its rule in the stacktrace from a task" do
       stacktrace =
         try do
           [Boom]
-          |> Session.new()
+          |> Session.new(images: false)
           |> Session.insert([{:go, 0}])
           |> Session.fire_rules(concurrency: 4)
 

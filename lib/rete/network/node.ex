@@ -23,9 +23,18 @@ defmodule Rete.Network.Node do
     **any** type, on purpose. `Rete.Taxonomy`'s type index decides which alpha
     nodes a fact reaches. This is what lets `derive(:premium, :customer)` make a
     `:premium` fact reach a condition written against `:customer`.
+
+    `:children` holds the beta nodes the alpha feeds. Unlike a beta node, an alpha has one
+    owner, so it holds its edges itself.
     """
-    @type t :: %__MODULE__{id: non_neg_integer() | nil, type: atom(), code: atom(), fun: fun()}
-    defstruct [:id, :type, :code, :fun]
+    @type t :: %__MODULE__{
+            id: atom(),
+            type: atom(),
+            code: atom(),
+            fun: fun(),
+            children: [non_neg_integer()]
+          }
+    defstruct [:id, :type, :code, :fun, children: []]
   end
 
   defmodule RootJoin do

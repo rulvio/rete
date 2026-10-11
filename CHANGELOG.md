@@ -16,14 +16,19 @@ All notable changes to `rete` are recorded here. The format follows
   `dump/2` signs every snapshot with an HMAC-SHA256 under it, and `load/2` checks the
   signature before it decodes the body. Listeners do not travel, so attach them again after
   `load/2`. A snapshot is signed, not encrypted, so anyone who has it can read its facts.
-  `dump/2` returns `{:error, {:stale, module}}` for a session built from another version
-  of `module` than the node runs, such as a session that lived through a hot upgrade. See
+  A session dumps the rules it was built with, even after its modules change. See
   `docs/design/snapshot.md`.
 * `use Rete.Ruleset` compiles an image module beside each ruleset module. For `MyRules`, it
   is `MyRules.Image.M<hash>`, and the hash is taken over the code of the rules. An image
   that does not compile never stops the ruleset module from compiling. Only `dump/2`
   refuses the module then. `:image_compile_timeout` in the `:rete` application environment
   changes the two-minute limit on an image compile. See `docs/design/snapshot.md` §2.
+* A session runs the image of each ruleset module by default. So a session built before a
+  hot upgrade keeps running its own rules, consistently, until you build it again.
+  `Rete.Session.latest?/1` returns `false` when a ruleset module now offers other code.
+  `images: false` on `Rete.Session.new/2` or `Rete.Compiler.build/2` calls the ruleset
+  modules instead, for test coverage. `config :rete, images: false` sets that default for a
+  test env. With images, a stack trace names the image module.
 * Four `bench/run.exs` scenarios. One flips a compound negation on and off. One dumps a
   session of n customers, and one loads it. One dumps that session after half the customers
   are retracted. "match one condition written in k modules" now runs on a fresh process.

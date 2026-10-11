@@ -71,13 +71,12 @@ defmodule Rete.SnapshotTest do
       :tokens
     ],
     Rete.Network => [
-      :alpha_beta,
       :alphas,
+      :built_images,
       :graph,
-      :image_names,
-      :marker_types,
       :productions,
       :queries,
+      :reserved_types,
       :taxonomy
     ],
     Rete.Network.Node.Accumulate => [
@@ -100,7 +99,7 @@ defmodule Rete.SnapshotTest do
       :propagates_empty?,
       :type
     ],
-    Rete.Network.Node.Alpha => [:code, :fun, :id, :type],
+    Rete.Network.Node.Alpha => [:children, :code, :fun, :id, :type],
     Rete.Network.Node.ExprJoin => [
       :alpha_code,
       :fact_binding,
@@ -183,6 +182,7 @@ defmodule Rete.SnapshotTest do
 
       redeploy(module, :v2)
       {:ok, loaded} = Session.load(snapshot, @key)
+      refute Session.latest?(loaded)
 
       # v2 declares the query with the same head, so the function v2 defines reaches the
       # v1 query node by its `{module, name}`.
@@ -257,30 +257,50 @@ defmodule Rete.SnapshotTest do
       module = compile(Rete.SnapshotTest.Recorded, :v1)
       {:ok, {image, _beam}} = module.__rete_image__()
 
-      assert %{module => image} == Session.network(Session.new([module])).image_names
+      assert %{module => {:ok, image}} == Session.network(Session.new([module])).built_images
+      assert :none == Rete.Image.register(Enum)
       assert nil == Rete.Image.name(Enum)
     end
 
-    # The live session calls the v2 code now. The v2 image would pair that code with the v1
-    # network, so the dump refuses.
-    test "a session built before a redeploy does not dump" do
-      module = compile(Rete.SnapshotTest.Stale, :v1)
+    # The session runs the v1 image, so the v2 module does not reach it. A new session
+    # picks up v2.
+    test "a session built with images keeps its rules across a redeploy" do
+      module = compile(Rete.SnapshotTest.Kept, :v1)
       session = v1_session(module)
+      assert Session.latest?(session)
 
       redeploy(module, :v2)
+      refute Session.latest?(session)
 
-      assert {:error, {:stale, ^module}} = Session.dump(session, @key)
+      grown = session |> Session.insert({:order, 2, 500}) |> Session.fire_rules()
+      assert [:v1] == Session.query(grown, {module, :flagged}, cid: 2)
 
-      assert_raise ArgumentError, ~r/another version of Rete.SnapshotTest.Stale/, fn ->
-        Session.dump!(session, @key)
-      end
+      fresh = v1_session(module)
+      assert Session.latest?(fresh)
+      assert [] == Session.query(fresh, {module, :flagged}, cid: 1)
     end
 
-    test "a session built after a redeploy dumps" do
-      module = compile(Rete.SnapshotTest.Fresh, :v1)
-      redeploy(module, :v2)
+    # The session calls the v2 module now. Its dump still carries the image it was built
+    # with, so the loaded session runs v1 and does not mix the two versions.
+    test "a session built without images dumps the image it was built with" do
+      module = compile(Rete.SnapshotTest.NoImages, :v1)
+      {:ok, {v1_image, _beam}} = module.__rete_image__()
 
-      assert {:ok, _snapshot} = module |> v1_session() |> Session.dump(@key)
+      session =
+        [module]
+        |> Session.new(images: false)
+        |> Session.insert([{:customer, 1}, {:order, 1, 500}])
+        |> Session.fire_rules()
+
+      redeploy(module, :v2)
+      refute Session.latest?(session)
+
+      snapshot = Session.dump!(session, @key)
+      assert [v1_image] == images_in(snapshot)
+
+      {:ok, loaded} = Session.load(snapshot, @key)
+      grown = loaded |> Session.insert([{:customer, 2}, {:order, 2, 500}]) |> Session.fire_rules()
+      assert [:v1] == Session.query(grown, {module, :flagged}, cid: 2)
     end
   end
 
@@ -791,9 +811,9 @@ defmodule Rete.SnapshotTest do
     end
 
     # The rule text is the same in both versions, so no generated function changes. Only
-    # the helper does. Without the check, the snapshot ran the v2 helper and said nothing.
-    test "a change to a helper alone makes a session built before it stale" do
-      module = Rete.SnapshotTest.StaleHelper
+    # the helper does, and the image name still tells the two versions apart.
+    test "a change to a helper alone makes a session built before it not the latest" do
+      module = Rete.SnapshotTest.HelperOnly
       Code.compile_string(helper_source(module, 100, "big?(amt)", ""))
       session = Session.new([module])
 
@@ -801,7 +821,7 @@ defmodule Rete.SnapshotTest do
       :code.delete(module)
       Code.compile_string(helper_source(module, 1000, "big?(amt)", ""))
 
-      assert {:error, {:stale, ^module}} = Session.dump(session, @key)
+      refute Session.latest?(session)
     end
   end
 

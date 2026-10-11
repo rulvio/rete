@@ -34,14 +34,24 @@ defmodule Rete.Compiler do
 
   alias Rete.Compiler.BetaGraph
   alias Rete.Compiler.Negation
+  alias Rete.Image
   alias Rete.IR
   alias Rete.Network
+  alias Rete.Snapshot
 
   @doc """
   Builds a network from ruleset modules.
 
-  Options go to `Rete.Taxonomy.new/2`. `:fact_type_fn` is the one that matters, and it
-  defaults to struct, tagged tuple and tagged map.
+  Options:
+
+    * `:fact_type_fn` goes to `Rete.Taxonomy.new/2`. It defaults to struct, tagged tuple
+      and tagged map.
+    * `:images` is `true` by default. The network then runs the image of each ruleset
+      module, so it keeps its rules after a hot upgrade of the module. With `false`, it
+      calls the ruleset modules, so a coverage tool sees the rules run. Use `false` only
+      in tests. `config :rete, images: false` changes the default.
+
+  Raises `ArgumentError` if the image of a ruleset module does not load.
 
       Rete.Compiler.build([MyRuleset])
       Rete.Compiler.build([MyRuleset, OtherRuleset], fact_type_fn: &MyApp.type/1)
@@ -63,10 +73,30 @@ defmodule Rete.Compiler do
   def build_productions(productions, taxo_data \\ [], opts \\ []) do
     validate_names!(productions)
 
-    productions
-    |> Enum.flat_map(&extract/1)
-    |> disambiguate_codes()
-    |> Network.new(taxo_data, opts)
+    network =
+      productions
+      |> Enum.flat_map(&extract/1)
+      |> disambiguate_codes()
+      |> Network.new(taxo_data, opts)
+
+    if images?(opts), do: run_images(network), else: network
+  end
+
+  defp images?(opts), do: Keyword.get(opts, :images, Application.get_env(:rete, :images, true))
+
+  # `Network.new/3` put each beam in the registry, so `Image.beam/1` has it. An image that
+  # this node built and cannot load is a fault of the node. Calls to the module instead
+  # would hide it, and the session would no longer keep its rules across an upgrade.
+  defp run_images(%Network{built_images: built} = network) do
+    images = for {module, {:ok, name}} <- built, into: %{}, do: {module, {name, Image.beam(name)}}
+
+    case Image.load(Map.new(Map.values(images))) do
+      :ok ->
+        Image.retarget(network, images)
+
+      {:error, reason} ->
+        raise ArgumentError, "Cannot build the network. " <> Snapshot.message(reason)
+    end
   end
 
   # A helper must be added before the production that negates its marker. So its

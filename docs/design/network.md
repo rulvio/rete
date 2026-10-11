@@ -30,12 +30,13 @@ node depends on what every other rule already put in the graph.
 
 ```elixir
 %Rete.Network{
-  alphas:      %{code => %Node.Alpha{}},   # one per distinct expression code
-  alpha_beta:  %{code => [beta_id]},       # the beta nodes each alpha feeds
-  taxonomy:    %Rete.Taxonomy{},           # indexed: fact type => alpha codes
-  graph:       %Rete.Compiler.BetaGraph{}, # beta nodes and their edges
-  queries:     %{name => beta_id},
-  productions: [%Rete.IR.Production{}]     # including generated helpers
+  alphas:         %{code => %Node.Alpha{}},   # one per distinct expression code
+  taxonomy:       %Rete.Taxonomy{},           # indexed: fact type => alpha codes
+  graph:          %Rete.Compiler.BetaGraph{}, # beta nodes and their edges
+  queries:        %{name => beta_id},
+  productions:    [%Rete.IR.Production{}],    # including generated helpers
+  reserved_types: MapSet.t(atom),             # the types of compound negation markers
+  built_images:   %{module => {:ok, image}}   # what Rete.Image.register/1 gave at build
 }
 ```
 
@@ -49,8 +50,8 @@ to the network.
    taxonomy's only use.**
 2. Each alpha's arity-1 function turns the fact into a bindings map, or `nil`. It matches a
    fact of *any* type, on purpose — step 1 already decided the type.
-3. Matching elements go to the beta nodes in `alpha_beta`. The engine propagates them along
-   the graph's forward edges.
+3. Matching elements go to the beta nodes in the alpha's `:children`. The engine propagates
+   them along the graph's forward edges.
 
 Step 2 runs once per alpha, not once per rule. So the number of alphas a type routes to is
 the number of times a fact is matched. Conditions written in several rules collapse onto

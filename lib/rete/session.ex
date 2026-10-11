@@ -59,6 +59,10 @@ defmodule Rete.Session do
   Options go to `Rete.Compiler.build/2`. Compiling the network is the expensive part, so
   a long-lived application should do it once and use `from_network/1`.
 
+  By default, the session runs the image of each ruleset module. So it keeps its rules
+  after a hot upgrade of the module, until you build it again. `latest?/1` tells you when
+  to do that. `images: false` makes it call the ruleset modules, for test coverage.
+
       iex> Rete.Session.new([Rete.Doc.Orders]) |> Rete.Session.facts()
       []
   """
@@ -284,13 +288,35 @@ defmodule Rete.Session do
   def network(%__MODULE__{state: state}), do: state.network
 
   @doc """
+  Whether the session runs the rules that its ruleset modules hold now.
+
+  It is `false` after a hot upgrade changes the code that the rules reach. A session that
+  runs images keeps running its own rules, consistently. Build a new session with `new/2`
+  to run the new rules. The facts do not move to it, so insert them again.
+
+  A session loaded on a node that runs another version is not the latest either. It runs
+  the rules it was dumped with, and you decide whether to build again.
+
+  Under `images: false`, the session calls the modules directly. An upgrade during
+  `fire_rules/2` then gives a result from two versions. Call this after the fire as well
+  as before it, and discard a result that is not the latest.
+
+  It reads the image of each ruleset module once. It does not check a call to another
+  module, a `:fact_type_fn` that no rule calls, or a capture inside a fact.
+
+      iex> Rete.Session.new([Rete.Doc.Orders]) |> Rete.Session.latest?()
+      true
+  """
+  @spec latest?(t()) :: boolean()
+  def latest?(%__MODULE__{state: state}), do: Network.latest?(state.network)
+
+  @doc """
   Turns a session into a binary that `load/2` reads on another node.
 
   The binary holds the working memory, the network and the compiled code of every rule. A
   node that loads it runs **these** rules, even if it defines other versions of the
-  ruleset modules, or none of them. So dump a session on a node that runs the version of
-  the ruleset modules it was built from. After a hot upgrade, an old session returns
-  `{:error, {:stale, module}}`.
+  ruleset modules, or none of them. A session that is not `latest?/1` dumps the rules it
+  was built with, and not the rules its modules hold now.
 
   `secret` is a binary key. The snapshot carries an HMAC-SHA256 under it, and `load/2`
   refuses the snapshot without the same key. Use a random key, such as
@@ -309,12 +335,8 @@ defmodule Rete.Session do
       node.
     * `{:no_image, module, reason}` — the image of a ruleset module did not compile.
       `reason` says why.
-    * `{:stale, module}` — the session was built from another version of `module` than
-      this node runs. A session built before a hot upgrade causes this. So does a session
-      that arrived by distribution from a node that runs another version. A loaded
-      session never causes it, because it runs the images that it was loaded with.
-    * `{:no_beam, image}` — the session runs an image that this node never compiled or
-      loaded, such as a session that arrived by distribution.
+    * `{:no_beam, image}` — the session runs an image that this node never compiled,
+      loaded, or built a network from, such as a session that arrived by distribution.
 
   Raises `ArgumentError` if `secret` is empty or is not a binary. See
   `docs/design/snapshot.md`.

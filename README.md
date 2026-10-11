@@ -337,6 +337,13 @@ cheap to fork, and safe to pass between processes.
 Compiling is the expensive part. Do it once, with `Rete.Compiler.build/2`. Start sessions
 from the result with `Rete.Session.from_network/1`.
 
+A network runs the image of each ruleset module, a copy of its rules that never changes.
+So a hot upgrade of `Retail` does not change a network built before it. That network keeps
+running the old rules, consistently. `Rete.Session.latest?/1` returns `false` when the
+rules changed. Build the network again when it does. For test coverage, put
+`config :rete, images: false` in `config/test.exs`. The rules then run in `Retail`, where
+a coverage tool counts them.
+
 ### Move a session to another node
 
 `Rete.Session.dump/2` turns a session into a binary. `Rete.Session.load/2` reads it on

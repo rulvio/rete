@@ -6,18 +6,18 @@ defmodule Rete.Network do
   immutable. So any number of sessions can share one. Working memory, the agenda, and
   pending propagations belong to the engine, not here.
 
-      alphas      alpha node id => %Rete.Network.Node.Alpha{}
-      alpha_beta  alpha node id => the beta node ids it feeds
-      taxonomy    %Rete.Taxonomy{}, indexed: fact type => alpha node ids
-      graph       %Rete.Compiler.BetaGraph{}, the beta nodes and their edges
-      queries     {module, query name} => query node id
-      productions the productions compiled in, including generated helpers
-      image_names module => the image it offered when the network was built, or nil
+      alphas         alpha node id => %Rete.Network.Node.Alpha{}
+      taxonomy       %Rete.Taxonomy{}, indexed: fact type => alpha node ids
+      graph          %Rete.Compiler.BetaGraph{}, the beta nodes and their edges
+      queries        {module, query name} => query node id
+      productions    the productions compiled in, including generated helpers
+      reserved_types the fact types that compound negations reserve for their markers
+      built_images   module => what `Rete.Image.register/1` gave at build time
 
   A fact travels in three steps. `Rete.Taxonomy.alpha_ids/2` maps its type to alpha node
   ids — the **only** place the taxonomy is consulted. Each alpha's arity-1 function turns
-  the fact into a bindings map, or `nil`. Matching elements reach the beta nodes in
-  `alpha_beta`. The engine propagates them along the graph's forward edges.
+  the fact into a bindings map, or `nil`. Matching elements reach the beta nodes in the
+  alpha's `:children`. The engine propagates them along the graph's forward edges.
 
   An alpha node id **is** the expression code of the conditions it was built from. That is
   why `Rete.Compiler.disambiguate_codes/1` runs first. See `docs/design/network.md` §2.
@@ -31,23 +31,21 @@ defmodule Rete.Network do
 
   @type t :: %__MODULE__{
           alphas: %{term() => Node.Alpha.t()},
-          alpha_beta: %{term() => [BetaGraph.id()]},
           taxonomy: Taxonomy.t(),
           graph: BetaGraph.t(),
           queries: %{{module(), atom()} => BetaGraph.id()},
           productions: [IR.Production.t()],
-          marker_types: MapSet.t(atom()),
-          image_names: %{module() => module() | nil}
+          reserved_types: MapSet.t(atom()),
+          built_images: %{module() => {:ok, module()} | {:error, String.t()} | :none}
         }
 
   defstruct alphas: %{},
-            alpha_beta: %{},
             taxonomy: nil,
             graph: nil,
             queries: %{},
             productions: [],
-            marker_types: MapSet.new(),
-            image_names: %{}
+            reserved_types: MapSet.new(),
+            built_images: %{}
 
   @doc """
   Assembles a network from productions already sorted, classified and free of compound
@@ -58,11 +56,11 @@ defmodule Rete.Network do
   """
   @spec new([IR.Production.t()], [Taxonomy.declaration()], keyword()) :: t()
   def new(productions, taxo_data \\ [], opts \\ []) do
-    markers = marker_types(productions)
-    check_derives!(taxo_data, markers)
+    reserved = reserved_types(productions)
+    check_derives!(taxo_data, reserved)
 
     graph = BetaGraph.build(productions)
-    {alphas, alpha_beta} = alpha_network(productions, graph)
+    alphas = alpha_network(productions, graph)
 
     taxonomy =
       taxo_data
@@ -71,18 +69,32 @@ defmodule Rete.Network do
 
     network = %__MODULE__{
       alphas: alphas,
-      alpha_beta: alpha_beta,
       taxonomy: taxonomy,
       graph: graph,
       queries: query_index(graph),
       productions: productions,
-      marker_types: markers
+      reserved_types: reserved
     }
 
     # A session keeps this network after its modules change. The image name is a hash of
-    # the code that the rules reach, so `dump/2` reads a different name as other code.
-    %__MODULE__{network | image_names: Map.new(modules(network), &{&1, Image.name(&1)})}
+    # the code that the rules reach, so a different name later means other code.
+    %__MODULE__{network | built_images: Map.new(modules(network), &{&1, Image.register(&1)})}
   end
+
+  @doc """
+  Whether every ruleset module that the network was built from still offers the image it
+  offered then.
+
+  The image name is a hash of the code that the rules reach. A different name means that
+  the module has other code now. A network with no record of its images is the latest.
+  """
+  @spec latest?(t()) :: boolean()
+  def latest?(%__MODULE__{built_images: built}) do
+    Enum.all?(built, fn {module, recorded} -> built_name(recorded) == Image.name(module) end)
+  end
+
+  defp built_name({:ok, name}), do: name
+  defp built_name(_no_image), do: nil
 
   @doc """
   The beta node under an id, or `nil`.
@@ -103,13 +115,6 @@ defmodule Rete.Network do
   def alphas_for(%__MODULE__{alphas: alphas, taxonomy: taxonomy}, fact) do
     taxonomy |> Taxonomy.alpha_ids(fact) |> Enum.map(&Map.fetch!(alphas, &1))
   end
-
-  @doc """
-  The beta nodes an alpha node feeds.
-  """
-  @spec beta_children(t(), term()) :: [BetaGraph.id()]
-  def beta_children(%__MODULE__{alpha_beta: alpha_beta}, code),
-    do: Map.get(alpha_beta, code, [])
 
   @doc """
   The query node a `{module, name}` pair refers to, or `nil`.
@@ -179,15 +184,13 @@ defmodule Rete.Network do
 
     productions
     |> Enum.flat_map(&conditions/1)
-    |> Enum.reduce({%{}, %{}}, fn condition, {alphas, alpha_beta} ->
+    |> Enum.reduce(%{}, fn condition, alphas ->
       %{alpha: %IR.Expr{code: code} = expr, type: type} = condition
 
-      alphas =
-        Map.put_new_lazy(alphas, code, fn ->
-          %Node.Alpha{id: code, type: type, code: code, fun: expr.fun}
-        end)
-
-      {alphas, Map.put(alpha_beta, code, Map.get(beta_by_code, code, []))}
+      Map.put_new_lazy(alphas, code, fn ->
+        children = Map.get(beta_by_code, code, [])
+        %Node.Alpha{id: code, type: type, code: code, fun: expr.fun, children: children}
+      end)
     end)
   end
 
@@ -227,7 +230,7 @@ defmodule Rete.Network do
 
   # Marker facts are real facts, because the negation node matches on them. But they are
   # engine machinery, so `Rete.Session.facts/1` hides them.
-  defp marker_types(productions) do
+  defp reserved_types(productions) do
     for production <- productions,
         Rete.Compiler.Negation.generated?(production),
         into: MapSet.new(),
@@ -236,10 +239,10 @@ defmodule Rete.Network do
 
   # A derive in either direction would mix markers and user facts. See
   # `Rete.Compiler.Negation.marker_alpha/1`.
-  defp check_derives!(taxo_data, markers) do
+  defp check_derives!(taxo_data, reserved) do
     for {:derive, child, parent} <- taxo_data,
         type <- [child, parent],
-        MapSet.member?(markers, type) do
+        MapSet.member?(reserved, type) do
       raise ArgumentError, """
       derive(#{inspect(child)}, #{inspect(parent)}) names #{inspect(type)}. \
       That type is generated by a compound negation, and only the engine uses it.
@@ -251,11 +254,14 @@ defmodule Rete.Network do
     :ok
   end
 
-  @doc "Whether a fact is an internal marker rather than something a rule concluded."
-  @spec marker?(t(), term()) :: boolean()
-  def marker?(%__MODULE__{marker_types: markers} = network, fact) do
-    MapSet.size(markers) > 0 and
-      MapSet.member?(markers, Taxonomy.fact_type(network.taxonomy, fact))
+  @doc """
+  Whether a fact has a type that the engine reserves for itself, such as a compound
+  negation marker.
+  """
+  @spec reserved?(t(), term()) :: boolean()
+  def reserved?(%__MODULE__{reserved_types: reserved} = network, fact) do
+    MapSet.size(reserved) > 0 and
+      MapSet.member?(reserved, Taxonomy.fact_type(network.taxonomy, fact))
   end
 
   defp query_index(graph) do

@@ -2,8 +2,8 @@ defmodule Rete.ImageTest do
   @moduledoc """
   The failures of an image compile that no ruleset causes.
 
-  Not async, because one test changes `:image_compile_timeout` in the application
-  environment, and every ruleset that compiles meanwhile reads it.
+  Not async, because two tests change the application environment. Every ruleset that
+  compiles meanwhile reads `:image_compile_timeout`, and every build reads `:images`.
   """
 
   use ExUnit.Case, async: false
@@ -51,6 +51,34 @@ defmodule Rete.ImageTest do
       case previous do
         {:ok, value} -> Application.put_env(:rete, :image_compile_timeout, value)
         :error -> Application.delete_env(:rete, :image_compile_timeout)
+      end
+    end
+  end
+
+  # A test env turns images off in its config, so that a coverage tool sees the rules run.
+  test "the :images environment sets the default of a build" do
+    [{module, _beam}] =
+      Code.compile_string("""
+      defmodule Rete.ImageTest.Default do
+        use Rete.Ruleset
+        defrule flag({:order, cid, _amt}), do: {:flagged, cid}
+      end
+      """)
+
+    {:ok, {image, _beam}} = module.__rete_image__()
+    previous = Application.fetch_env(:rete, :images)
+    Application.put_env(:rete, :images, false)
+
+    try do
+      assert {:ok, off} = Rete.Image.captures(Rete.Compiler.build([module]))
+      assert module in off and image not in off
+
+      assert {:ok, on} = Rete.Image.captures(Rete.Compiler.build([module], images: true))
+      assert image in on and module not in on
+    after
+      case previous do
+        {:ok, value} -> Application.put_env(:rete, :images, value)
+        :error -> Application.delete_env(:rete, :images)
       end
     end
   end

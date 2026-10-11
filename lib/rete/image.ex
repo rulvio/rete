@@ -476,11 +476,27 @@ defmodule Rete.Image do
   end
 
   @doc """
+  What `fetch/1` returns, with the image name in place of `{name, beam}`. The beam goes
+  into the registry that `beam/1` reads.
+
+  A network calls this for each module when it is built. The beam must outlive an upgrade
+  of the module, because a dump carries the image that the network was built with.
+  """
+  @spec register(module()) :: {:ok, module()} | {:error, String.t()} | :none
+  def register(module) do
+    case fetch(module) do
+      {:ok, {name, beam}} ->
+        remember(name, beam)
+        {:ok, name}
+
+      no_image ->
+        no_image
+    end
+  end
+
+  @doc """
   The name of the image that a ruleset module offers, or `nil` when `fetch/1` gives no
   image.
-
-  A network records it for each module when it is built. `dump/2` compares that record
-  with the name the module offers then.
   """
   @spec name(module()) :: module() | nil
   def name(module) do
@@ -514,16 +530,17 @@ defmodule Rete.Image do
     do: Atom.to_string(name) =~ ~r/\.Image\.M[0-9A-F]{16}$/
 
   @doc """
-  The `.beam` binary of an image that this node compiled or loaded, or `nil`.
+  The `.beam` binary of an image that this node compiled, loaded, or built a network from,
+  or `nil`.
 
   `Rete.Snapshot` reads it for an image that no ruleset module of this node offers, such as
-  one that a loaded session captures.
+  one that a loaded session captures, or one from before an upgrade.
   """
   @spec beam(module()) :: binary() | nil
   def beam(name), do: :persistent_term.get({__MODULE__, name}, nil)
 
   # Written once for each image, and never changed. An update of `:persistent_term` costs a
-  # scan of every process, but a node loads each image only once.
+  # scan of every process, but a node writes each image only once.
   defp remember(name, beam) do
     if beam(name) == nil, do: :persistent_term.put({__MODULE__, name}, beam)
     :ok

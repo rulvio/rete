@@ -65,7 +65,7 @@ defmodule Rete.Engine do
   def insert(state, facts, origin \\ :asserted)
 
   def insert(%State{} = state, facts, origin) do
-    check_markers!(state, facts, origin, "insert")
+    check_reserved!(state, facts, origin, "insert")
 
     {state, batches} =
       Enum.reduce(facts, {state, []}, fn fact, {%State{} = state, batches} ->
@@ -94,7 +94,7 @@ defmodule Rete.Engine do
   def retract(state, facts, origin \\ :asserted)
 
   def retract(%State{} = state, facts, origin) do
-    check_markers!(state, facts, origin, "retract")
+    check_reserved!(state, facts, origin, "retract")
 
     {state, batches} =
       Enum.reduce(facts, {state, []}, fn fact, {%State{} = state, batches} ->
@@ -408,7 +408,7 @@ defmodule Rete.Engine do
   """
   @spec facts(State.t()) :: [term()]
   def facts(%State{memory: memory, network: network}) do
-    memory |> Memory.facts() |> Enum.reject(&Network.marker?(network, &1))
+    memory |> Memory.facts() |> Enum.reject(&Network.reserved?(network, &1))
   end
 
   @doc """
@@ -624,9 +624,9 @@ defmodule Rete.Engine do
   defp unwrap!({:ok, facts}, _node, _token), do: facts
 
   # Reraised exactly as thrown, with the original stacktrace. That stacktrace already
-  # names the generated `__rhs_<name>__` frame in the ruleset module, so the rule is
-  # identified without inventing a wrapper exception. Without this, a body's error inside
-  # a task would surface as an opaque exit.
+  # names the generated `__rhs_<name>__` frame, in the ruleset module or its image. So the
+  # rule is identified without inventing a wrapper exception. Without this, a body's error
+  # inside a task would surface as an opaque exit.
   defp unwrap!({:raised, error, stacktrace}, _node, _token), do: reraise(error, stacktrace)
 
   defp unwrap!({:caught, kind, value, stacktrace}, _node, _token),
@@ -660,7 +660,7 @@ defmodule Rete.Engine do
                     __STACKTRACE__
         end
 
-      if not node.generated? and MapSet.member?(state.network.marker_types, type) do
+      if not node.generated? and MapSet.member?(state.network.reserved_types, type) do
         raise ArgumentError, concluded_marker(node, token, fact)
       end
     end)
@@ -679,8 +679,8 @@ defmodule Rete.Engine do
 
   # All facts are checked before any of them changes the state. See
   # `Rete.Compiler.Negation.marker_alpha/1` for why a marker type is reserved.
-  defp check_markers!(%State{network: network}, facts, :asserted, action) do
-    case Enum.find(facts, &marker?(network, &1)) do
+  defp check_reserved!(%State{network: network}, facts, :asserted, action) do
+    case Enum.find(facts, &reserved?(network, &1)) do
       nil ->
         :ok
 
@@ -695,12 +695,12 @@ defmodule Rete.Engine do
     end
   end
 
-  defp check_markers!(_state, _facts, _origin, _action), do: :ok
+  defp check_reserved!(_state, _facts, _origin, _action), do: :ok
 
   # A value with no type is not a marker. A retract of it stays a no-op, and an insert of
   # it raises later, where the type is read for the alpha nodes.
-  defp marker?(network, fact) do
-    Network.marker?(network, fact)
+  defp reserved?(network, fact) do
+    Network.reserved?(network, fact)
   rescue
     _error -> false
   end
@@ -796,7 +796,7 @@ defmodule Rete.Engine do
     for alpha <- alphas_for(network, fact),
         bindings = alpha.fun.(fact),
         bindings != nil,
-        child <- Network.beta_children(network, alpha.code) do
+        child <- alpha.children do
       {direction, child, [%Element{fact: fact, bindings: bindings}]}
     end
   end
