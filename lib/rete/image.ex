@@ -133,8 +133,15 @@ defmodule Rete.Image do
     task = Task.async(fn -> compile_alone(name, body, location) end)
 
     case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
-      {:ok, result} -> result
-      nil -> {:error, "the image did not compile in #{timeout} ms"}
+      {:ok, {:ok, beam}} ->
+        remember(name, beam)
+        {:ok, beam}
+
+      {:ok, error} ->
+        error
+
+      nil ->
+        {:error, "the image did not compile in #{timeout} ms"}
     end
   end
 
@@ -150,7 +157,6 @@ defmodule Rete.Image do
 
     case result do
       {:ok, beam} ->
-        remember(name, beam)
         {:ok, beam}
 
       {:error, message} ->
