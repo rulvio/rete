@@ -269,18 +269,22 @@ defmodule Rete.IR do
         and truth-maintains its return value. `nil` or `[]` inserts nothing.
     """
 
+    @typedoc """
+    The first argument of the RHS. A compound negation helper holds `{name, carried}`
+    there, which `Rete.Compiler.Negation.marker/2` reads.
+    """
+    @type hash :: integer() | {atom(), [atom()]}
+
     @type t :: %__MODULE__{
             name: atom(),
             type: :rule | :query,
-            # A compound negation helper holds `{name, carried}`, which its RHS reads. See
-            # `Rete.Compiler.Negation.marker/2`.
-            hash: integer() | {atom(), [atom()]},
+            hash: hash(),
             opts: keyword(),
             bind: [atom()],
             params: [atom()],
             head: [String.t()],
             lhs: Rete.IR.lhs(),
-            rhs: (integer() | {atom(), [atom()]}, map() -> any()) | nil,
+            rhs: (hash(), map() -> any()) | nil,
             module: module(),
             __ast__: map() | nil
           }

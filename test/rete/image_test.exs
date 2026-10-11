@@ -11,11 +11,8 @@ defmodule Rete.ImageTest do
   alias Rete.Image.Guard
 
   # The ruleset module compiles inside the same call. A failure that escaped would stop it.
+  # The doctest of `Rete.Image.Guard` covers a raise and a plain result.
   describe "Guard.run/1" do
-    test "a raise becomes an error" do
-      assert {:error, "boom"} == Guard.run(fn -> raise "boom" end)
-    end
-
     test "a throw becomes an error" do
       assert {:error, message} = Guard.run(fn -> throw(:ball) end)
       assert message =~ "throw"
@@ -25,13 +22,10 @@ defmodule Rete.ImageTest do
       assert {:error, message} = Guard.run(fn -> exit(:gone) end)
       assert message =~ "exit"
     end
-
-    test "a result passes through" do
-      assert {:ok, 1} == Guard.run(fn -> {:ok, 1} end)
-    end
   end
 
   test "an image that does not compile in time leaves the module without an image" do
+    previous = Application.fetch_env(:rete, :image_compile_timeout)
     Application.put_env(:rete, :image_compile_timeout, 0)
 
     source = """
@@ -45,8 +39,19 @@ defmodule Rete.ImageTest do
       [{module, _beam}] = Code.compile_string(source)
       assert {:unavailable, reason} = module.__rete_image__()
       assert reason =~ "did not compile in 0 ms"
+
+      session =
+        [module]
+        |> Rete.Session.new()
+        |> Rete.Session.insert({:order, 1, 5})
+        |> Rete.Session.fire_rules()
+
+      assert {:flagged, 1} in Rete.Session.facts(session)
     after
-      Application.delete_env(:rete, :image_compile_timeout)
+      case previous do
+        {:ok, value} -> Application.put_env(:rete, :image_compile_timeout, value)
+        :error -> Application.delete_env(:rete, :image_compile_timeout)
+      end
     end
   end
 end

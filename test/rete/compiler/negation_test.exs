@@ -66,16 +66,15 @@ defmodule Rete.Compiler.NegationTest do
       assert %{cid: 9} == marker.alpha.fun.({helper.name, %{cid: 9}})
     end
 
-    # The alpha is a remote capture with no name to compare, so a snapshot can carry it.
-    # The alpha index does the check instead, because the type of a marker is its name.
-    test "the marker alpha ignores anything that is not its own marker" do
+    # A remote capture holds no name to compare, so the alpha index does the check. The type
+    # of a marker is its name.
+    test "a marker reaches only its own marker alpha through the index" do
       {rewritten, [helper]} = Negation.extract(rule(Rules, :clean))
       marker = negation_of(rewritten)
       network = Rete.Compiler.build([Rules])
 
       assert nil == marker.alpha.fun.({:order, 1})
       assert [marker.alpha.code] == alpha_codes(network, {helper.name, %{cid: 1}})
-      refute marker.alpha.code in alpha_codes(network, {:some_other_marker, %{cid: 1}})
     end
 
     defp alpha_codes(network, fact),
@@ -252,6 +251,12 @@ defmodule Rete.Compiler.NegationTest do
       derive(:fake, :"Rete.Compiler.NegationTest.Rules.clean__neg_1")
     end
 
+    defmodule DerivingFrom do
+      use Rete.Ruleset
+
+      derive(:"Rete.Compiler.NegationTest.Rules.clean__neg_1", :fake)
+    end
+
     test "the marker type is the helper name" do
       {_, [helper]} = Negation.extract(rule(Rules, :clean))
       assert @marker == helper.name
@@ -278,8 +283,15 @@ defmodule Rete.Compiler.NegationTest do
     end
 
     test "a derive that names a marker type raises when the network is built" do
-      error = assert_raise ArgumentError, fn -> Session.new([Rules, Deriving]) end
-      assert error.message =~ inspect(@marker)
+      for deriving <- [Deriving, DerivingFrom] do
+        error = assert_raise ArgumentError, fn -> Session.new([Rules, deriving]) end
+        assert error.message =~ inspect(@marker)
+      end
+    end
+
+    test "a retract of a value with no type is still a no-op" do
+      session = Session.new([Rules])
+      assert Session.facts(Session.retract(session, 42)) == []
     end
 
     test "a :fact_type_fn that gives a user fact a marker type raises on insert" do

@@ -34,32 +34,13 @@ defmodule Rete.Image do
   # such as `get_version/0`, exist when the image copies what the rules call.
   defmacro __before_compile__(env), do: define(env)
 
-  @doc """
-  The quoted `__rete_image__/0` of a ruleset module, called from its `@before_compile`.
-
-  This compiles the image module as a side effect. `__rete_image__/0` returns one of three
-  values:
-
-    * `{:ok, {image, beam}}` — the image module and its `.beam` binary.
-    * `nil` — the module declares no production, so it has no image.
-    * `{:unavailable, reason}` — the image did not compile, or `use Rete.Ruleset,
-      image: false` turned it off.
-
-  The ruleset module compiles in each case, and runs as it always did. Only
-  `Rete.Session.dump/2` refuses a module with no image, and it gives `reason`. A module
-  that compiled before images existed must not stop compiling because of them.
-  """
-  @spec define(Macro.Env.t()) :: Macro.t()
-  def define(env) do
+  # Compiles the image as a side effect, and defines `__rete_image__/0`. Its three values
+  # are in `docs/design/snapshot.md` §2.
+  defp define(env) do
     image =
       case seeds(env.module) do
-        [] ->
-          nil
-
-        seeds ->
-          if Module.get_attribute(env.module, :rete_image_enabled, true),
-            do: build(env, seeds),
-            else: {:unavailable, disabled(env.module)}
+        [] -> nil
+        seeds -> build(env, seeds)
       end
 
     quote do
@@ -68,7 +49,8 @@ defmodule Rete.Image do
     end
   end
 
-  # Any failure here leaves the module without an image, and never stops it compiling.
+  # An image must never stop the ruleset module from compiling. A failure leaves it without
+  # an image, and only a dump refuses it.
   defp build(env, seeds) do
     case Guard.run(fn -> build!(env, seeds) end) do
       {:ok, image} -> {:ok, image}
@@ -110,11 +92,9 @@ defmodule Rete.Image do
     Enum.each(structs, &Code.ensure_compiled/1)
   end
 
-  # Nested under the ruleset module, so the name shows where an image came from. Two kinds
-  # of module take a name under this module instead. One has a name too long to nest,
-  # because its `.beam` file name would pass 255 bytes. The other has a plain atom name, such as
-  # `:erl_rules`, with no Elixir name to nest under. The hash covers the module name, so
-  # that name is still unique.
+  # Nested under the ruleset module, so a stack trace shows where an image came from. A plain
+  # atom module, such as `:erl_rules`, has no Elixir name to nest under. It takes a name
+  # under `Rete.Image`, and the hash covers the module name, so that name is unique.
   defp image_name(module, hash) do
     flat = Module.concat(__MODULE__, "M" <> hash)
 
@@ -122,8 +102,8 @@ defmodule Rete.Image do
       "Elixir." <> _rest ->
         nested = Module.split(module) ++ ["Image", "M" <> hash]
 
-        # The code server looks for `<name>.beam` when a module is defined, and a file
-        # name holds at most 255 bytes. That limit is the tighter one.
+        # The code server looks for `<name>.beam`, and a file name holds at most 255 bytes.
+        # A longer name takes the flat form too.
         if byte_size("Elixir." <> Enum.join(nested, ".") <> ".beam") <= 255,
           do: Module.concat(nested),
           else: flat
@@ -200,16 +180,9 @@ defmodule Rete.Image do
     in the hook of rete. Put `use Rete.Ruleset` after the `use` that defines the helper. \
     For any other cause, please report it.
 
-    The compiler said:
+    The cause:
 
     #{detail}\
-    """
-  end
-
-  defp disabled(module) do
-    """
-    The image of #{inspect(module)} is turned off with `use Rete.Ruleset, image: false`, \
-    so a session built from it cannot be dumped. Remove the option to dump it.\
     """
   end
 
@@ -496,8 +469,8 @@ defmodule Rete.Image do
   @doc """
   The image that a ruleset module offers, as `{:ok, image}`.
 
-  Returns `{:error, reason}` when the image did not compile or is turned off, and `:none`
-  when the module has no production or is not a ruleset module.
+  Returns `{:error, reason}` when the image did not compile, and `:none` when the module
+  has no production or is not a ruleset module.
   """
   @spec fetch(module()) :: {:ok, t()} | {:error, String.t()} | :none
   def fetch(module) do
@@ -520,12 +493,20 @@ defmodule Rete.Image do
   """
   @spec image?(module()) :: boolean()
   def image?(module) do
-    Atom.to_string(module) =~ ~r/\.Image\.M[0-9A-F]{16}$/ and
+    image_name?(module) and
       case :code.is_loaded(module) do
         {:file, _file} -> Keyword.has_key?(module.module_info(:attributes), :rete_image)
         false -> true
       end
   end
+
+  @doc """
+  Whether `name` has the form of an image name, `<Module>.Image.M<hash>` or
+  `Rete.Image.M<hash>`.
+  """
+  @spec image_name?(atom()) :: boolean()
+  def image_name?(name) when is_atom(name),
+    do: Atom.to_string(name) =~ ~r/\.Image\.M[0-9A-F]{16}$/
 
   @doc """
   The `.beam` binary of an image that this node compiled or loaded, or `nil`.

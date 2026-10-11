@@ -38,13 +38,16 @@ defmodule Rete.Snapshot do
     }
 
     # Only the network is retargeted. A fact is matched by equality, so a changed capture
-    # inside one would make a retract of that fact miss after the load.
-    rule_modules = state.network |> Network.rule_parts() |> Image.modules()
+    # inside one would make a retract of that fact miss after the load. The taxonomy can
+    # hold a `:fact_type_fn`, which is not part of any rule, so it does not count here.
+    %Network{} = network = state.network
+    rule_modules = Image.modules(%Network{network | taxonomy: nil})
+    offers = Map.new(Network.modules(network), &{&1, Image.fetch(&1)})
 
-    with {:ok, ruleset_images} <- ruleset_images(state.network, rule_modules),
-         state = %State{state | network: Image.retarget(state.network, ruleset_images)},
+    with {:ok, ruleset_images} <- ruleset_images(offers, rule_modules),
+         state = %State{state | network: Image.retarget(network, ruleset_images)},
          {:ok, captured} <- Image.captures(state),
-         {:ok, images} <- snapshot_images(state.network, captured) do
+         {:ok, images} <- snapshot_images(offers, captured) do
       # `minor_version` is fixed, so a newer OTP default does not write a body that an
       # older node cannot read.
       body =
@@ -102,9 +105,9 @@ defmodule Rete.Snapshot do
   end
 
   def message(:undecodable) do
-    "Its signature matches the secret, but this node cannot read the body. A newer " <>
-      "release of OTP or of rete probably wrote it. Load it on a node that runs that " <>
-      "release."
+    "Its signature matches the secret, but this node cannot read the body. Another " <>
+      "release of OTP or of rete probably wrote it. Load it on a node that runs the " <>
+      "release that dumped it."
   end
 
   def message({:format, format}) do
@@ -162,23 +165,21 @@ defmodule Rete.Snapshot do
 
   # Only a module that the network still captures counts. A loaded session captures images,
   # so the module of this node does not matter to it.
-  defp ruleset_images(network, captured) do
-    network
-    |> Network.modules()
-    |> Enum.filter(&MapSet.member?(captured, &1))
-    |> Enum.reduce_while({:ok, %{}}, fn module, {:ok, acc} ->
-      case Image.fetch(module) do
-        {:ok, image} -> {:cont, {:ok, Map.put(acc, module, image)}}
-        :none -> {:cont, {:ok, acc}}
-        {:error, reason} -> {:halt, {:error, {:no_image, module, reason}}}
-      end
+  defp ruleset_images(offers, captured) do
+    offers
+    |> Enum.filter(fn {module, _offer} -> MapSet.member?(captured, module) end)
+    |> Enum.reduce_while({:ok, %{}}, fn
+      {module, {:ok, image}}, {:ok, acc} -> {:cont, {:ok, Map.put(acc, module, image)}}
+      {_module, :none}, acc -> {:cont, acc}
+      {module, {:error, reason}}, _acc -> {:halt, {:error, {:no_image, module, reason}}}
     end)
   end
 
-  # The registry is how a loaded session dumps again. A captured image with no beam is an
-  # error here, because the snapshot could not load without it.
-  defp snapshot_images(network, captured) do
-    offered = offered_images(network)
+  # An image offered by any ruleset module of the network counts, captured or not. The
+  # registry is how a loaded session dumps again. A captured image with no beam is an error
+  # here, because the snapshot could not load without it.
+  defp snapshot_images(offers, captured) do
+    offered = for {_module, {:ok, {name, beam}}} <- offers, into: %{}, do: {name, beam}
 
     captured
     |> Enum.filter(&Image.image?/1)
@@ -188,15 +189,6 @@ defmodule Rete.Snapshot do
         beam -> {:cont, {:ok, Map.put(acc, image, beam)}}
       end
     end)
-  end
-
-  # Also a module that the network does not capture, because a session can capture an image
-  # of the same code without it.
-  defp offered_images(network) do
-    for module <- Network.modules(network),
-        {:ok, {name, beam}} <- [Image.fetch(module)],
-        into: %{},
-        do: {name, beam}
   end
 
   # The format is signed with the body. Without it, someone without the key could relabel
@@ -242,8 +234,8 @@ defmodule Rete.Snapshot do
   defp verify(_format, _signature, _body, _secret), do: {:error, :signature}
 
   # The signature is good, so a failure here most likely means another release of OTP or of
-  # rete. That is why it is `:undecodable` and not `:invalid`. Each image must be a beam of
-  # its module, because loading reads the beam.
+  # rete. That is why it is `:undecodable` and not `:invalid`. Each entry must be a beam of
+  # an image name, because loading reads the beam and must not replace any other module.
   defp decode(body) do
     case :erlang.binary_to_term(body) do
       %{images: images, state: %State{network: %Network{}}} = decoded when is_map(images) ->
@@ -257,11 +249,15 @@ defmodule Rete.Snapshot do
   end
 
   defp beam_of?({name, beam}) when is_atom(name) and is_binary(beam) do
+    Image.image_name?(name) and beam_module?(beam, name)
+  end
+
+  defp beam_of?(_entry), do: false
+
+  defp beam_module?(beam, name) do
     case :beam_lib.info(beam) do
       info when is_list(info) -> Keyword.get(info, :module) == name
       {:error, :beam_lib, _reason} -> false
     end
   end
-
-  defp beam_of?(_entry), do: false
 end

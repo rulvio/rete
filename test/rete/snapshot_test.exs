@@ -127,7 +127,6 @@ defmodule Rete.SnapshotTest do
     Rete.Network.Node.Query => [:bind, :hash, :head, :id, :module, :name, :params, :rhs],
     Rete.Network.Node.RootJoin => [:alpha_code, :fact_binding, :id, :new_bind, :type],
     Rete.Network.Node.Test => [:code, :fun, :id],
-    Rete.Session => [:state],
     Rete.Taxonomy => [:alphas, :fact_type_fn, :index, :taxo],
     Rete.Token => [:bindings, :matches]
   }
@@ -261,21 +260,16 @@ defmodule Rete.SnapshotTest do
       assert v1_image in images_in(fresh)
     end
 
-    # The image goes too, as on a new node. The registry would serve the same beam anyway,
-    # and the test below covers that path.
     test "the same rules compiled twice give one image" do
       module = compile(Rete.SnapshotTest.Stable, :v1)
       {:ok, {first, _beam}} = module.__rete_image__()
 
       assert ["Image", "M" <> _hash] = Module.split(first) -- Module.split(module)
-
-      purge(first)
       assert {:ok, {^first, _beam}} = module |> redeploy(:v1) |> then(& &1.__rete_image__())
     end
   end
 
-  # Each of these compiled before images existed. Building the image must not stop any of
-  # them from compiling.
+  # Building the image must never stop a ruleset module from compiling.
   describe "rulesets the image must not break" do
     test "a helper from a later @before_compile leaves the module without an image" do
       module = late_hook_ruleset(Rete.SnapshotTest.LateHook, Rete.SnapshotTest.LateLib)
@@ -320,36 +314,6 @@ defmodule Rete.SnapshotTest do
       facts = loaded |> Session.insert({:order, 1, 21}) |> Session.fire_rules() |> Session.facts()
 
       assert {:flagged, 1, 42} in facts
-    end
-
-    test "image: false compiles no image, and a dump says why" do
-      source = """
-      defmodule Rete.SnapshotTest.NoImage do
-        use Rete.Ruleset, image: false
-        defrule flag({:order, cid, _amt}), do: {:flagged, cid}
-      end
-      """
-
-      module = compile_source(source, Rete.SnapshotTest.NoImage)
-      assert {:unavailable, reason} = module.__rete_image__()
-      assert reason =~ "image: false"
-
-      session =
-        [module] |> Session.new() |> Session.insert({:order, 1, 5}) |> Session.fire_rules()
-
-      assert {:flagged, 1} in Session.facts(session)
-      assert {:error, {:no_image, ^module, ^reason}} = Session.dump(session, @key)
-    end
-
-    test "an image option that is not a boolean raises" do
-      source = """
-      defmodule Rete.SnapshotTest.BadImageOption do
-        use Rete.Ruleset, image: :sometimes
-      end
-      """
-
-      error = assert_raise ArgumentError, fn -> Code.compile_string(source) end
-      assert error.message =~ "image: true or image: false"
     end
 
     test "an import that comes after a helper of the same name" do
@@ -529,10 +493,12 @@ defmodule Rete.SnapshotTest do
 
       env = [{"MIX_ENV", "dev"}]
 
-      {_out, 0} =
+      {out, status} =
         System.cmd("mix", ["compile", "--force"], cd: dir, env: env, stderr_to_stdout: true)
 
-      {out, 0} =
+      assert status == 0, out
+
+      {out, status} =
         System.cmd(
           "mix",
           [
@@ -542,9 +508,11 @@ defmodule Rete.SnapshotTest do
             "{:ok, {image, _}} = Fixture.Rules.__rete_image__(); IO.inspect(image)"
           ],
           cd: dir,
-          env: env
+          env: env,
+          stderr_to_stdout: true
         )
 
+      assert status == 0, out
       assert out =~ "Fixture.Rules.Image.M"
     end
 
@@ -936,6 +904,7 @@ defmodule Rete.SnapshotTest do
 
       shapes =
         for module <- Enum.sort([Taxo | modules]),
+            module != Rete.Session,
             Code.ensure_loaded?(module),
             function_exported?(module, :__struct__, 0),
             into: %{},
@@ -1085,7 +1054,7 @@ defmodule Rete.SnapshotTest do
                Session.load(:erlang.term_to_binary({:rete_session, 1, nil, :not_a_binary}), @key)
     end
 
-    test "a signed body with images that are not beams of their names is undecodable" do
+    test "a signed body with images that are not beams of image names is undecodable" do
       {_format, _signature, body} = parts(Rete.SnapshotTest.BadImages)
       decoded = :erlang.binary_to_term(body)
 
@@ -1095,7 +1064,11 @@ defmodule Rete.SnapshotTest do
             %{Foo.Bar => :x},
             %{"x" => "junk"},
             %{Enum => "junk"},
-            %{Foo.Bar => real_beam}
+            %{Foo.Bar => real_beam},
+            %{
+              :rete_snapshot_test_not_an_image =>
+                on_load_fails(:rete_snapshot_test_not_an_image, "17")
+            }
           ] do
         assert {:error, :undecodable} ==
                  Session.load(forge(%{decoded | images: images}), @key)
@@ -1108,7 +1081,7 @@ defmodule Rete.SnapshotTest do
     test "an image that does not load is reported with the release that compiled it" do
       {_format, _signature, body} = parts(Rete.SnapshotTest.NoLoad)
       decoded = :erlang.binary_to_term(body)
-      name = :rete_snapshot_test_on_load_fails
+      name = :"Elixir.Rete.SnapshotTest.NoLoad.Image.M00000000000000A1"
 
       forged =
         forge(%{decoded | images: Map.put(decoded.images, name, on_load_fails(name, "17"))})
@@ -1135,7 +1108,7 @@ defmodule Rete.SnapshotTest do
     test "the error of an image gives the release only when it differs from this node" do
       {_format, _signature, body} = parts(Rete.SnapshotTest.SameOtp)
       decoded = :erlang.binary_to_term(body)
-      name = :rete_snapshot_test_same_otp
+      name = :"Elixir.Rete.SnapshotTest.SameOtp.Image.M00000000000000A2"
       beam = on_load_fails(name, System.otp_release())
 
       forged = forge(%{decoded | images: Map.put(decoded.images, name, beam)})

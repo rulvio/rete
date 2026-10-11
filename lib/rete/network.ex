@@ -131,15 +131,6 @@ defmodule Rete.Network do
   def query_refs(%__MODULE__{queries: queries}), do: queries |> Map.keys() |> Enum.sort()
 
   @doc """
-  The network without the parts that the caller gave, and the rules did not.
-
-  Today that is the taxonomy. It can hold a `:fact_type_fn`, and that function is not part
-  of any rule. `Rete.Snapshot` reads the modules that the rules capture from this.
-  """
-  @spec rule_parts(t()) :: %__MODULE__{taxonomy: nil}
-  def rule_parts(%__MODULE__{} = network), do: %__MODULE__{network | taxonomy: nil}
-
-  @doc """
   The modules that contributed a production to the network, sorted.
 
   This is what a session was *built from*. It is what tells apart a typo in a query name

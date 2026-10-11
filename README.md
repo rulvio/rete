@@ -366,9 +366,6 @@ from the place that keeps the snapshots.
 **A snapshot is signed, not encrypted.** Anyone who has the binary can read the facts in it.
 Encrypt the snapshots at rest if the facts are sensitive.
 
-`use Rete.Ruleset, image: false` turns off the compiled copy of the rules for one module.
-That module then compiles once, and `dump/2` refuses a session that runs its rules.
-
 A rule that calls a function of another module runs the version on the node that loads it.
 [docs/design/snapshot.md](docs/design/snapshot.md) has the details and the limits.
 

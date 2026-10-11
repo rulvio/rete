@@ -12,24 +12,19 @@ All notable changes to `rete` are recorded here. The format follows
   `{:error, reason}`. `dump!/2` and `load!/2` return the plain value, and raise on an
   error. A snapshot holds the compiled code of its rules. So a session loads on a node that
   runs another version of the ruleset modules, or none of them, and it keeps running its
-  own rules. A query keeps its `{module, name}`.
-  Both functions require a secret key. `dump/2` signs every snapshot with an HMAC-SHA256
-  under it, and `load/2` checks the signature before it decodes the body. Neither function
-  takes options. Listeners do not travel, so attach them again after `load/2`. A snapshot is
-  signed, not encrypted, so anyone who has it can read its facts. A fact that was retracted
-  is not in it. See `docs/design/snapshot.md`.
+  own rules. A query keeps its `{module, name}`. Both functions require a secret key.
+  `dump/2` signs every snapshot with an HMAC-SHA256 under it, and `load/2` checks the
+  signature before it decodes the body. Listeners do not travel, so attach them again after
+  `load/2`. A snapshot is signed, not encrypted, so anyone who has it can read its facts.
+  `Rete.Session.load/2` lists its errors. See `docs/design/snapshot.md`.
 * `use Rete.Ruleset` compiles an image module beside each ruleset module. For `MyRules`, it
   is `MyRules.Image.M<hash>`. The hash is taken over the code of the rules. So two versions
   of a ruleset get two images, and they load on one node together. A call to a helper of
-  the module, written `__MODULE__.big?(x)`, `&__MODULE__.big?/1` or `super(x)`, runs the
-  copy in the image. An image that does not compile never stops the ruleset module from
-  compiling. The module then has no image, and only `dump/2` refuses it, with the reason.
-  `use Rete.Ruleset, image: false` turns the image off. `:image_compile_timeout` in the
-  `:rete` application environment changes the two-minute limit on an image compile.
-* `load/2` returns `{:error, :undecodable}` when the signature matches but the body does
-  not decode. A newer release of OTP or of rete is the likely cause. It returns
-  `{:error, :invalid}` for a value that is not a binary, and does not raise. The
-  `{:image, module, reason, otp}` error gives the release that compiled that image.
+  the module, written `__MODULE__.big?(x)`, `&__MODULE__.big?/1`, `&MyRules.big?/1` or
+  `super(x)`, runs the copy in the image. An image that does not compile never stops the
+  ruleset module from compiling. The module then has no image, and only `dump/2` refuses
+  it, with the reason. `:image_compile_timeout` in the `:rete` application environment
+  changes the two-minute limit on an image compile.
 * Four `bench/run.exs` scenarios. One flips a compound negation on and off. One dumps a
   session of n customers, and one loads it. One dumps that session after half the customers
   are retracted. "match one condition written in k modules" now runs on a fresh process.

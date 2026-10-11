@@ -29,7 +29,7 @@ v2 `MyRules`. The rules of a snapshot must live under a name that no other versi
 came from. When a module is defined, the code server looks for a file named
 `<name>.beam`, and a file name holds at most 255 bytes. So a module name too long for that
 takes `Rete.Image.M<hash>` instead. So does a module with a plain atom name, such as
-`:erl_rules`. `Rete.Image.define/1` builds the image in a `@before_compile`
+`:erl_rules`. `Rete.Image` builds the image in a `@before_compile`
 hook. `use Rete.Ruleset` registers that hook right after its own, so the functions its own
 hook defines, such as `get_version/0`, exist when the image copies them.
 
@@ -45,7 +45,7 @@ one at the image, and then follows it:
 | written | in the image |
 |---|---|
 | `__MODULE__.big?(x)` or `MyRules.big?(x)` | `big?(x)` |
-| `&__MODULE__.big?/1` | `&__MODULE__.big?/1`, where `__MODULE__` is now the image |
+| `&__MODULE__.big?/1` or `&MyRules.big?/1` | `&__MODULE__.big?/1`, where `__MODULE__` is now the image |
 | `super(x)` in an overriding helper | a call to the hidden function that holds the overridden clauses |
 
 Without this, the first two would run the `MyRules` of the node that loads the session. The
@@ -60,7 +60,7 @@ A later hook can define `fun/1` beside a `fun/0` that is defined. The copy keeps
 `&MyRules.fun/1` as it is, and does not take it for a call of `fun/0`.
 
 The image holds the `@rete_image` attribute in its beam. It marks the module as an image,
-so a module of the user with a name of the same form is not taken for one. It also records
+so a loaded module of the user with a name of the same form is not taken for one. It also records
 the OTP release that compiled the image. `load/2` reads that release from the beam without
 a load, and names it in the error when the release differs from the node.
 
@@ -68,7 +68,7 @@ The ruleset module gets `__rete_image__/0`. It returns one of three values:
 
 * `{:ok, {image, beam}}` — the image module and its `.beam` binary.
 * `nil` — the module declares no production.
-* `{:unavailable, reason}` — the image did not compile, or `image: false` turned it off.
+* `{:unavailable, reason}` — the image did not compile.
 
 `Rete.Image.fetch/1` reads it for `Rete.Snapshot`.
 
@@ -108,8 +108,8 @@ replace a loaded module.
 
 The ruleset module still compiles, and its rules run. `__rete_image__/0` returns
 `{:unavailable, reason}`, and `dump/2` returns
-`{:error, {:no_image, module, reason}}`. A module that compiled before
-images existed must not stop compiling because of them.
+`{:error, {:no_image, module, reason}}`. An image must never stop the ruleset module from
+compiling.
 
 The usual cause is a helper that a `@before_compile` hook defines after the hook of
 `use Rete.Ruleset`. Hooks run in the order they are registered, and a hook cannot add a
@@ -124,10 +124,6 @@ A dynamic call, such as `apply(__MODULE__, :big?, [x])`, stays as it is. The cop
 see which function it names. `struct(__MODULE__, fields)`, `struct!/2` and
 `raise __MODULE__` are dynamic calls too. They call `__struct__` of the module at run time,
 so they build the struct of the node that runs them.
-
-`use Rete.Ruleset, image: false` turns the image off on purpose. The module then compiles
-once, and its beam does not hold a second one. `__rete_image__/0` returns
-`{:unavailable, reason}`, and `dump/2` refuses a session that runs its rules.
 
 ### The hash
 
@@ -162,7 +158,8 @@ A live session keeps its captures of `MyRules`. So a stack trace names the modul
    nothing on another node. The caller attaches listeners again after `load/2`. The buckets
    of the memory and the agenda are compacted. A bucket keeps a retracted item as a
    tombstone until the tombstones outnumber the live items. So without this, a retracted
-   fact could still be in the snapshot.
+   fact could still be in the snapshot. Work that `fire_rules/2` has not done yet stays in
+   the queue and travels with the snapshot, such as a pending retract.
 2. `Rete.Image.retarget/2` replaces each capture of a ruleset module with the same capture
    of its image. The image is a copy from the same compile, so the code is the same. This
    covers the network only. A capture inside a fact stays as it is, because a fact is

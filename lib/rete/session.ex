@@ -84,6 +84,9 @@ defmodule Rete.Session do
   Inserting does not match anything. It records the fact and queues the work.
   `fire_rules/2` is what matches, and until you call it no rule has seen the fact.
 
+  Raises `ArgumentError` for a fact whose type a compound negation generated. Only the
+  engine inserts those.
+
       iex> alias Rete.Session
       iex> session = Session.new([Rete.Doc.Orders]) |> Session.insert({:customer, 1})
       iex> Session.facts(session)
@@ -96,7 +99,8 @@ defmodule Rete.Session do
   Retracts one fact or a list of them, returning a new session.
 
   Anything concluded from them is retracted too, transitively. Retracting a fact that is
-  not present does nothing.
+  not present does nothing. A fact whose type a compound negation generated raises
+  `ArgumentError`, as in `insert/2`.
 
   Like `insert/2`, this queues the work rather than doing it. The fact leaves at once, and
   the conclusions that rested on it leave when `fire_rules/2` drains the queue.
@@ -291,7 +295,8 @@ defmodule Rete.Session do
   `:crypto.strong_rand_bytes(32)`, and keep it in your secret store.
 
   **A snapshot is signed, not encrypted.** Anyone who has the binary can read every fact in
-  it. A retracted fact is not in it.
+  it. Work that `fire_rules/2` has not done yet travels with the snapshot, such as a
+  pending retract.
 
   Listeners do not travel. Attach them again with `with_listener/3` after `load/2`.
 
@@ -300,8 +305,8 @@ defmodule Rete.Session do
     * `{:not_portable, fun}` — the session holds an anonymous function, such as an
       anonymous `:fact_type_fn`. Only a remote capture, `&Mod.fun/arity`, works on another
       node.
-    * `{:no_image, module, reason}` — the ruleset module has no image. Its image did not
-      compile, or `use Rete.Ruleset, image: false` turned it off. `reason` says which.
+    * `{:no_image, module, reason}` — the image of a ruleset module did not compile.
+      `reason` says why.
     * `{:no_beam, image}` — the session runs an image that this node never compiled or
       loaded, such as a session that arrived by distribution.
 
@@ -358,11 +363,11 @@ defmodule Rete.Session do
   Returns `{:ok, session}`, or `{:error, reason}`:
 
     * `:invalid` — the value is not a snapshot. This includes a value that is not a binary.
-    * `{:format, n}` — another release of rete wrote it, with a format this one cannot
-      read.
     * `:signature` — the signature does not match `secret`. Another key signed the
       snapshot, or someone changed it.
-    * `:undecodable` — the signature matches, but this node cannot read the body. A newer
+    * `{:format, n}` — another release of rete wrote it, with a format this one cannot
+      read.
+    * `:undecodable` — the signature matches, but this node cannot read the body. Another
       release of OTP or of rete probably wrote it.
     * `{:image, module, reason, otp}` — an image did not load. `otp` is the release that
       compiled that image. A beam from a newer OTP may not load on an older one.
@@ -401,6 +406,5 @@ defmodule Rete.Session do
     end
   end
 
-  defp update(%__MODULE__{state: state} = session, fun),
-    do: %__MODULE__{session | state: fun.(state)}
+  defp update(%__MODULE__{state: state}, fun), do: %__MODULE__{state: fun.(state)}
 end

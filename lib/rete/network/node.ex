@@ -200,9 +200,7 @@ defmodule Rete.Network.Node do
             id: non_neg_integer() | nil,
             name: atom(),
             module: module(),
-            # A compound negation helper holds `{name, carried}`, which its RHS reads. See
-            # `Rete.Compiler.Negation.marker/2`.
-            hash: integer() | {atom(), [atom()]},
+            hash: Rete.IR.Production.hash(),
             rhs: fun(),
             bind: [atom()],
             salience: integer(),
