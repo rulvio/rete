@@ -64,6 +64,14 @@ so a module of the user with a name of the same form is not taken for one. It al
 the OTP release that compiled the image. `load/2` reads that release from the beam without
 a load, and names it in the error when the release differs from the node.
 
+The ruleset module gets `__rete_image__/0`. It returns one of three values:
+
+* `{:ok, {image, beam}}` — the image module and its `.beam` binary.
+* `nil` — the module declares no production.
+* `{:unavailable, reason}` — the image did not compile, or `image: false` turned it off.
+
+`Rete.Image.fetch/1` reads it for `Rete.Snapshot`.
+
 ### How the image compiles
 
 The image compiles with the file and the line of the ruleset, and with none of its imports.
@@ -96,30 +104,30 @@ One VM compiles an image once. The beam goes into the same `:persistent_term` re
 `load/2` writes. A recompile of the same rules then takes the beam from there, and does not
 replace a loaded module.
 
-### When the image does not compile
+### When a module has no image
 
 The ruleset module still compiles, and its rules run. `__rete_image__/0` returns
 `{:unavailable, reason}`, and `dump/2` returns
 `{:error, {:no_image, module, reason}}`. A module that compiled before
 images existed must not stop compiling because of them.
 
-An image compile that takes more than two minutes stops. The module then has no image, and
-the build goes on. `:image_compile_timeout` in the `:rete` application environment sets
-another limit, in milliseconds.
-
-`use Rete.Ruleset, image: false` turns the image off. The module then compiles once, and
-its beam does not hold a second one. `__rete_image__/0` returns `{:unavailable, reason}`,
-and `dump/2` refuses a session that runs its rules.
-
 The usual cause is a helper that a `@before_compile` hook defines after the hook of
 `use Rete.Ruleset`. Hooks run in the order they are registered, and a hook cannot add a
 hook that runs later. So the image cannot see that helper. The fix is to put
 `use Rete.Ruleset` after the `use` that defines the helper.
 
+An image compile that takes more than two minutes stops. The module then has no image, and
+the build goes on. `:image_compile_timeout` in the `:rete` application environment sets
+another limit, in milliseconds.
+
 A dynamic call, such as `apply(__MODULE__, :big?, [x])`, stays as it is. The copy cannot
 see which function it names. `struct(__MODULE__, fields)`, `struct!/2` and
 `raise __MODULE__` are dynamic calls too. They call `__struct__` of the module at run time,
 so they build the struct of the node that runs them.
+
+`use Rete.Ruleset, image: false` turns the image off on purpose. The module then compiles
+once, and its beam does not hold a second one. `__rete_image__/0` returns
+`{:unavailable, reason}`, and `dump/2` refuses a session that runs its rules.
 
 ### The hash
 
@@ -145,27 +153,22 @@ Two properties follow from the hash:
 * **The same code gets the same name.** An image loads once, and every session of that
   version shares it. A rebuild with no change to the rules keeps the name.
 
-The ruleset module gets `__rete_image__/0`. It returns one of three values:
-
-* `{:ok, {image, beam}}` — the image module and its `.beam` binary.
-* `nil` — the module declares no production.
-* `{:unavailable, reason}` — the image did not compile, or `image: false` turned it off.
-
-`Rete.Image.fetch/1` reads it for `Rete.Snapshot`.
-
 ## 3. Dump
 
 A live session keeps its captures of `MyRules`. So a stack trace names the module you wrote.
 `dump/2` changes the snapshot, and not the session:
 
-1. `Rete.Image.retarget/2` replaces each capture of a ruleset module with the same capture
+1. Listeners go, always. A listener only watches, and its state can hold a pid that means
+   nothing on another node. The caller attaches listeners again after `load/2`. The buckets
+   of the memory and the agenda are compacted. A bucket keeps a retracted item as a
+   tombstone until the tombstones outnumber the live items. So without this, a retracted
+   fact could still be in the snapshot.
+2. `Rete.Image.retarget/2` replaces each capture of a ruleset module with the same capture
    of its image. The image is a copy from the same compile, so the code is the same. This
    covers the network only. A capture inside a fact stays as it is, because a fact is
    matched by equality. Changing it would make a retract of the same fact miss after the
    load. A module counts only if a rule captures it. A `:fact_type_fn` of the module does
    not make `dump/2` ask for its image.
-2. Listeners go, always. A listener only watches, and its state can hold a pid that means
-   nothing on another node. The caller attaches listeners again after `load/2`.
 3. `Rete.Image.captures/1` finds any function that is not a remote capture, and `dump/2`
    returns `{:error, {:not_portable, fun}}`. An anonymous function runs only on the build
    that made it. An anonymous `:fact_type_fn` is the usual cause.
@@ -199,14 +202,6 @@ stop decompression, so a small input could otherwise inflate to a term many time
 before the signature check runs. A binary with bytes after the outer term is refused as
 well, because `dump/2` never writes one either.
 
-The snapshot is signed, not encrypted. Anyone who has the binary can decode the body with
-no key, and read every fact and every pending match. The signature protects the integrity
-of the snapshot. It does not keep the data secret.
-
-`dump/2` compacts the buckets of the memory and the agenda before it encodes the state. A
-bucket keeps a retracted item as a tombstone until the tombstones outnumber the live items.
-Without the compaction, a fact that the caller retracted could still be in the snapshot.
-
 ## 4. Load
 
 1. Check the HMAC-SHA256 of the format and the body against the key. A missing, short or
@@ -219,9 +214,8 @@ Without the compaction, a fact that the caller retracted could still be in the s
    reports is one the key holder wrote.
 3. Decode the body. This cannot use `:safe`, because the image names are new atoms. A body
    that does not decode, or decodes to the wrong shape, returns `{:error, :undecodable}`.
-   Each image must be a beam of the module it is filed under. The signature is good at this
-   step, so a holder of the key wrote the body. The likely cause is another release of OTP
-   or of rete, and not a binary that is not a snapshot. So this error is not `:invalid`.
+   The signature is good, so the likely cause is another release of OTP or of rete. Each
+   image must be a beam of the module it is filed under.
 4. Load each image that the node has not loaded, with `:code.load_binary/3`. A lock on the
    image name makes the check and the load one step. Without it, two first loads could
    both load the image. A third load would then purge the running copy and kill any
@@ -277,8 +271,9 @@ module declares the query with the same head. On a node with no `MyRules`, use
   loads an image and then returns an error, such as `{:missing, mfas}`. Another session
   that loads or already runs on the node can need the same image.
 * **A snapshot is not encrypted.** The signature protects the integrity of the snapshot,
-  and not the data in it. Anyone who has the binary can read every fact. Encrypt the
-  snapshots at rest if the facts are sensitive.
+  and not the data in it. Anyone who has the binary can decode the body with no key, and
+  read every fact and every pending match. Encrypt the snapshots at rest if the facts are
+  sensitive.
 * **Listeners do not travel.** To carry what a listener collected, read it with
   `Rete.Session.listener_state/2` before the dump. Give it to `Rete.Session.with_listener/3`
   after the load.

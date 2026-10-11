@@ -10,9 +10,9 @@ All notable changes to `rete` are recorded here. The format follows
 
 * `Rete.Session.dump/2` and `Rete.Session.load/2`. Both return `{:ok, value}` or
   `{:error, reason}`. `dump!/2` and `load!/2` return the plain value, and raise on an
-  error. A snapshot holds the compiled code of
-  its rules. So a session loads on a node that runs another version of the ruleset modules,
-  or none of them, and it keeps running its own rules. A query keeps its `{module, name}`.
+  error. A snapshot holds the compiled code of its rules. So a session loads on a node that
+  runs another version of the ruleset modules, or none of them, and it keeps running its
+  own rules. A query keeps its `{module, name}`.
   Both functions require a secret key. `dump/2` signs every snapshot with an HMAC-SHA256
   under it, and `load/2` checks the signature before it decodes the body. Neither function
   takes options. Listeners do not travel, so attach them again after `load/2`. A snapshot is

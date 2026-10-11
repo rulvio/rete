@@ -2,16 +2,8 @@ defmodule Rete.Snapshot do
   @moduledoc """
   The binary format behind `Rete.Session.dump/2` and `Rete.Session.load/2`.
 
-  **Internal.** Call the functions of `Rete.Session`, and not this module. This module holds
-  the envelope, the signature, the decode, and the choice of images that a snapshot
-  carries. `Rete.Image` holds the images themselves. See `docs/design/snapshot.md`.
-
-  A snapshot is two layers:
-
-      {:rete_session, format, signature, body}
-      body = term_to_binary(%{images: %{image => beam}, state: state}, [:compressed, minor_version: 2])
-
-  `signature` is an HMAC-SHA256 of the format and the body under the secret key.
+  **Internal.** It holds the envelope, the signature, the decode, and the choice of images
+  to carry. `Rete.Image` holds the images. See `docs/design/snapshot.md` §3 and §4.
   """
 
   alias Rete.Agenda
@@ -20,14 +12,10 @@ defmodule Rete.Snapshot do
   alias Rete.Memory
   alias Rete.Network
 
-  # Increase this when a change to the engine's own structs, such as `Rete.Memory` or a
-  # network node, means an older snapshot no longer reads correctly. A change to
-  # `Rete.Compiler.Negation.marker/2` or `marker_alpha/1` counts too, because a snapshot
-  # captures them by name. The test of struct shapes in `snapshot_test.exs` fails until
-  # this changes.
-  #
-  # The envelope and the MAC input stay the same in every format. Only then can an older
-  # release read the format of a newer snapshot and return `{:format, n}`.
+  # Increase this when an engine struct, or the contract of `Negation.marker/2` or
+  # `marker_alpha/1`, changes. The struct-shape test in `snapshot_test.exs` fails until it
+  # does. The envelope and the MAC input never change, so an older release can still
+  # report `{:format, n}`.
   @format 1
 
   # The first two bytes of a compressed term in the external term format.
@@ -41,8 +29,7 @@ defmodule Rete.Snapshot do
   def dump(%State{} = state, secret) do
     check_secret!(secret, :dump)
 
-    # A retracted fact can wait in a tombstone until its bucket compacts. A snapshot must
-    # not carry a fact that the caller removed.
+    # A tombstone still holds a retracted fact, and a snapshot must not carry it.
     state = %State{
       state
       | listeners: [],
@@ -50,9 +37,8 @@ defmodule Rete.Snapshot do
         agenda: Agenda.compact(state.agenda)
     }
 
-    # Only the network is retargeted. A fact is the data of the caller, and a fact is
-    # matched by equality. Changing a capture inside one would make a retract of the same
-    # fact miss it after the load, and could merge two facts into one map key.
+    # Only the network is retargeted. A fact is matched by equality, so a changed capture
+    # inside one would make a retract of that fact miss after the load.
     rule_modules = state.network |> Network.rule_parts() |> Image.modules()
 
     with {:ok, ruleset_images} <- ruleset_images(state.network, rule_modules),
@@ -174,15 +160,8 @@ defmodule Rete.Snapshot do
   defp shape(value) when is_map(value), do: "a map"
   defp shape(_value), do: "a value of another type"
 
-  # Modules a node cannot load, or that compiled before images existed, have no image.
-  # `Rete.Image.retarget/2` then leaves their captures alone, and `load/2` checks them.
-  #
-  # A module whose image did not compile still runs its rules. It only cannot be dumped,
-  # and the reason it carries says why.
-  #
-  # Only a module that the network still captures counts. A loaded session names its
-  # ruleset modules, but it captures their images. The module of this node may be another
-  # version, and whether it has an image does not matter to that session.
+  # Only a module that the network still captures counts. A loaded session captures images,
+  # so the module of this node does not matter to it.
   defp ruleset_images(network, captured) do
     network
     |> Network.modules()
@@ -196,10 +175,8 @@ defmodule Rete.Snapshot do
     end)
   end
 
-  # An image that a ruleset module of this node offers, or one that a loaded snapshot
-  # brought. The second kind is how a loaded session, or a session built over its network,
-  # dumps again. A snapshot without the code of a rule cannot load where that code is
-  # missing, so a captured image with no beam is an error here, and not later.
+  # The registry is how a loaded session dumps again. A captured image with no beam is an
+  # error here, because the snapshot could not load without it.
   defp snapshot_images(network, captured) do
     offered = offered_images(network)
 
@@ -213,9 +190,8 @@ defmodule Rete.Snapshot do
     end)
   end
 
-  # Every image that a ruleset module of the network offers, by image module. A module
-  # whose image did not compile offers none. This includes a module that the network does
-  # not capture, because a session can capture an image of the same code without it.
+  # Also a module that the network does not capture, because a session can capture an image
+  # of the same code without it.
   defp offered_images(network) do
     for module <- Network.modules(network),
         {:ok, {name, beam}} <- [Image.fetch(module)],
@@ -228,15 +204,9 @@ defmodule Rete.Snapshot do
   defp mac(format, body, secret),
     do: :crypto.mac(:hmac, :sha256, secret, [<<format::32>>, body])
 
-  # The outer term holds no atom a node lacks, so `:safe` applies to it. The body cannot
-  # take `:safe`, because it names image modules the node has not seen.
-  #
-  # `dump/2` never compresses the outer term, so a compressed one is refused before it is
-  # decoded. `:safe` does not stop decompression, so a small input could otherwise inflate
-  # to a term many times its size before the signature check runs.
-  #
-  # `:used` gives the bytes the term took. A binary with bytes after the term is not one
-  # that `dump/2` wrote, so it is refused too.
+  # The outer term holds only known atoms, so it takes `:safe`. `dump/2` never compresses it
+  # or adds bytes after it, so both are refused before the signature check. `:safe` does not
+  # stop decompression, and a small input could inflate to a large term.
   defp unwrap(<<@etf_version, @etf_compressed, _rest::binary>>), do: {:error, :invalid}
 
   defp unwrap(binary) when is_binary(binary) do
@@ -260,8 +230,7 @@ defmodule Rete.Snapshot do
   defp check_format(@format), do: :ok
   defp check_format(format), do: {:error, {:format, format}}
 
-  # `:crypto.hash_equals/2` raises on two lengths that differ, so the size is compared
-  # first. A signature that is not even a binary is a wrong one too.
+  # `:crypto.hash_equals/2` raises on two lengths that differ, so the size is compared first.
   defp verify(format, signature, body, secret) when is_binary(signature) do
     expected = mac(format, body, secret)
 
@@ -272,13 +241,9 @@ defmodule Rete.Snapshot do
 
   defp verify(_format, _signature, _body, _secret), do: {:error, :signature}
 
-  # The signature is good, so a holder of the key wrote this body. If it does not decode,
-  # or has the wrong shape, the cause is most likely another release of OTP or of rete. A
-  # format that someone forgot to increase looks the same. So this error is not
-  # `:invalid`, which says that the binary is not a snapshot at all.
-  #
-  # Each image must be a beam of the module it is filed under. Loading and the check for
-  # missing functions read the beam, and they would crash on anything else.
+  # The signature is good, so a failure here most likely means another release of OTP or of
+  # rete. That is why it is `:undecodable` and not `:invalid`. Each image must be a beam of
+  # its module, because loading reads the beam.
   defp decode(body) do
     case :erlang.binary_to_term(body) do
       %{images: images, state: %State{network: %Network{}}} = decoded when is_map(images) ->

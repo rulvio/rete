@@ -4,7 +4,8 @@ defmodule Rete.Session do
 
   A session can be held, compared, kept as a checkpoint and sent between processes. The
   compiled network inside it is shared rather than copied, so two sessions built from the
-  same rules differ only in their working memory.
+  same rules differ only in their working memory. `dump/2` and `load/2` move a session to
+  another node.
 
   Facts you insert stay until you retract them. Facts a *rule* concludes are logical: the
   engine holds them only while the match behind them holds. That is why a rule's right
@@ -281,35 +282,26 @@ defmodule Rete.Session do
   @doc """
   Turns a session into a binary that `load/2` reads on another node.
 
-  The binary holds the working memory, the network and the compiled code of every rule.
-  A node that loads it runs **these** rules, even if it defines other versions of the same
-  ruleset modules, or none of them. See `docs/design/snapshot.md`.
+  The binary holds the working memory, the network and the compiled code of every rule. A
+  node that loads it runs **these** rules, even if it defines other versions of the
+  ruleset modules, or none of them.
 
-  **A snapshot is signed, not encrypted.** Anyone who has the binary can read every fact
-  and every pending match in it. The signature shows who wrote it and that nobody changed
-  it. It does not keep the data secret. Encrypt the snapshots at rest if the facts are
-  sensitive. A retracted fact is not in the snapshot.
+  `secret` is a binary key. The snapshot carries an HMAC-SHA256 under it, and `load/2`
+  refuses the snapshot without the same key. Use a random key, such as
+  `:crypto.strong_rand_bytes(32)`, and keep it in your secret store.
 
-  `secret` is required. It is a binary key, and the snapshot carries an HMAC-SHA256 of its
-  format and its body under that key. `load/2` refuses the snapshot unless it gets the same
-  key. A snapshot holds code, and the signature is what tells the node that loads it who
-  wrote it. Use a random key, such as `:crypto.strong_rand_bytes(32)`, and keep it in your
-  secret store.
+  **A snapshot is signed, not encrypted.** Anyone who has the binary can read every fact in
+  it. A retracted fact is not in it.
 
-  **Listeners do not travel.** The snapshot holds no listener. Attach them again with
-  `with_listener/3` after `load/2`. A listener only watches, so the rules, the facts and the
-  matches are the same without it. Its state can also hold a pid, such as the device of
-  `Rete.Listener.Trace`, and a pid means nothing on another node. To carry what a listener
-  collected, read it with `listener_state/2` before the dump, and give it to
-  `with_listener/3` after the load.
+  Listeners do not travel. Attach them again with `with_listener/3` after `load/2`.
 
   Returns `{:ok, binary}`, or `{:error, reason}`:
 
     * `{:not_portable, fun}` — the session holds an anonymous function, such as an
       anonymous `:fact_type_fn`. Only a remote capture, `&Mod.fun/arity`, works on another
       node.
-    * `{:no_image, module, message}` — the image of a ruleset module did not compile.
-      `message` gives the reason.
+    * `{:no_image, module, reason}` — the ruleset module has no image. Its image did not
+      compile, or `use Rete.Ruleset, image: false` turned it off. `reason` says which.
     * `{:no_beam, image}` — the session runs an image that this node never compiled or
       loaded, such as a session that arrived by distribution.
 
@@ -356,24 +348,12 @@ defmodule Rete.Session do
   @doc """
   Reads a binary that `dump/2` wrote, and loads the rule code it holds.
 
-  `secret` is the key that `dump/2` signed with. It is required, and the signature is
-  checked before the body is decoded.
+  The session runs the rules it was dumped with, and has no listener. A query keeps its
+  `{module, name}`, so `query/3` reaches it on any node.
 
-  The loaded session has no listener, because none travels. Attach them again with
-  `with_listener/3`.
-
-  The session runs the rules it was dumped with. Each image module loads once on a node,
-  so many sessions of one version share it. A query keeps its `{module, name}`, so
-  `query/3` reaches it by the name it was written under. Call the query function, such as
-  `MyRules.flagged_for(session, 1)`, only where `MyRules` still declares that query with
-  that head.
-
-  **Security. A snapshot holds code, and loading it runs that code.** Decoding a body also
-  creates atoms, and the atom table of a node has a fixed size. So `load/2` reads only the
-  outer envelope, with `:safe`, and then checks the signature. A binary that was written
-  or changed without the key fails the check. Its body is then not decoded, and no code
-  from it loads. The check protects you only while the key stays secret. Keep it in your
-  secret store, apart from the place that stores the snapshots.
+  **A snapshot holds code, and loading it runs that code.** `load/2` checks the signature
+  before it decodes the body. So a binary that was written or changed without `secret`
+  loads nothing. Keep the key apart from the place that stores the snapshots.
 
   Returns `{:ok, session}`, or `{:error, reason}`:
 
@@ -388,15 +368,11 @@ defmodule Rete.Session do
       compiled that image. A beam from a newer OTP may not load on an older one.
     * `{:missing, mfas}` — the rules call functions that this node does not define.
 
-  An image that loaded stays loaded, also when `load/2` then returns an error. Another
-  session that loads or already runs on this node can need the same image. So no image is
-  purged.
+  An image stays loaded, also after an error, because another session can need it. A rule
+  that calls another module runs the version on **this** node.
 
-  Raises `ArgumentError` if `secret` is empty or is not a binary.
-
-  A rule that calls a function of another module runs the version on **this** node. The
-  check for missing functions makes sure each one exists. It cannot make sure that each
-  one behaves as it did.
+  Raises `ArgumentError` if `secret` is empty or is not a binary. See
+  `docs/design/snapshot.md`.
   """
   @spec load(term(), binary()) :: {:ok, t()} | {:error, term()}
   def load(binary, secret) do

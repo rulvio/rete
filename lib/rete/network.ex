@@ -134,7 +134,7 @@ defmodule Rete.Network do
   The network without the parts that the caller gave, and the rules did not.
 
   Today that is the taxonomy. It can hold a `:fact_type_fn`, and that function is not part
-  of any rule. `Rete.Session.dump/2` reads the modules that the rules capture from this.
+  of any rule. `Rete.Snapshot` reads the modules that the rules capture from this.
   """
   @spec rule_parts(t()) :: %__MODULE__{taxonomy: nil}
   def rule_parts(%__MODULE__{} = network), do: %__MODULE__{network | taxonomy: nil}

@@ -3,31 +3,16 @@ defmodule Rete.Image do
   The compiled rule code of a ruleset module, copied into a module named by its content.
 
   **Internal.** Call `Rete.Session.dump/2` and `Rete.Session.load/2`, and not this module.
-  See `docs/design/snapshot.md`.
 
-  A ruleset module compiles its rules into functions of its own, and the network captures
-  them as `&MyRules.fun/arity`. A capture is a name, not code. On a node that runs another
-  version of `MyRules`, the name finds other code or none. A node holds only one current
-  version of a module, so the old `MyRules` cannot load next to the new one.
+  The network captures the rule functions of a ruleset module as `&MyRules.fun/arity`. A
+  capture is a name, not code, and a node holds one version of a module. So
+  `use Rete.Ruleset` also copies those functions into an **image** module,
+  `MyRules.Image.M<hash>`. The hash covers the copied code, so images of many versions
+  load on one node together.
 
-  So `use Rete.Ruleset` also compiles a copy of those functions into an **image** module,
-  `MyRules.Image.M<hash>`. The name starts with the ruleset module, so it shows where an
-  image came from. The hash is taken over the copied code. The same code always gives
-  the same name, and different code gives a different name. Images of any number of
-  versions can thus be loaded on one node together, and loading one twice does nothing.
-
-  The copy starts from every function the network captures. It then follows each local
-  call to a helper of the module, private or public, and copies that too. A call that names
-  the module itself, `__MODULE__.helper(x)` or `MyRules.helper(x)`, becomes a local call in
-  the copy, and so does `super`. A capture of one becomes a capture of the image,
-  `&__MODULE__.helper/1`, which stays a remote capture. All of them thus run the code of
-  the image. A call to another module stays a remote call, and it runs the version of that
-  module that the node has loaded. So does a dynamic call such as `apply(__MODULE__, f, a)`,
-  because the copy cannot see which function it names.
-
-  A live session keeps its captures of `MyRules`, so a stack trace names the module you
-  wrote. `retarget/2` points them at the image when a session is dumped. The image is a
-  copy from the same compile, so the two run the same code.
+  The copy follows each call from a rule to a helper of the module, and runs that helper in
+  the image. `retarget/2` points the network at the image when a session is dumped. See
+  `docs/design/snapshot.md` §2.
   """
 
   # Increase this when a change to code generation changes what a copied function means.
@@ -43,9 +28,6 @@ defmodule Rete.Image do
 
   @typedoc "An image module and its `.beam` binary."
   @type t :: {module(), binary()}
-
-  @typedoc "What `__rete_image__/0` returns. See `define/1`."
-  @type offer :: {:ok, t()} | {:unavailable, String.t()} | nil
 
   @doc false
   # Registered right after `Rete.Ruleset`'s own hook, so the functions that hook defines,
@@ -161,19 +143,10 @@ defmodule Rete.Image do
     end
   end
 
-  # The image compiles in a process of its own. The compiler tracks the modules that its
-  # own processes define. It writes them to `ebin`, checks them for undefined calls and
-  # types, and so do coverage and Dialyzer. An image is none of those things. It is data
-  # inside `__rete_image__/0`, and it loads from that binary when a snapshot does. So it
-  # stays out of `ebin`, and the warnings of the module are not repeated against it.
-  #
-  # The diagnostics of the compile itself are captured, not printed. The ruleset module
-  # already reported every warning in this code. On an error, they become the reason that
-  # `Rete.Session.dump/2` gives.
-  #
-  # Only the file and the line of `env` reach the compile, and not its imports. The clauses
-  # are expanded already, so they need none, and an import the module added after a helper
-  # would otherwise clash with the copy of that helper.
+  # In a process of its own, so the compiler does not track the image. An image is data in
+  # `__rete_image__/0`, and it must stay out of `ebin`, coverage and Dialyzer. Diagnostics
+  # are captured, because the ruleset module already reported them. No imports reach the
+  # compile. The clauses are expanded, and a late import would clash with a copied helper.
   defp create(name, env, defs) do
     body = body(defs)
     location = Macro.Env.location(env)
@@ -240,14 +213,9 @@ defmodule Rete.Image do
     """
   end
 
-  # `@moduledoc false` keeps an image out of docs, if anything ever asks it for them.
-  #
-  # Kernel is narrowed to the three macros the body itself needs. A helper of the module may
-  # share a name with a function of Kernel, and the full import would then clash with it.
-  #
-  # `@rete_image` is kept in the beam. It marks the module as an image for `image?/1`, and
-  # it records the OTP release that compiled it for the error of `load/1`. A beam can be
-  # read without a load, and a snapshot can carry a beam that another release compiled.
+  # Kernel is narrowed, because a helper can share a name with a function of Kernel.
+  # `@rete_image` stays in the beam. It marks an image for `image?/1`, and it records the
+  # OTP release for `otp/1`, which reads a beam without a load.
   defp body(defs) do
     header =
       quote do
@@ -326,38 +294,17 @@ defmodule Rete.Image do
     {kind, name, Enum.map(clauses, &localize(&1, module, defined))}
   end
 
-  # Turns each call that would leave the image for the module itself into a call that stays
-  # in the image. A remote call to the module would run the version that the node has
-  # loaded. That is the one thing an image exists to prevent.
+  # Keeps every call to the module itself inside the image. See `docs/design/snapshot.md` §2.
   #
-  # A capture becomes `&__MODULE__.fun/arity`, and not `&fun/arity`. In the image,
-  # `__MODULE__` is the image, so the capture stays remote. A local capture is a closure,
-  # and `Rete.Session.dump/2` refuses a closure, so a fact that held one could not be dumped
-  # a second time. The name of the image is not known yet at this point, because the hash
-  # covers these clauses. `__MODULE__` stands in for it.
-  #
-  # A capture of a function that `defined` does not hold stays as it is. Its inner call is
-  # marked, so the clause for a remote call does not turn it into a local call. A later
-  # hook can define `fun/1` next to a `fun/0` that is defined. Without the mark, the
-  # capture `&MyRules.fun/1` would become `&fun()/1`, which does not compile.
-  #
-  # `super` is a local call. Its metadata names the hidden function that holds the
-  # overridden clauses, and `Module.definitions_in/1` lists that function. Left alone, it
-  # fails to compile, because the image declares nothing overridable.
-  #
-  # Two more rewrites keep the copy compiling:
-  #
-  #   * A `quote` expands to calls of `:elixir_quote`. Inside a `def`, the compiler reads a
-  #     direct call of `:elixir_quote.unquote/1` as an unquote fragment, and evaluates its
-  #     argument outside the function. Through `:erlang.apply/3`, it is a plain call. This
-  #     changes nothing the copy does.
-  #   * The struct of the module itself becomes a map with `:__struct__`. Expansion already
-  #     filled in the fields, and in a pattern the map matches what the struct matched. Left
-  #     as a struct, it needs the module that is still compiling the image. An update,
-  #     `%Self{s | k: v}`, becomes a map update. Since Elixir 1.20 that is what a struct
-  #     update compiles to. An older Elixir also checks that `s` is a `Self`, and the copy
-  #     does not. `docs/design/snapshot.md` §6 lists this. The struct of another module
-  #     stays as it is. `build!/2` loads that module first.
+  #   * A capture becomes `&__MODULE__.fun/arity`. The image name is not known yet, and a
+  #     local capture would be a closure, which a dump refuses.
+  #   * A capture of a function not yet defined stays, and its inner call gets `rete_kept`.
+  #     Without the mark, `&MyRules.fun/1` beside a `fun/0` would become `&fun()/1`.
+  #   * `super` becomes a call to the hidden function that holds the overridden clauses.
+  #   * A call that `quote` expands to goes through `:erlang.apply/3`. A direct call of
+  #     `:elixir_quote.unquote/1` in a `def` reads as an unquote fragment.
+  #   * The struct of the module becomes a map, because the module is still compiling. On
+  #     Elixir before 1.20, this skips one check of a struct update. See §6.
   defp localize({meta, args, guards, body}, module, defined) do
     [args, guards, body] =
       Macro.prewalk([args, guards, body], fn
@@ -411,10 +358,8 @@ defmodule Rete.Image do
 
   defp when_(guard, acc), do: {:when, [], [guard, acc]}
 
-  # 64 bits of SHA-256. A node may hold images of many versions, and two different
-  # images that share a name would make the second one silently run the first one's code.
-  # The options fix the encoding, so a new OTP default does not rename an image whose code
-  # did not change.
+  # 64 bits of SHA-256, because two images that share a name would run one code for both.
+  # The options fix the encoding, so a new OTP default does not rename an image.
   defp hash(module, defs) do
     defs = Enum.map(defs, fn {kind, name, clauses} -> {kind, name, canonical(clauses)} end)
     encoded = :erlang.term_to_binary({module, @format, defs}, [:deterministic, minor_version: 2])
@@ -425,15 +370,9 @@ defmodule Rete.Image do
     |> Base.encode16()
   end
 
-  # The clauses of one definition, with only the metadata that changes what the code does.
-  # Lines and files go, so moving a rule in its file does not change the image. A line or a
-  # file inside the code itself stays, because it is a value the code returns. `Logger`,
-  # `dbg` and `__ENV__` expand to such values.
-  #
-  # `:version` and `:counter` tell apart two variables of one name. `:counter` counts across
-  # the whole module, so an edit elsewhere in it shifts every value. It is renumbered here,
-  # in the order the values appear in this definition. `:no_parens` stays, because
-  # `map.key` and `map.key()` compile to different code.
+  # Only the metadata that changes what the code does. Lines go, so moving a rule keeps the
+  # name. `:counter` counts across the module, so it is numbered again in each definition.
+  # `:no_parens` stays, because `map.key` and `map.key()` compile differently.
   defp canonical(clauses) do
     ast = Enum.map(clauses, &clause_ast/1)
 
@@ -529,8 +468,7 @@ defmodule Rete.Image do
   Loads every image this node has not loaded yet.
 
   Returns `{:error, {:image, module, reason, otp}}` for an image that does not load. `otp`
-  is the release that compiled that image, read from its beam, or `nil` if the beam does
-  not say.
+  comes from `otp/1`.
   """
   @spec load([t()]) :: :ok | {:error, term()}
   def load(images) do
@@ -556,11 +494,10 @@ defmodule Rete.Image do
   end
 
   @doc """
-  The image that a ruleset module offers.
+  The image that a ruleset module offers, as `{:ok, image}`.
 
-  Returns `{:ok, image}`, or `{:error, reason}` when the image did not compile or is turned
-  off. Returns `:none` for a module with no production, and for a module that is not a
-  ruleset module.
+  Returns `{:error, reason}` when the image did not compile or is turned off, and `:none`
+  when the module has no production or is not a ruleset module.
   """
   @spec fetch(module()) :: {:ok, t()} | {:error, String.t()} | :none
   def fetch(module) do
@@ -576,12 +513,10 @@ defmodule Rete.Image do
   end
 
   @doc """
-  Whether `module` is an image.
+  Whether `module` is an image: named `<Module>.Image.M<hash>`, and marked by
+  `@rete_image` if it is loaded.
 
-  An image is named `<Module>.Image.M<hash>` or `Rete.Image.M<hash>`, and its beam holds
-  the `@rete_image` attribute. A loaded module with that name and without the attribute is
-  not an image. A module that is not loaded here is taken by its name. So `dump/2` can
-  report an image that this node has no beam of.
+  A module that is not loaded is taken by its name, so a dump can report its missing beam.
   """
   @spec image?(module()) :: boolean()
   def image?(module) do
@@ -595,9 +530,8 @@ defmodule Rete.Image do
   @doc """
   The `.beam` binary of an image that this node compiled or loaded, or `nil`.
 
-  A session built with `Rete.Session.from_network/1` over the network of a loaded session
-  captures images that no ruleset module of this node offers. `Rete.Session.dump/2` reads
-  their binaries here, so that session dumps as the loaded one does.
+  `Rete.Snapshot` reads it for an image that no ruleset module of this node offers, such as
+  one that a loaded session captures.
   """
   @spec beam(module()) :: binary() | nil
   def beam(name), do: :persistent_term.get({__MODULE__, name}, nil)
@@ -609,13 +543,9 @@ defmodule Rete.Image do
     :ok
   end
 
-  # Under a lock, so the check and the load are one step. Two first loads of one image
-  # would otherwise both load it. The second load makes the running copy old code, and a
-  # third one purges that old code and kills any process still inside it.
-  #
-  # An image that is loaded already needs no lock. A module is loaded only after
-  # `:code.load_binary/3` returns, so this check cannot see half a load. Without it, every
-  # load of a known version would wait on the one `global_name_server` process.
+  # A first load takes a lock. Two loads of one image would make the running copy old code,
+  # and a third would purge it. A loaded image skips the lock, because `:code.is_loaded/1`
+  # cannot see half a load, and the lock goes through one `global_name_server` process.
   defp ensure(name, beam) do
     if :code.is_loaded(name) do
       remember(name, beam)
