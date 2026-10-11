@@ -99,6 +99,46 @@ defmodule Rete.PropertyTest do
     end
   end
 
+  # `Everything` with every body moved onto a task it returns.
+  defmodule EverythingAsync do
+    use Rete.Ruleset
+
+    derive :premium, :customer
+    derive :customer, :party
+
+    defrule flagged({:threshold, t}, {:order, cid, amt} when amt > t) do
+      Task.async(fn -> {:flagged, cid, amt} end)
+    end
+
+    defrule escalate({:flagged, cid, _amt}), do: Task.async(fn -> {:escalated, cid} end)
+
+    defrule loyalty({:customer, cid}, orders = [{:order, cid, _amt}]) do
+      Task.async(fn -> {:loyalty, cid, length(orders)} end)
+    end
+
+    defrule dormant({:customer, cid}, {:not, [{:order, cid, _amt}]}) do
+      Task.async(fn -> {:dormant, cid} end)
+    end
+
+    defrule clean({:party, pid}, {:nand, [{:order, pid, _amt}, {:refund, pid}]}) do
+      Task.async(fn -> {:clean, pid} end)
+    end
+
+    defrule tagged({:or, [{:gold, cid}, {:silver, cid}]}, {:order, cid, amt}) do
+      Task.async(fn -> {:tagged, cid, amt} end)
+    end
+
+    defrule under({:cap, cid, lim}, {:not, [{:order, cid, amt} when amt > lim]}) do
+      Task.async(fn -> {:under, cid, lim} end)
+    end
+
+    defrule refunds(rs = [{:refund, _cid}]), do: Task.async(fn -> {:refund_count, length(rs)} end)
+
+    defrule stock({:depot, d}, items = [{:item, d, sku, _ref}], holds = [{:hold, d, sku}]) do
+      Task.async(fn -> {:stock, d, sku, length(items), length(holds)} end)
+    end
+  end
+
   # Small on purpose: a universe this size makes two facts collide on a join key,
   # a negation flip on the last element leaving, and a collection group empty and
   # refill, all within a handful of random draws.
@@ -159,6 +199,14 @@ defmodule Rete.PropertyTest do
   end
 
   defp counts(session), do: session.state.memory.facts
+
+  defp unmarked(session) do
+    session
+    |> counts()
+    |> Map.reject(fn {fact, _n} ->
+      is_tuple(fact) and elem(fact, 0) |> to_string() =~ "__neg_"
+    end)
+  end
 
   # Deep-sorts every leaf list of the memory, and every collection a token
   # carries. Order of arrival is not part of what a session means, but
@@ -363,6 +411,21 @@ defmodule Rete.PropertyTest do
     property "firing rule bodies concurrently reaches the same session" do
       check all(facts <- multiset(), concurrency <- integer(2..8), max_runs: 40) do
         assert canon(build(facts)) == canon(build(facts, concurrency))
+      end
+    end
+
+    # A body that returns a task moves only the task. The engine still applies conclusions
+    # in group order, so the facts must match the synchronous ruleset at every concurrency.
+    # The compound negation's marker type is named after its module, so it is left out.
+    property "rule bodies that return tasks reach the same facts" do
+      check all(facts <- multiset(), concurrency <- integer(1..8), max_runs: 40) do
+        async =
+          [EverythingAsync]
+          |> Session.new()
+          |> Session.insert(facts)
+          |> Session.fire_rules(concurrency: concurrency)
+
+        assert unmarked(build(facts)) == unmarked(async)
       end
     end
 

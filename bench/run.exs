@@ -710,12 +710,13 @@ defmodule Bench.Blocking do
   @moduledoc false
   use Rete.Ruleset
 
-  # Stands in for a body that waits on something — a query, a service, a file. That is the
-  # only case `:concurrency` is for; a body that builds a tuple is ~1.5% of firing and
-  # costs more than that to hand to a task.
+  # Stands in for a body that waits on something — a query, a service, a file. The body
+  # returns the wait as a task, because `:concurrency` overlaps only returned tasks.
   defrule fetch({:job, id}) do
-    Process.sleep(5)
-    {:fetched, id}
+    Task.async(fn ->
+      Process.sleep(5)
+      {:fetched, id}
+    end)
   end
 end
 
@@ -1147,7 +1148,7 @@ Bench.scenario(
 )
 
 Bench.compare(
-  "a blocking rule body, by :concurrency",
+  "a rule body that returns a task, by :concurrency",
   [{"1 (default)", 1}, {"4", 4}, {"16", 16}, {"64", 64}],
   fn concurrency ->
     jobs = for i <- 1..64, do: {:job, i}
@@ -1157,7 +1158,7 @@ Bench.compare(
     |> Rete.Session.insert(jobs)
     |> Rete.Session.fire_rules(concurrency: concurrency)
   end,
-  note: "64 activations of a body that sleeps 5 ms — the case :concurrency exists for"
+  note: "64 activations of a body whose task sleeps 5 ms — the case :concurrency exists for"
 )
 
 # An A/B rather than a shape, for the same reason as the one above: batching does not

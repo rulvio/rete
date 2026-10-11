@@ -138,15 +138,19 @@ defmodule Rete.Session do
       and then settles is fine. Give it a smaller integer to catch a loop sooner, or
       `:infinity` to remove the cap. See `docs/design/observability.md` §3 for how to pick
       a number.
-    * `:concurrency` — how many rule bodies of one activation group run at once. `1` by
-      default, which fires them one at a time. Raise it when a body does I/O or real
-      computation. The bodies of a group then run on tasks, and their conclusions are
-      applied in group order. A body that only builds a tuple is about 1.5% of firing, and
-      it costs more than that to hand to a task, so the default suits ordinary rules.
-      Above `1`, a body runs on a task. It does not inherit `Logger.metadata`, and its
-      bindings are copied, which is expensive for a collection binding.
-    * `:timeout` — milliseconds one body may take, or `:infinity`, the default. Applies
-      only when `:concurrency` is above `1`.
+    * `:concurrency` — how many tasks that rule bodies returned may run at once. `1` by
+      default. A body that does I/O can return a `Task` instead of its facts, and the
+      result of the task is the facts. At `1`, the engine awaits each task before the next
+      body runs. Above `1`, it runs the bodies of one activation group in turn, and awaits
+      up to this many of their tasks together. It applies their conclusions in group
+      order. Every body runs in the calling process. So a body that blocks without a task
+      never overlaps another.
+    * `:timeout` — milliseconds the engine waits for one returned task, or `:infinity`, the
+      default. A task that takes longer is shut down, and the call raises.
+
+  Start a returned task in the body itself, because only its owner can await it. Use
+  `Task.Supervisor.async_nolink/2` when the task can crash. A crash is then raised against
+  the rule. A task from `Task.async/1` is linked, so its crash stops the calling process.
 
   **This is the only call that propagates.** `insert/2` and `retract/2` queue work. Firing
   drains that queue, matches everything waiting, runs the rules that match, and returns at

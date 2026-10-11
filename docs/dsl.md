@@ -986,27 +986,44 @@ The engine truth-maintains the body's **return value**. It does not truth-mainta
 ways:
 
 * retracting and reinserting the facts behind a match runs the body again, for that match.
-* under `fire_rules(session, concurrency: n)`, the bodies of one activation group run at
-  once. So a body may run for a match that another activation *in the same group* then
-  invalidates. That activation does not fire, and the engine inserts nothing it computed —
-  exactly as if the bodies had run one at a time. But a request the body already sent
-  still went out.
+* under `fire_rules(session, concurrency: n)`, the engine runs every body of one
+  activation group before it applies their conclusions. So a body may run for a match
+  that another activation *in the same group* then invalidates. That activation does not
+  fire, and the engine inserts nothing it computed — exactly as if the bodies had run one
+  at a time. But a request the body already sent still went out.
 
 A body that only computes facts is safe to write however you like. One that writes to a
 database, or calls a service, should be idempotent, and it should expect at-least-once
 execution.
 
-Raising `:concurrency` above its default of `1` is worth it only when the body is
-expensive: I/O, or real computation. A body that just builds a tuple costs about 1.5% of
-firing — and handing it to a task costs more than that.
+### A body may return a task
 
-Two things follow from a body running on a task.
+A body that waits on I/O can return a `Task` instead of its facts. The result of the task
+is the facts, under the same rules as a body's return value:
 
-`Logger.metadata` is not inherited. Read it before firing, if the body logs.
+```elixir
+defrule enrich({:customer, cid}) do
+  Task.Supervisor.async_nolink(MyApp.TaskSupervisor, fn ->
+    {:profile, cid, MyApp.Profiles.fetch!(cid)}
+  end)
+end
+```
 
-The engine also copies the bindings to the task. This is free for scalars, but not for a
-**collection binding**: handing a 2,000-element list to each task made one benchmark 16×
-slower. See `docs/design/engine.md` §11.
+Every body runs in the process that calls `fire_rules/2`. A returned task is the only work
+that runs in parallel. At the default `concurrency: 1`, the engine awaits each task before
+the next body runs. Above `1`, it awaits up to that many tasks of one activation group
+together. A body that blocks without a task never overlaps another. `:timeout` limits how
+long the engine waits for one task.
+
+Start the task in the body itself, because only its owner can await it. Prefer
+`Task.Supervisor.async_nolink/2` over `Task.async/1`. A linked task that crashes stops the
+process that called `fire_rules/2`. An unlinked one raises an error that names the rule.
+
+Return one bare task. A task inside a list, or a task that returns a task, raises an
+error.
+
+The task is an ordinary process. It does not inherit `Logger.metadata`, and it copies what
+its function closes over. See `docs/design/engine.md` §11.
 
 ### The return value must follow from the bindings
 

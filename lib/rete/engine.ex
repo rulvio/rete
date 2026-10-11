@@ -206,13 +206,14 @@ defmodule Rete.Engine do
       spinning. Firing that many and still having work pending raises with the rules that
       fired most. Firing that many and settling is fine. Pass `:infinity` to remove the
       cap. See `docs/design/observability.md` §3.
-    * `:concurrency` — how many rule bodies of one activation group run at once. `1` by
-      default, which is the sequential path. Above `1`, the bodies of a group run on tasks
-      and their conclusions are applied in group order. Worth raising only when a body is
-      expensive: a body that just builds a tuple is about 1.5% of firing, and a task costs
-      more than that. See `docs/design/engine.md` §11.
-    * `:timeout` — milliseconds a single body may take, or `:infinity`, the default. Only
-      applies when `:concurrency` is above `1`.
+    * `:concurrency` — how many tasks that rule bodies returned may run at once. `1` by
+      default, which is the sequential path: the engine awaits a returned task before the
+      next body runs. Above `1`, it runs every body of one activation group in turn, and
+      it awaits up to this many returned tasks together. It applies their conclusions in
+      group order. A body that does not return a task never runs in parallel. See
+      `docs/design/engine.md` §11.
+    * `:timeout` — milliseconds the engine waits for one returned task, or `:infinity`, the
+      default. A task that takes longer is shut down, and the call raises.
   """
   @spec fire_rules(State.t(), keyword()) :: State.t()
   def fire_rules(%State{} = state, opts \\ []) do
@@ -538,71 +539,115 @@ defmodule Rete.Engine do
     end
   end
 
-  # The sequential path, unchanged. The activation is already off the agenda.
-  defp fire_cycle(%State{} = state, [activation], _cfg, :popped) do
-    state |> fire(activation) |> drain()
+  # The sequential path. The activation is already off the agenda. A task the body returns
+  # is awaited at once, so nothing overlaps.
+  defp fire_cycle(%State{} = state, [activation], cfg, :popped) do
+    node = Network.node(state.network, activation.node_id)
+    result = node |> compute(activation) |> settle(node, activation, cfg.timeout)
+
+    state |> conclude(activation, node, result) |> drain()
   end
 
-  # A rule body is a pure function of its hash and its already frozen bindings. So the
-  # bodies of a group may run at once. Applying what they returned is not parallel: one
-  # conclusion can retract the support of a later activation in the same group, and that
-  # activation must then not fire. So the engine applies conclusions in group order, with a
-  # drain between each, and `Rete.Agenda.remove/2` reports which case each one is.
+  # Every body runs here, in the caller, and in group order. Only a task that a body
+  # returns runs in parallel. The caller owns that task, which is what lets it await it.
   #
-  # Only `{rhs, hash, bindings}` is captured, never the state or the network. A closure
-  # over either would copy the whole compiled network into every task.
+  # Applying what the bodies returned is not parallel: one conclusion can retract the
+  # support of a later activation in the same group, and that activation must then not
+  # fire. So the engine applies conclusions in group order, with a drain between each, and
+  # `Rete.Agenda.remove/2` reports which case each one is.
+  #
+  # The window holds outcomes not yet applied, in group order. A result that is not a task
+  # leaves it as soon as it reaches the head. A task at the head waits until `:concurrency`
+  # tasks are in flight. So one slow task holds back only what is behind it.
   defp fire_cycle(%State{} = state, activations, cfg, :peeked) do
-    nodes = Enum.map(activations, &Network.node(state.network, &1.node_id))
+    {state, window, in_flight} =
+      Enum.reduce(activations, {state, :queue.new(), 0}, fn activation, {state, window, n} ->
+        node = Network.node(state.network, activation.node_id)
+        outcome = compute(node, activation)
+        n = if match?({:task, _}, outcome), do: n + 1, else: n
 
-    results =
-      nodes
-      |> Enum.zip_with(activations, fn node, a -> {node.rhs, node.hash, a.token.bindings} end)
-      |> Task.async_stream(&compute/1,
-        ordered: true,
-        max_concurrency: cfg.concurrency,
-        timeout: cfg.timeout,
-        on_timeout: :kill_task
-      )
-      |> Enum.map(fn
-        {:ok, result} -> result
-        {:exit, reason} -> {:exited, reason}
+        shrink(state, :queue.in({activation, node, outcome}, window), n, cfg, cfg.concurrency)
       end)
 
-    [activations, nodes, results]
-    |> Enum.zip()
-    |> Enum.reduce(state, &apply_conclusions/2)
+    {state, _window, 0} = shrink(state, window, in_flight, cfg, 0)
+    state
+  end
+
+  # A limit of 0 empties the window.
+  defp shrink(state, window, in_flight, cfg, limit) do
+    case :queue.out(window) do
+      {{:value, {_activation, _node, {:task, _}} = head}, rest} when in_flight >= limit ->
+        state |> apply_head(head, rest, cfg) |> shrink(rest, in_flight - 1, cfg, limit)
+
+      {{:value, {_activation, _node, outcome} = head}, rest} when elem(outcome, 0) != :task ->
+        state |> apply_head(head, rest, cfg) |> shrink(rest, in_flight, cfg, limit)
+
+      _ ->
+        {state, window, in_flight}
+    end
+  end
+
+  # A raise here leaves the tasks behind the head running, and nothing would ever await
+  # them. So they are shut down before the error goes on.
+  defp apply_head(state, head, rest, cfg) do
+    apply_conclusions(head, state, cfg.timeout)
+  catch
+    kind, reason ->
+      for {_activation, _node, {:task, task}} <- :queue.to_list(rest) do
+        _ = Task.shutdown(task, :brutal_kill)
+      end
+
+      :erlang.raise(kind, reason, __STACKTRACE__)
   end
 
   # Each activation leaves the agenda as its own conclusions are applied. `:missing` means
   # a conclusion applied earlier in this cycle retracted the match behind it. So it must
   # not fire — the same outcome firing one at a time would give. Its body already ran, and
-  # the engine discards the result.
-  defp apply_conclusions({activation, node, result}, %State{} = state) do
+  # the engine discards the result. Its task is shut down rather than awaited, so a task
+  # that fails cannot raise for a match that no longer holds.
+  defp apply_conclusions({activation, node, outcome}, %State{} = state, timeout) do
     case Agenda.remove(state.agenda, activation) do
       {agenda, :removed} ->
+        result = settle(outcome, node, activation, timeout)
         %State{state | agenda: agenda} |> conclude(activation, node, result) |> drain()
 
       {_agenda, :missing} ->
+        with {:task, task} <- outcome, do: _ = Task.shutdown(task, :brutal_kill)
         state
     end
   end
 
-  defp fire(%State{} = state, %Activation{} = activation) do
-    node = Network.node(state.network, activation.node_id)
-
-    conclude(state, activation, node, compute({node.rhs, node.hash, activation.token.bindings}))
-  end
-
-  # The pure half. It returns failure rather than raising it, so the error is reported
-  # against the rule in the caller, where the node is in hand, instead of surfacing as a
-  # task exit.
-  defp compute({rhs, hash, bindings}) do
-    {:ok, hash |> rhs.(bindings) |> normalize_facts()}
+  # It returns failure rather than raising it. Under concurrency the failure waits for its
+  # turn in group order, so it is raised where the sequential path would raise it.
+  defp compute(node, %Activation{token: token}) do
+    case node.rhs.(node.hash, token.bindings) do
+      %Task{} = task -> {:task, task}
+      result -> {:ok, normalize_facts(result)}
+    end
   rescue
     error -> {:raised, error, __STACKTRACE__}
   catch
     kind, value -> {:caught, kind, value, __STACKTRACE__}
   end
+
+  # `Task.yield/2` raises for a task that another process owns, and that error names no
+  # rule. So the owner is checked first. A timeout shuts the task down, because nothing
+  # else would.
+  defp settle({:task, %Task{owner: owner} = task}, node, %Activation{token: token}, _timeout)
+       when owner != self() do
+    raise ArgumentError, foreign_task(node, token, task)
+  end
+
+  defp settle({:task, task}, node, %Activation{token: token}, timeout) do
+    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+      {:ok, %Task{} = inner} -> raise ArgumentError, task_in_facts(node, token, inner)
+      {:ok, value} -> {:ok, normalize_facts(value)}
+      {:exit, reason} -> {:exited, reason}
+      nil -> {:exited, :timeout}
+    end
+  end
+
+  defp settle(outcome, _node, _activation, _timeout), do: outcome
 
   # The engine records facts against the token before inserting them. So retracting the
   # token later finds them, even if the insertion cascades.
@@ -626,19 +671,30 @@ defmodule Rete.Engine do
 
   # Reraised exactly as thrown, with the original stacktrace. That stacktrace already
   # names the generated `__rhs_<name>__` frame, in the ruleset module or its image. So the
-  # rule is identified without inventing a wrapper exception. Without this, a body's error
-  # inside a task would surface as an opaque exit.
+  # rule is identified without inventing a wrapper exception. Under concurrency the error
+  # waits for its turn, so the original stacktrace is the only one that names the body.
   defp unwrap!({:raised, error, stacktrace}, _node, _token), do: reraise(error, stacktrace)
 
   defp unwrap!({:caught, kind, value, stacktrace}, _node, _token),
     do: :erlang.raise(kind, value, stacktrace)
 
-  # A timeout killed the task, so there is no original error to reraise.
-  defp unwrap!({:exited, reason}, node, token) do
+  # The engine shut the task down, so there is no original error to reraise.
+  defp unwrap!({:exited, :timeout}, node, token) do
     raise RuntimeError,
           "#{Network.ref_string({node.module, node.name})} did not finish: " <>
-            "#{inspect(reason)}. It fired on #{inspect(token.bindings)}. " <>
+            ":timeout. It fired on #{inspect(token.bindings)}. " <>
             "Raise :timeout, or remove it to wait indefinitely."
+  end
+
+  # Only a task that is not linked to the caller gets here. A linked task that crashes
+  # stops the caller before the engine can say anything.
+  defp unwrap!({:exited, reason}, node, token) do
+    raise RuntimeError, """
+    #{Network.ref_string({node.module, node.name})} returned a task that exited: \
+    #{inspect(reason)}
+
+    It fired on #{inspect(token.bindings)}.\
+    """
   end
 
   # A rule may return one fact, a list of them, or nothing.
@@ -650,23 +706,53 @@ defmodule Rete.Engine do
   # must wrap the type call for one fact, and nothing else. Wrapping the insertion too
   # would catch whatever the resulting cascade raises, and blame it on this rule.
   defp check_facts!(facts, %State{} = state, node, token) do
-    Enum.each(facts, fn fact ->
-      type =
-        try do
-          Taxonomy.fact_type(state.network.taxonomy, fact)
-        rescue
-          error ->
-            reraise ArgumentError,
-                    [message: not_a_fact(node, token, fact, error)],
-                    __STACKTRACE__
-        end
+    Enum.each(facts, fn
+      # A task is a struct, so the taxonomy would give it a type and insert it.
+      %Task{} = task ->
+        raise ArgumentError, task_in_facts(node, token, task)
 
-      if not node.generated? and MapSet.member?(state.network.reserved_types, type) do
-        raise ArgumentError, concluded_marker(node, token, fact, type)
-      end
+      fact ->
+        check_fact!(fact, state, node, token)
     end)
 
     facts
+  end
+
+  defp check_fact!(fact, %State{} = state, node, token) do
+    type =
+      try do
+        Taxonomy.fact_type(state.network.taxonomy, fact)
+      rescue
+        error ->
+          reraise ArgumentError,
+                  [message: not_a_fact(node, token, fact, error)],
+                  __STACKTRACE__
+      end
+
+    if not node.generated? and MapSet.member?(state.network.reserved_types, type) do
+      raise ArgumentError, concluded_marker(node, token, fact, type)
+    end
+  end
+
+  defp task_in_facts(node, token, task) do
+    """
+    #{Network.ref_string({node.module, node.name})} returned #{inspect(task)} among its \
+    facts.
+
+    It fired on #{inspect(token.bindings)}. A body may return one task, and the result of \
+    that task is the facts. The engine does not await a task in a list, or a task that a \
+    task returns.\
+    """
+  end
+
+  defp foreign_task(node, token, task) do
+    """
+    #{Network.ref_string({node.module, node.name})} returned #{inspect(task)}, which \
+    another process started.
+
+    It fired on #{inspect(token.bindings)}. Only the process that starts a task can await \
+    it. Start the task in the body itself.\
+    """
   end
 
   defp concluded_marker(node, token, fact, type) do

@@ -488,58 +488,64 @@ it at every intermediate session it builds, fired or not.
 
 ## 11. Firing bodies concurrently
 
-`fire_rules/2` takes `:concurrency`, which defaults to `1`. Above `1`, it pops a whole
-**activation group**: every agenda bucket sharing the leading `{salience,
-internal_salience}`. It runs those rule bodies on tasks, then applies their conclusions in
-group order.
+A rule body may return a `Task` instead of its facts. The result of the task is then the
+facts. `fire_rules/2` takes `:concurrency`, which defaults to `1`. It is how many returned
+tasks may run at once.
 
-### Only the body moves
+At `1`, the engine pops one activation and runs its body. It awaits a returned task before
+the next body runs. Above `1`, it takes a whole **activation group**: every agenda bucket
+sharing the leading `{salience, internal_salience}`. It runs those bodies in group order,
+and awaits up to `:concurrency` of their tasks together. Then it applies their conclusions
+in group order. Clara's `fire-rules-async` with `:parallel-batch-size` works the same way.
 
-`fire/2` splits into a pure half and a stateful one:
+### Only a returned task moves
 
-```elixir
-node.rhs |> apply([node.hash, activation.token.bindings])  # pure: hash + frozen bindings
-|> normalize_facts()                                        # pure
-|> check_facts!(state, node, token)                         # reads the immutable taxonomy
-```
+Every body runs in the process that called `fire_rules/2`. Only the task that a body starts
+runs somewhere else. There are two reasons for this.
 
-Only the first two lines run on a task. `check_facts!/4` reads the taxonomy off the state,
-so it runs where the conclusions are applied. Applying them is not parallel either,
-because one activation's conclusions can retract the support of another.
-`Rete.Agenda.remove/2`'s `:removed`/`:missing` split detects exactly that case. So the
-engine applies conclusions one at a time, with a `drain()` between each. A rule still sees
-a settled network this way.
+* Only the owner of a task can await it. The body runs in the caller, so the caller owns
+  each task the body starts.
+* A body that only builds a tuple costs nothing extra. No process starts for it, and no
+  binding is copied. The rule author decides which work goes on a task.
 
-The task closure captures `{rhs, hash, bindings}`, and nothing else. Closing over the
-state or the network would copy the whole compiled network into every task.
+So a body that blocks without a task does not overlap another body. This replaced an
+earlier design that ran every body of a group on its own task. That design made each body
+pay for a task, and it copied each body's bindings. A collection binding made that copy
+expensive.
+
+Applying conclusions is not parallel, because one activation's conclusions can retract the
+support of another. `Rete.Agenda.remove/2`'s `:removed`/`:missing` split detects exactly
+that case. So the engine applies conclusions one at a time, with a `drain()` between each.
+A rule still sees a settled network this way.
+
+### The window
+
+The engine walks the group in order. It runs each body, and puts the outcome at the back
+of a window. An outcome that is not a task leaves the window as soon as it reaches the
+head. A task at the head stays until `:concurrency` tasks are in flight. Then the engine
+awaits the head, applies it, and goes on. At the end of the group, it empties the window.
+
+So the engine applies each result in group order, as soon as it lands. One slow task holds
+back only the results behind it. The window holds at most `:concurrency` tasks, so it also
+bounds how many processes the bodies of one group start at once.
 
 ### Why the default is 1
 
-A body that builds a tuple is **1.5%** of `fire_rules`. The other 98.5% is propagation. A
-task costs about 3.5 µs per activation, so parallelizing cheap bodies is a large net loss.
-Measured over 2,000 activations, on 16 cores:
-
-| body cost | sequential | concurrent | speedup |
-|---|---|---|---|
-| 0 µs | 0.8 ms | 7.1 ms | 0.12× |
-| 1 µs | 2.2 ms | 7.3 ms | 0.29× |
-| 5 µs | 10.1 ms | 9.6 ms | 1.05× |
-| 100 µs | 200.1 ms | 44.2 ms | 4.52× |
-| 500 µs | 1000.1 ms | 78.7 ms | 12.72× |
-
-Break-even is about 5 µs. That is far above anything a pure body does, and far below any
-I/O. So this option pays off exactly when a body waits on something. Sixteen bodies
-sleeping 20 ms each go from 335 ms to 21 ms.
+At `1`, the engine re-sorts the agenda after every activation. So the firing order is the
+sequential order, which the next section explains. A ruleset that returns no tasks gets
+nothing from a higher value.
 
 ### What it does and does not preserve
 
 It **preserves the resulting session**, down to the truth-maintenance ledger. A property
-test over the every-node-kind ruleset asserts this, for concurrency 2 through 8.
+test over the every-node-kind ruleset asserts this, for concurrency 2 through 8. A second
+property gives every body of that ruleset a task, and compares the facts at concurrency 1
+through 8.
 
 It **does not preserve firing order**. This follows from batching itself, not from this
 particular implementation. Firing one at a time re-sorts the agenda after every
 activation, so a rule activated by another's conclusion can overtake one that was already
-pending. Popping a whole group instead freezes it, so the new activation waits for the
+pending. Taking a whole group instead freezes it, so the new activation waits for the
 next group:
 
 ```
@@ -550,9 +556,9 @@ concurrent   a → c → b    the group {a, c} was frozen before a ran
 It also **does not guarantee a body runs only for matches that survive**. A body may run
 for an activation that another activation, in the same group, then invalidates. The engine
 discards what it computed: that activation does not fire, and `Rete.Agenda.remove/2`
-returning `:missing` is what detects the case. But a side effect the body performed is not
-undone. Clara documents the same behavior for `fire-rules-async`. `docs/dsl.md` states the
-at-least-once contract this implies.
+returning `:missing` is what detects the case. But a side effect the body or its task
+performed is not undone. Clara documents the same behavior for `fire-rules-async`.
+`docs/dsl.md` states the at-least-once contract this implies.
 
 Discarding rather than applying is the whole reason the group is peeked, instead of
 popped. Taking the group off the agenda up front would leave a later retraction nothing to
@@ -560,47 +566,19 @@ cancel. The conclusion would then be inserted against a token that no longer exi
 no retraction could ever take it back. `Rete.EngineTest` checks both halves: the
 activation does not fire, and the session still drains to empty.
 
-### What a body runs in
+### What a task runs in
 
-A body runs on a `Task`, which means the usual process-boundary rules apply:
+A returned task is an ordinary `Task`, which the body starts. So the usual process rules
+apply to it, and the engine does not change them:
 
-* `$callers` **is** set. So `Ecto`'s SQL sandbox, and anything else that walks the caller
-  chain, keeps working.
-* `Logger.metadata` is **not** inherited. A body that logs loses the request metadata of
-  the process that called `fire_rules/2`. Read that metadata before firing, and either
-  pass it in a fact or set it inside the body.
-* the task **copies** the bindings. This costs nothing for scalars, but a collection
-  binding copies the whole gathered list. Measured on 20 collections of 2,000 elements
-  each: 0.1 ms at `concurrency: 1`, 1.6 ms at `concurrency: 8`. A collection rule looks
-  cheap, but it is expensive to hand over. It needs a genuinely slow body before raising
-  `:concurrency` pays off.
-
-### The result buffer is not chunked, deliberately
-
-`Task.async_stream` with `ordered: true` does **not** bound its buffer. With a slow first
-item, every later item completes and waits, held until the first item can be emitted. So a
-whole group's results can sit in memory at once.
-
-Chunking the stream would bound that memory. This was measured, not assumed, and it is not
-worth it. A group of 50,000 activations peaks at 66 MB sequentially, and at 79 MB at
-`concurrency: 8`. The group itself dominates that cost, and the buffer adds only about 20%
-on top of a cost both paths already pay.
-
-Against that, chunking costs throughput badly, because every chunk waits for its slowest
-member. On 256 bodies at `concurrency: 8`, with 10% stragglers, perfect scheduling would
-take 296 ms:
-
-| | wall clock |
-|---|---|
-| unchunked | 360 ms |
-| chunks of 8 (1× concurrency) | 1224 ms |
-| chunks of 32 (4×) | 551 ms |
-| chunks of 128 (16×) | 399 ms |
-
-Paying 3.4× throughput to save 20% memory is the wrong trade, for the workload
-`:concurrency` exists for. If a group ever grows large enough for the buffer to matter, a
-bounded-window pipeline could get both — spawn ahead, then apply results in order as they
-land. The cost is hand-rolling what `Task.async_stream` already does.
+* `Task.async/1` sets `$callers`. So `Ecto`'s SQL sandbox, and anything else that walks the
+  caller chain, keeps working.
+* `Logger.metadata` is **not** inherited. Read it in the body, and set it inside the task.
+* the task copies what its function closes over. Close over the values the task needs, and
+  not a whole collection binding.
+* a task from `Task.async/1` is linked to the caller. If it crashes, it stops the caller
+  before the engine can report anything. Start a task that can crash with
+  `Task.Supervisor.async_nolink/2`. Its crash then raises against the rule.
 
 ### A cycle is a group, not an activation
 
@@ -618,13 +596,28 @@ Above `concurrency: 1`, this engine counts them too.
 
 ### Errors
 
-The engine catches a body's error on the task, and reraises it in the caller, with its
-original stacktrace. That stacktrace already names the generated `__rhs_<name>__` frame.
-Without it, a rule body's exception would surface as an opaque task exit instead.
+A body's error waits for its turn in group order. The engine then reraises it with its
+original stacktrace, which names the generated `__rhs_<name>__` frame. It re-throws a
+throw with `:erlang.raise/3`. So an error surfaces where the sequential path would raise
+it.
 
-The engine re-throws a throw with `:erlang.raise/3`. A `:timeout` kills the task. Since
-there is then no original error to reraise, this one case raises a `RuntimeError` naming
-the rule instead.
+A returned task can fail in ways a body cannot. Each of these raises an error that names
+the rule and its bindings:
+
+* the task takes longer than `:timeout`. The engine shuts it down and raises a
+  `RuntimeError`.
+* an unlinked task exits. The engine raises a `RuntimeError` with the exit reason.
+* another process started the task. The engine cannot await it, and raises an
+  `ArgumentError`.
+* a `%Task{}` arrives inside a list of facts, or as the result of a task. The engine awaits
+  only a bare task, and raises an `ArgumentError`.
+
+When an error leaves the window, the tasks behind it are still running. Nothing would ever
+await them. So the engine shuts each one down before the error goes on.
+
+The engine also shuts down the task of an activation that `Rete.Agenda.remove/2` reports
+as `:missing`. It does not await that task. So a task that fails cannot raise for a match
+that no longer holds.
 
 ---
 

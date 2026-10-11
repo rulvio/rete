@@ -32,6 +32,13 @@ All notable changes to `rete` are recorded here. The format follows
   test env. A network built that way records no images, so it is always the latest. With
   images, a build raises `ArgumentError` if an image did not compile or does not load, and
   a stack trace names the image module.
+* A rule body may return a `Task` instead of its facts. The result of the task is the
+  facts. At `concurrency: 1` the engine awaits each task before the next body runs. Above
+  `1`, it awaits up to that many tasks of one activation group together, and applies the
+  conclusions in group order. A `%Task{}` in a list of facts, a task that returns a task,
+  and a task that another process started each raise an error that names the rule. When an
+  error leaves `fire_rules/2`, the engine shuts down the tasks that are still in flight.
+  See `docs/design/engine.md` §11.
 * Five `bench/run.exs` scenarios. One flips a compound negation on and off. One dumps a
   session of n customers, and one loads it. One dumps that session after half the customers
   are retracted. One compiles r rules with `images: false`, so its gap to the compile
@@ -40,6 +47,12 @@ All notable changes to `rete` are recorded here. The format follows
 
 ### Changed
 
+* Every rule body runs in the process that calls `fire_rules/2`. Above `concurrency: 1`,
+  only the tasks that bodies return run in parallel, so a body that does I/O returns one.
+  A body no longer pays for a task of its own, and its bindings are no longer copied.
+  `:timeout` limits the wait for a returned task, at every `:concurrency`.
+* "a blocking rule body, by :concurrency" in `bench/run.exs` is now "a rule body that
+  returns a task, by :concurrency".
 * A compound negation helper captures `Rete.Compiler.Negation.marker/2` and
   `marker_alpha/1`, where it held closures. Its `:hash` is now `{name, carried}`. The marker
   alpha no longer checks the tag of a marker. The alpha index already routes a marker by its

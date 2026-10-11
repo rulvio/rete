@@ -2432,8 +2432,47 @@ defmodule Rete.EngineTest do
       use Rete.Ruleset
 
       defrule work({:job, id}) do
+        Task.async(fn ->
+          Process.sleep(20)
+          {:done, id}
+        end)
+      end
+    end
+
+    defmodule Blocking do
+      use Rete.Ruleset
+
+      defrule work({:job, id}) do
         Process.sleep(20)
         {:done, id}
+      end
+    end
+
+    defmodule Tasks do
+      use Rete.Ruleset
+
+      defrule listed({:listed, n}), do: [Task.async(fn -> {:out, n} end)]
+      defrule nested({:nested, n}), do: Task.async(fn -> Task.async(fn -> {:out, n} end) end)
+
+      defrule foreign({:foreign, n}) do
+        fn -> Task.async(fn -> {:out, n} end) end |> Task.async() |> Task.await()
+      end
+
+      defrule crash({:crash, sup}), do: Task.Supervisor.async_nolink(sup, fn -> exit(:boom) end)
+
+      defrule hang({:hang, test, n}) do
+        task = Task.async(fn -> Process.sleep(:infinity) end)
+        send(test, {:started, n, task.pid})
+        task
+      end
+
+      defrule probe({:probe, agent, n}) do
+        Task.async(fn ->
+          Agent.update(agent, fn {now, most} -> {now + 1, max(now + 1, most)} end)
+          Process.sleep(10)
+          Agent.update(agent, fn {now, most} -> {now - 1, most} end)
+          {:probed, n}
+        end)
       end
     end
 
@@ -2464,31 +2503,140 @@ defmodule Rete.EngineTest do
       # Both sit at salience 0, so both land in one activation group. `veto`'s conclusion
       # retracts the match behind `act`.
       defrule veto({:trigger, n}), do: {:blocked, n}
-      defrule act({:task, n}, {:not, [{:blocked, n}]}), do: {:acted, n}
+      defrule act({:task, n}, {:not, [{:blocked, n}]}), do: Task.async(fn -> {:acted, n} end)
+    end
+
+    defmodule CancelHang do
+      use Rete.Ruleset
+
+      defrule veto({:trigger, _test, n}), do: {:blocked, n}
+
+      defrule act({:trigger, test, n}, {:not, [{:blocked, n}]}) do
+        task = Task.async(fn -> Process.sleep(:infinity) end)
+        send(test, {:started, n, task.pid})
+        task
+      end
     end
 
     defp jobs(n), do: Enum.map(1..n, &{:job, &1})
 
-    test "the bodies of one group run at once" do
+    test "the tasks of one group run at once" do
       base = [Slow] |> Session.new() |> Session.insert(jobs(16))
 
       {serial_us, serial} = :timer.tc(fn -> Session.fire_rules(base, concurrency: 1) end)
       {parallel_us, parallel} = :timer.tc(fn -> Session.fire_rules(base, concurrency: 16) end)
 
-      # 16 bodies sleeping 20 ms: ~320 ms one at a time, ~20 ms at once.
+      # 16 tasks sleeping 20 ms: ~320 ms one at a time, ~20 ms at once.
       assert serial_us > 250_000
       assert parallel_us < serial_us / 4
       assert derived(serial, :done) == derived(parallel, :done)
     end
 
-    test "concurrency: 1 is the default and fires one body at a time" do
+    test "concurrency: 1 is the default and awaits each task before the next body" do
       base = [Slow] |> Session.new() |> Session.insert(jobs(4))
 
-      {default_us, _} = :timer.tc(fn -> Session.fire_rules(base) end)
+      {default_us, default} = :timer.tc(fn -> Session.fire_rules(base) end)
       {explicit_us, _} = :timer.tc(fn -> Session.fire_rules(base, concurrency: 1) end)
 
       assert default_us > 60_000
       assert explicit_us > 60_000
+      assert length(derived(default, :done)) == 4
+    end
+
+    # Every body runs in the calling process. Only a returned task moves off it.
+    test "a body that blocks without a task does not overlap" do
+      base = [Blocking] |> Session.new() |> Session.insert(jobs(4))
+
+      {us, session} = :timer.tc(fn -> Session.fire_rules(base, concurrency: 4) end)
+
+      assert us > 60_000
+      assert length(derived(session, :done)) == 4
+    end
+
+    test "no more than :concurrency tasks are in flight" do
+      {:ok, agent} = Agent.start_link(fn -> {0, 0} end)
+      facts = Enum.map(1..6, &{:probe, agent, &1})
+
+      session =
+        [Tasks] |> Session.new() |> Session.insert(facts) |> Session.fire_rules(concurrency: 2)
+
+      assert {0, 2} == Agent.get(agent, & &1)
+      assert length(derived(session, :probed)) == 6
+    end
+
+    test "a task in a list, or a task that a task returns, names its rule" do
+      for {fact, rule} <- [{{:listed, 1}, "listed"}, {{:nested, 1}, "nested"}],
+          concurrency <- [1, 4] do
+        error =
+          assert_raise ArgumentError, fn ->
+            [Tasks]
+            |> Session.new()
+            |> Session.insert(fact)
+            |> Session.fire_rules(concurrency: concurrency)
+          end
+
+        assert error.message =~ "Rete.EngineTest.Tasks.#{rule} returned %Task{"
+        assert error.message =~ "A body may return one task"
+      end
+    end
+
+    test "a task that another process started names its rule" do
+      error =
+        assert_raise ArgumentError, fn ->
+          [Tasks] |> Session.new() |> Session.insert({:foreign, 1}) |> Session.fire_rules()
+        end
+
+      assert error.message =~ "Rete.EngineTest.Tasks.foreign returned %Task{"
+      assert error.message =~ "another process started"
+    end
+
+    test "an unlinked task that exits names its rule" do
+      sup = start_supervised!(Task.Supervisor)
+
+      # The supervisor logs the crash. The test is about the raise.
+      ExUnit.CaptureLog.capture_log(fn ->
+        for concurrency <- [1, 4] do
+          error =
+            assert_raise RuntimeError, fn ->
+              [Tasks]
+              |> Session.new()
+              |> Session.insert({:crash, sup})
+              |> Session.fire_rules(concurrency: concurrency)
+            end
+
+          assert error.message =~ "Rete.EngineTest.Tasks.crash returned a task that exited: :boom"
+        end
+      end)
+    end
+
+    test "a task that outruns :timeout is shut down" do
+      assert_raise RuntimeError, ~r/Tasks.hang did not finish/, fn ->
+        [Tasks]
+        |> Session.new()
+        |> Session.insert({:hang, self(), 1})
+        |> Session.fire_rules(timeout: 20)
+      end
+
+      assert_received {:started, 1, pid}
+      refute Process.alive?(pid)
+    end
+
+    # The head times out and raises while the tasks behind it still run. Nothing would
+    # ever await those, so the engine shuts them down before the error goes on.
+    test "a raise shuts down the tasks still in flight" do
+      facts = Enum.map(1..3, &{:hang, self(), &1})
+
+      assert_raise RuntimeError, ~r/Tasks.hang did not finish/, fn ->
+        [Tasks]
+        |> Session.new()
+        |> Session.insert(facts)
+        |> Session.fire_rules(concurrency: 4, timeout: 20)
+      end
+
+      for n <- 1..3 do
+        assert_received {:started, ^n, pid}
+        refute Process.alive?(pid)
+      end
     end
 
     # Firing one at a time re-sorts the agenda after every activation, so `b`, activated by
@@ -2534,10 +2682,10 @@ defmodule Rete.EngineTest do
       end
     end
 
-    # The generated `__rhs_<name>__` frame is what names the rule, so a task must not
-    # swallow the stacktrace and leave an opaque exit behind. With images, the frame names
+    # The generated `__rhs_<name>__` frame is what names the rule, so waiting for its turn
+    # in the group must not lose the stacktrace. With images, the frame names
     # the image of `Boom`, so this builds without them to match the module exactly.
-    test "a raising body still names its rule in the stacktrace from a task" do
+    test "a raising body still names its rule in the stacktrace under concurrency" do
       stacktrace =
         try do
           [Boom]
@@ -2644,6 +2792,18 @@ defmodule Rete.EngineTest do
         assert [] == derived(session, :acted)
         assert [{:blocked, 1}] == derived(session, :blocked)
       end
+    end
+
+    test "the task of a cancelled activation is shut down, not awaited" do
+      session =
+        [CancelHang]
+        |> Session.new()
+        |> Session.insert({:trigger, self(), 1})
+        |> Session.fire_rules(concurrency: 8, timeout: 20)
+
+      assert [{:blocked, 1}] == derived(session, :blocked)
+      assert_received {:started, 1, pid}
+      refute Process.alive?(pid)
     end
 
     test "a cancelled group still drains completely on retraction" do

@@ -153,7 +153,9 @@ any activation at a lower one. See
 
 ### Fire
 
-`fire_rules/2` also takes `:max_cycles`, `:concurrency`, and `:timeout`. See its own doc and
+`fire_rules/2` also takes `:max_cycles`, `:concurrency`, and `:timeout`. A rule body that
+waits on I/O can return a `Task`, and the result of the task is its facts. `:concurrency`
+says how many of those tasks run at once. See its own doc and
 [docs/design/engine.md](docs/design/engine.md) §11 for more.
 
 ```elixir
@@ -417,10 +419,10 @@ docs under `docs/design/` record why.
   `Rete.Session.retract/2` exists. Truth maintenance cascades from it.
 * **Firing is a blocking call.** `fire_rules/2` runs to quiescence in the calling process,
   and it returns the settled session. There is no async variant that hands back a `Task`.
-  Within one call, the bodies of one salience group *can* run concurrently: pass
-  `:concurrency` (and optionally `:timeout`) to run them on tasks, instead of one at a time.
-  This is worth it only for a body that does real work — see
-  [docs/design/engine.md](docs/design/engine.md) §11 for the ~5 µs break-even point.
+  Every rule body runs in the calling process too. A body *can* return a `Task`, and pass
+  `:concurrency` (and optionally `:timeout`) to await the tasks of one salience group
+  together. A body that blocks without a task never overlaps another — see
+  [docs/design/engine.md](docs/design/engine.md) §11.
 * **Snapshots carry rules, not data migrations.** `Rete.Session.dump/2` and `load/2` move
   a session to a node that runs other code, and the session keeps its own rules. There is no
   way to move a session onto the **new** rules of that node, and no distributed sync. Images
