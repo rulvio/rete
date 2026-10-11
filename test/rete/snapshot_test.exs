@@ -262,6 +262,24 @@ defmodule Rete.SnapshotTest do
       assert nil == Rete.Image.name(Enum)
     end
 
+    # A rule calls `fact_type/1`, so the image exports it. The taxonomy keeps the capture
+    # of the module all the same.
+    test "the :fact_type_fn of a ruleset module is never pointed at its image" do
+      [{module, _beam}] =
+        Code.compile_string("""
+        defmodule Rete.SnapshotTest.TypeFn do
+          use Rete.Ruleset
+          defrule tag({:order, cid}), do: {:tagged, cid, fact_type({:order, cid})}
+          def fact_type(fact), do: elem(fact, 0)
+        end
+        """)
+
+      fun = &module.fact_type/1
+      network = Session.network(Session.new([module], fact_type_fn: fun))
+
+      assert fun == network.taxonomy.fact_type_fn
+    end
+
     # The session runs the v1 image, so the v2 module does not reach it. A new session
     # picks up v2.
     test "a session built with images keeps its rules across a redeploy" do
@@ -721,9 +739,9 @@ defmodule Rete.SnapshotTest do
   end
 
   describe "loading an image" do
-    # Each load of a module that is loaded already makes the running copy old code, and a
-    # later one purges it. One first load, however many callers, leaves no old code.
-    test "many first loads of one image load it once" do
+    # The loads race with no lock. A load that finds old code gets `:not_purged`, and the
+    # image is loaded already, so every caller gets `:ok`.
+    test "many first loads of one image all succeed" do
       module = compile(Rete.SnapshotTest.Concurrent, :v1)
       {:ok, {image, beam}} = module.__rete_image__()
       purge(image)
@@ -734,7 +752,7 @@ defmodule Rete.SnapshotTest do
       )
       |> Enum.each(fn result -> assert {:ok, :ok} == result end)
 
-      refute :erlang.check_old_code(image)
+      assert {:file, _} = :code.is_loaded(image)
     end
   end
 

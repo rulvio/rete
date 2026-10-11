@@ -1049,6 +1049,9 @@ Bench.compare(
 # expansion that defines the rules.
 width_modules = for r <- [128, 256, 512, 1024], into: %{}, do: {r, Bench.Width.module(r)}
 
+# Without an image, `images: true` does nothing, and the two scenarios below would match.
+for {_r, module} <- width_modules, do: {:ok, _image} = module.__rete_image__()
+
 Bench.scenario(
   "compile r rules over one fact type",
   [128, 256, 512, 1024],
@@ -1061,6 +1064,14 @@ Bench.scenario(
   note:
     "every rule hangs off the beta root, so sharing has to look past all the others — " <>
       "was O(r\u00B2) while that was a scan"
+)
+
+Bench.scenario(
+  "compile r rules over one fact type, images: false",
+  [128, 256, 512, 1024],
+  fn r -> Rete.Compiler.build([width_modules[r]], images: false) end,
+  isolate: true,
+  note: "the same build without images. The gap to the scenario above is the cost of images."
 )
 
 # Compiled up front, for the reason the width scenario gives: the scenario times firing,

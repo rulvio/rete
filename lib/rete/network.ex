@@ -67,7 +67,7 @@ defmodule Rete.Network do
       |> Taxonomy.new(Keyword.take(opts, [:fact_type_fn]))
       |> Taxonomy.index(alpha_types(alphas, productions))
 
-    network = %__MODULE__{
+    %__MODULE__{
       alphas: alphas,
       taxonomy: taxonomy,
       graph: graph,
@@ -75,10 +75,6 @@ defmodule Rete.Network do
       productions: productions,
       reserved_types: reserved
     }
-
-    # A session keeps this network after its modules change. The image name is a hash of
-    # the code that the rules reach, so a different name later means other code.
-    %__MODULE__{network | built_images: Map.new(modules(network), &{&1, Image.register(&1)})}
   end
 
   @doc """

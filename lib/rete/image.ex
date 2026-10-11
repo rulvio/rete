@@ -11,8 +11,8 @@ defmodule Rete.Image do
   load on one node together.
 
   The copy follows each call from a rule to a helper of the module, and runs that helper in
-  the image. `retarget/2` points the network at the image when a session is dumped. See
-  `docs/design/snapshot.md` §2.
+  the image. `target/2` points the productions at the image when a network is built, and
+  the network at the image when a session is dumped. See `docs/design/snapshot.md` §2.
   """
 
   # Increase this when a change to code generation changes what a copied function means.
@@ -382,18 +382,17 @@ defmodule Rete.Image do
   check on load decides whether the target node has them.
 
   A capture of a function that the image does not hold stays a capture of the module. No
-  rule reaches that function, so the image did not copy it. A `:fact_type_fn` defined in a
-  ruleset module is the usual case. It then runs the version of the node that loads the
-  session, as a call to any other module does.
+  rule reaches that function, so the image did not copy it.
+
   """
-  @spec retarget(term(), %{module() => t()}) :: term()
-  def retarget(term, images) do
+  @spec target(term(), %{module() => t()}) :: term()
+  def target(term, images) do
     targets =
       Map.new(images, fn {module, {image, beam}} ->
         {module, {image, MapSet.new(exports(beam))}}
       end)
 
-    map_funs(term, fn fun ->
+    point = fn fun ->
       {module, name, arity} = mfa(fun)
 
       with {:ok, {image, exported}} <- Map.fetch(targets, module),
@@ -402,7 +401,9 @@ defmodule Rete.Image do
       else
         _ -> fun
       end
-    end)
+    end
+
+    map_funs(term, point)
   end
 
   @doc """
@@ -546,24 +547,17 @@ defmodule Rete.Image do
     :ok
   end
 
-  # A first load takes a lock. Two loads of one image would make the running copy old code,
-  # and a third would purge it. A loaded image skips the lock, because `:code.is_loaded/1`
-  # cannot see half a load, and the lock goes through one `global_name_server` process.
+  # No lock. Two first loads of one image can race, and the second makes the first copy old
+  # code. A third then gets `:not_purged`, which means the image is loaded. The code is the
+  # same in every copy, and rete never purges an image, so no process dies.
   defp ensure(name, beam) do
-    if :code.is_loaded(name) do
-      remember(name, beam)
-    else
-      :global.trans({{__MODULE__, name}, self()}, fn -> ensure_unlocked(name, beam) end, [node()])
-    end
-  end
-
-  defp ensure_unlocked(name, beam) do
     loaded =
       if :code.is_loaded(name) do
         :ok
       else
         case :code.load_binary(name, ~c"#{name}.beam", beam) do
           {:module, ^name} -> :ok
+          {:error, :not_purged} -> :ok
           {:error, reason} -> {:error, reason}
         end
       end
@@ -609,8 +603,9 @@ defmodule Rete.Image do
     {module, name, arity}
   end
 
-  # `Enum` refuses a struct, so these walk a map through `:maps`. The `:__struct__` key
-  # comes back with the rest, so the result is still the struct.
+  # `Enum` refuses a struct, so these walk a map through `:maps`. `map_funs` maps only the
+  # values, in place, so a struct keeps its `:__struct__` key. No network holds a function
+  # as a map key, and `captures/1` still reads the keys.
   defp map_funs(fun, f) when is_function(fun), do: f.(fun)
   defp map_funs([head | tail], f), do: [map_funs(head, f) | map_funs(tail, f)]
 
@@ -618,7 +613,7 @@ defmodule Rete.Image do
     do: tuple |> Tuple.to_list() |> map_funs(f) |> List.to_tuple()
 
   defp map_funs(map, f) when is_map(map),
-    do: map |> :maps.to_list() |> map_funs(f) |> :maps.from_list()
+    do: :maps.map(fn _key, value -> map_funs(value, f) end, map)
 
   defp map_funs(term, _f), do: term
 

@@ -12,8 +12,8 @@ defmodule Rete.Snapshot do
   alias Rete.Memory
   alias Rete.Network
 
-  # Increase this when an engine struct, or the contract of `Negation.marker/2` or
-  # `marker_alpha/1`, changes. The struct-shape test in `snapshot_test.exs` fails until it
+  # Increase this when an engine struct, or the contract of `Negation.marker/2`,
+  # `marker_alpha/1` or `Taxonomy.default_fact_type/1`, changes. The struct-shape test in `snapshot_test.exs` fails until it
   # does. The envelope and the MAC input never change, so an older release can still
   # report `{:format, n}`.
   @format 1
@@ -37,15 +37,15 @@ defmodule Rete.Snapshot do
         agenda: Agenda.compact(state.agenda)
     }
 
-    # Only the network is retargeted. A fact is matched by equality, so a changed capture
-    # inside one would make a retract of that fact miss after the load. The taxonomy can
-    # hold a `:fact_type_fn`, which is not part of any rule, so it does not count here.
+    # Only the rules of the network are targeted at their images. A fact is matched by
+    # equality, so a changed capture inside one would make a retract of that fact miss after
+    # the load. The taxonomy can hold a `:fact_type_fn`, which is not part of any rule.
     network = state.network
     offers = Map.new(Network.modules(network), &{&1, Image.fetch(&1)})
 
     with {:ok, rule_modules} <- Image.captures(%Network{network | taxonomy: nil}),
          {:ok, ruleset_images} <- ruleset_images(built_offers(network, offers), rule_modules),
-         state = %State{state | network: Image.retarget(network, ruleset_images)},
+         state = %State{state | network: target_rules(network, ruleset_images)},
          {:ok, captured} <- Image.captures(state),
          {:ok, images} <- snapshot_images(offers, captured) do
       # `minor_version` is fixed, so a newer OTP default does not write a body that an
@@ -162,6 +162,13 @@ defmodule Rete.Snapshot do
   defp shape(value) when is_integer(value), do: "an integer"
   defp shape(value) when is_map(value), do: "a map"
   defp shape(_value), do: "a value of another type"
+
+  # The taxonomy keeps its captures. So a `:fact_type_fn` always runs the version of the
+  # node, as a call to another module does.
+  defp target_rules(%Network{taxonomy: taxonomy} = network, images) do
+    %Network{} = targeted = Image.target(%Network{network | taxonomy: nil}, images)
+    %Network{targeted | taxonomy: taxonomy}
+  end
 
   # The network runs the code its modules had when it was built, so that is the image it
   # takes. Under `images: false`, the module can offer another image after an upgrade. The

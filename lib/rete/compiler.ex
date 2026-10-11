@@ -73,26 +73,32 @@ defmodule Rete.Compiler do
   def build_productions(productions, taxo_data \\ [], opts \\ []) do
     validate_names!(productions)
 
-    network =
-      productions
-      |> Enum.flat_map(&extract/1)
-      |> disambiguate_codes()
-      |> Network.new(taxo_data, opts)
+    productions = productions |> Enum.flat_map(&extract/1) |> disambiguate_codes()
 
-    if images?(opts), do: run_images(network), else: network
+    # A session keeps its network after its modules change. The image name is a hash of the
+    # code that the rules reach, so a different name later means other code.
+    built =
+      productions |> Enum.map(& &1.module) |> Enum.uniq() |> Map.new(&{&1, Image.register(&1)})
+
+    productions = if images?(opts), do: run_images(productions, built), else: productions
+
+    %Network{Network.new(productions, taxo_data, opts) | built_images: built}
   end
 
   defp images?(opts), do: Keyword.get(opts, :images, Application.get_env(:rete, :images, true))
 
-  # `Network.new/3` put each beam in the registry, so `Image.beam/1` has it. An image that
-  # this node built and cannot load is a fault of the node. Calls to the module instead
-  # would hide it, and the session would no longer keep its rules across an upgrade.
-  defp run_images(%Network{built_images: built} = network) do
+  # Every function of a network comes from its productions, so pointing them at the images
+  # before the build points the whole network. That walks the input, which is much smaller
+  # than the network. `Image.register/1` put each beam in the registry, so `Image.beam/1`
+  # has it. An image that this node built and cannot load is a fault of the node. Calls to
+  # the module instead would hide it, and the session would no longer keep its rules
+  # across an upgrade.
+  defp run_images(productions, built) do
     images = for {module, {:ok, name}} <- built, into: %{}, do: {module, {name, Image.beam(name)}}
 
     case Image.load(Map.new(Map.values(images))) do
       :ok ->
-        Image.retarget(network, images)
+        Image.target(productions, images)
 
       {:error, reason} ->
         raise ArgumentError, "Cannot build the network. " <> Snapshot.message(reason)

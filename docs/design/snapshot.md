@@ -146,11 +146,13 @@ Two properties follow from the hash:
 ### A session runs its images
 
 `Rete.Compiler.build/2` points the network at the images by default. It loads each image
-with `Rete.Image.load/1`, and `Rete.Image.retarget/2` replaces each capture of a ruleset
-module with the same capture of its image. A capture always reaches the current code of
-the module it names. A capture of `MyRules` would reach v2 after a hot upgrade, while the
-network still has the shape of v1. A session would then run code of two versions, or raise
-when it fires. A capture of the image reaches v1 until the session is built again.
+with `Rete.Image.load/1`, and `Rete.Image.target/2` replaces each capture of a ruleset
+module with the same capture of its image. It does this to the productions, before it
+builds the network. Every function of the network comes from them, and they are much
+smaller than the network. A capture always reaches the current code of the module it
+names. A capture of `MyRules` would reach v2 after a hot upgrade, while the network still
+has the shape of v1. A session would then run code of two versions, or raise when it
+fires. A capture of the image reaches v1 until the session is built again.
 
 The network records what `Rete.Image.register/1` gave for each module, in `:built_images`.
 That function also puts the beam in the registry of images. So the beam stays on the node
@@ -175,7 +177,7 @@ names the module you wrote. `dump/2` changes the snapshot, and not the session:
    tombstone until the tombstones outnumber the live items. So without this, a retracted
    fact could still be in the snapshot. Work that `fire_rules/2` has not done yet stays in
    the queue and travels with the snapshot, such as a pending retract.
-2. `Rete.Image.retarget/2` replaces each capture of a ruleset module with the same capture
+2. `Rete.Image.target/2` replaces each capture of a ruleset module with the same capture
    of the image in `:built_images`. That is the image the network was built with, and not
    the image the module offers now. After a hot upgrade the two differ, and the new image
    would not fit the old network. The registry keeps the built beam (§2). With images, the
@@ -199,8 +201,9 @@ names the module you wrote. `dump/2` changes the snapshot, and not the session:
    even if it has no image.
 
    A capture of a ruleset function that no rule calls stays a capture of the module, because
-   the image did not copy it. A `:fact_type_fn` defined in the ruleset module is the usual
-   case. It runs the version of the node that loads the session.
+   the image did not copy it. The taxonomy is never targeted at an image. So a
+   `:fact_type_fn`, even one defined in the ruleset module, runs the version of the node
+   that loads the session.
 
 The payload is two layers:
 
@@ -232,16 +235,17 @@ well, because `dump/2` never writes one either.
    that does not decode, or decodes to the wrong shape, returns `{:error, :undecodable}`.
    The signature is good, so the likely cause is another release of OTP or of rete. Each
    image must be a beam of the module it is filed under.
-4. Load each image that the node has not loaded, with `:code.load_binary/3`. A lock on the
-   image name makes the check and the load one step. Without it, two first loads could
-   both load the image. A third load would then purge the running copy and kill any
-   process inside it. An image that is loaded already skips the lock.
+4. Load each image that the node has not loaded, with `:code.load_binary/3`. This takes no
+   lock. Two first loads of one image can race, and the second makes the first copy old
+   code. A third load then returns `{:error, :not_purged}`, and that means the image is
+   loaded. The code is the same in every copy, and rete never purges an image. So no
+   process dies.
 5. Check every function that the state captures and that the images call. Each one must
    exist on this node. A missing one returns `{:error, {:missing, mfas}}`.
 
 ## 5. Queries keep their names
 
-`retarget/2` changes captures and nothing else. A production keeps `{MyRules, :flagged}` as
+`target/2` changes captures and nothing else. A production keeps `{MyRules, :flagged}` as
 its identity. So `Rete.Session.query(session, {MyRules, :flagged}, cid: 1)` reaches the v1
 query on any node.
 
