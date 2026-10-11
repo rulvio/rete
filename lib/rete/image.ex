@@ -169,7 +169,7 @@ defmodule Rete.Image do
     """
     rete could not compile the image of #{inspect(module)}. The module itself compiled. \
     A build with images, the default, raises for it. `images: false` builds it, for tests \
-    only, and a session built that way cannot be dumped.
+    only.
 
     The image is a copy of the functions that the rules compile to, and of the helpers \
     they call. A session runs it, and a snapshot carries it. See docs/design/snapshot.md.

@@ -1537,7 +1537,7 @@ Bench.scenario(
   snapshot_sizes,
   fn n -> n |> Bench.Snapshot.get() |> elem(0) |> Rete.Session.dump!("bench") end,
   isolate: true,
-  note: "the compaction, the walks over the state, encoding and the signature"
+  note: "the walks over the state, encoding and the signature"
 )
 
 Bench.scenario(

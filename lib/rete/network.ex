@@ -238,7 +238,7 @@ defmodule Rete.Network do
         MapSet.member?(reserved, type) do
       raise ArgumentError, """
       derive(#{inspect(child)}, #{inspect(parent)}) names #{inspect(type)}. \
-      A compound negation generates that type, and only the engine uses it.
+      #{Rete.Compiler.Negation.reserved_message(type)}
 
       Remove the derive, or name another type.\
       """

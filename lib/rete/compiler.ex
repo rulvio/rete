@@ -145,7 +145,7 @@ defmodule Rete.Compiler do
           end)
 
         raise ArgumentError, """
-        a module declares the same production name more than once:
+        A module declares the same production name more than once:
 
         #{detail}
 

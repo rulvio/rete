@@ -49,6 +49,9 @@ All notable changes to `rete` are recorded here. The format follows
   `:fact_type_fn` gives that type. A rule that returns such a fact raises when it fires. A
   `derive` that names the type raises when the network is built.
 * `rete` now lists `:crypto` in `:extra_applications`.
+* `Rete.Network.marker?/2` is now `reserved?/2`, and `:marker_types` is now
+  `:reserved_types`. `Network.beta_children/2` and `:alpha_beta` are gone. An alpha node
+  holds the beta nodes it feeds in `:children`.
 
 ## 1.0.0
 

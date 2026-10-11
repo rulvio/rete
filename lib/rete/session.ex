@@ -297,8 +297,8 @@ defmodule Rete.Session do
   runs images keeps running its own rules, consistently. Build a new session with `new/2`
   to run the new rules. The facts do not move to it, so insert them again.
 
-  A session loaded on a node that runs another version is not the latest either. It runs
-  the rules it was dumped with, and you decide whether to build again.
+  A loaded session is not the latest when this node runs another version of a module, or
+  none. It still runs the rules it was dumped with.
 
   Under `images: false`, the network records no images, so it is always the latest. It
   calls the ruleset modules, and it is not safe across a hot upgrade. Use it in tests only.
@@ -397,8 +397,9 @@ defmodule Rete.Session do
       read.
     * `:undecodable` — the signature matches, but this node cannot read the body. Another
       release of OTP or of rete probably wrote it.
-    * `{:image, module, reason, otp}` — an image did not load. `otp` is the release that
-      compiled that image. A beam from a newer OTP may not load on an older one.
+    * `{:image, image, reason, otp}` — an image did not load. `otp` is the release that
+      compiled that image, or `nil` when the beam does not record it. A beam from a newer
+      OTP may not load on an older one.
     * `{:missing, mfas}` — the rules call functions that this node does not define.
 
   An image stays loaded, also after an error, because another session can need it. A rule

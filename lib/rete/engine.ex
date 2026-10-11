@@ -21,6 +21,7 @@ defmodule Rete.Engine do
 
   alias Rete.Activation
   alias Rete.Agenda
+  alias Rete.Compiler.Negation
   alias Rete.Element
   alias Rete.Engine.Nodes
   alias Rete.Engine.State
@@ -661,17 +662,17 @@ defmodule Rete.Engine do
         end
 
       if not node.generated? and MapSet.member?(state.network.reserved_types, type) do
-        raise ArgumentError, concluded_marker(node, token, fact)
+        raise ArgumentError, concluded_marker(node, token, fact, type)
       end
     end)
 
     facts
   end
 
-  defp concluded_marker(node, token, fact) do
+  defp concluded_marker(node, token, fact, type) do
     """
     #{Network.ref_string({node.module, node.name})} returned #{inspect(fact)}. \
-    A compound negation generates its type, and only the engine uses it.
+    #{Negation.reserved_message(type)}
 
     It fired on #{inspect(token.bindings)}. Return a fact of another type.\
     """
@@ -685,9 +686,11 @@ defmodule Rete.Engine do
         :ok
 
       fact ->
+        type = Taxonomy.fact_type(network.taxonomy, fact)
+
         raise ArgumentError, """
         Cannot #{action} #{inspect(fact)}. \
-        A compound negation generates its type, and only the engine uses it.
+        #{Negation.reserved_message(type)}
 
         Give the fact another type. If a :fact_type_fn gave it this type, change the \
         function.\

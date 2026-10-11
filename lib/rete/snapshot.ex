@@ -139,7 +139,7 @@ defmodule Rete.Snapshot do
 
   defp otp_hint(_otp), do: ""
 
-  # An empty key gives an HMAC that anyone can compute, so it is refused with the rest.
+  # An empty key gives an HMAC that anyone can compute, so this refuses it with the rest.
   defp check_secret!(secret, _caller) when is_binary(secret) and byte_size(secret) > 0,
     do: :ok
 

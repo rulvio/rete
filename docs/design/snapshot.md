@@ -59,10 +59,10 @@ A capture of a function that the module does not define yet stays a capture of t
 A later hook can define `fun/1` beside a `fun/0` that is defined. The copy keeps
 `&MyRules.fun/1` as it is, and does not take it for a call of `fun/0`.
 
-The image holds the `@rete_image` attribute in its beam. It marks the module as an image,
-so a loaded module of the user with a name of the same form is not taken for one. It also records
-the OTP release that compiled the image. `load/2` reads that release from the beam without
-a load, and names it in the error when the release differs from the node.
+The image holds the `@rete_image` attribute in its beam. It marks the module as an image.
+So rete does not take a user module with a name of the same form for an image. It also
+records the OTP release that compiled the image. `load/2` reads that release from the beam
+without a load, and names it in the error when the release differs from the node.
 
 The ruleset module gets `__rete_image__/0`. It returns one of three values:
 
@@ -214,11 +214,11 @@ body = term_to_binary(%{images: %{image => beam}, state: state}, [:compressed, m
 `signature` is the HMAC-SHA256 of the format and `body` under the key, and every snapshot
 has one. The format is signed too, so a snapshot cannot be relabelled as another format
 without the key. The outer layer holds only atoms that every node has. So `load/2` reads it
-with `:safe`, and it checks the signature before it decodes the body. A compressed outer
-layer is refused before it is read, because `dump/2` never writes one. `:safe` does not
-stop decompression, so a small input could otherwise inflate to a term many times its size
-before the signature check runs. A binary with bytes after the outer term is refused as
-well, because `dump/2` never writes one either.
+with `:safe`, and it checks the signature before it decodes the body. `load/2` refuses a
+compressed outer layer before it reads it, because `dump/2` never writes one. `:safe` does
+not stop decompression, so a small input could otherwise inflate to a term many times its
+size before the signature check runs. `load/2` refuses a binary with bytes after the outer
+term as well, because `dump/2` never writes one either.
 
 ## 4. Load
 

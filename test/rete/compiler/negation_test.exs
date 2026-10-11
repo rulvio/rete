@@ -261,7 +261,7 @@ defmodule Rete.Compiler.NegationTest do
       session = Session.new([Rules])
 
       error = assert_raise ArgumentError, fn -> Session.insert(session, {@marker, %{cid: 1}}) end
-      assert error.message =~ "A compound negation generates"
+      assert error.message =~ "type of a compound negation marker"
     end
 
     test "a user retract of a marker raises" do
