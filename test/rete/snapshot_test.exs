@@ -463,8 +463,9 @@ defmodule Rete.SnapshotTest do
       end
       """)
 
-      # The sleep makes the struct finish after the ruleset starts to wait for it, whatever
-      # the scheduling. Without it, the struct can win the race, and the test proves nothing.
+      # The struct must still be compiling when the image of the ruleset compiles. The sleep
+      # gives that margin. Without it, the struct always finishes first, and the test passes
+      # even with `load_structs/2` removed.
       File.write!(Path.join(dir, "lib/z_struct.ex"), """
       defmodule Fixture.Struct do
         Process.sleep(300)
