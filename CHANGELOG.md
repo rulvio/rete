@@ -18,20 +18,25 @@ All notable changes to `rete` are recorded here. The format follows
   `load/2`. A snapshot is signed, not encrypted, so anyone who has it can read its facts.
   A session dumps the rules it was built with, even after its modules change. See
   `docs/design/snapshot.md`.
-* `use Rete.Ruleset` compiles an image module beside each ruleset module. For `MyRules`, it
-  is `MyRules.Image.M<hash>`, and the hash is taken over the code of the rules. An image
-  that does not compile never stops the ruleset module from compiling. Only `dump/2`
-  refuses the module then. `:image_compile_timeout` in the `:rete` application environment
-  changes the two-minute limit on an image compile. See `docs/design/snapshot.md` §2.
+* `use Rete.Ruleset` compiles an image module beside each ruleset module. For `MyRules`,
+  it is `MyRules.Image.M<hash>`, and the hash is taken over the code of the rules. An
+  image that does not compile never stops the ruleset module from compiling. A build with
+  images raises for the module then. `:image_compile_timeout` in the `:rete` application
+  environment changes the two-minute limit on an image compile. See
+  `docs/design/snapshot.md` §2.
 * A session runs the image of each ruleset module by default. So a session built before a
   hot upgrade keeps running its own rules, consistently, until you build it again.
   `Rete.Session.latest?/1` returns `false` when a ruleset module now offers other code.
   `images: false` on `Rete.Session.new/2` or `Rete.Compiler.build/2` calls the ruleset
   modules instead, for test coverage. `config :rete, images: false` sets that default for a
-  test env. With images, a stack trace names the image module.
-* Four `bench/run.exs` scenarios. One flips a compound negation on and off. One dumps a
+  test env. A network built that way records no images, so it is always the latest. With
+  images, a build raises `ArgumentError` if an image did not compile or does not load, and
+  a stack trace names the image module.
+* Five `bench/run.exs` scenarios. One flips a compound negation on and off. One dumps a
   session of n customers, and one loads it. One dumps that session after half the customers
-  are retracted. "match one condition written in k modules" now runs on a fresh process.
+  are retracted. One compiles r rules with `images: false`, so its gap to the compile
+  scenario is the cost of images. "match one condition written in k modules" now runs on a
+  fresh process.
 
 ### Changed
 

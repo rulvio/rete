@@ -2555,6 +2555,21 @@ defmodule Rete.EngineTest do
              end)
     end
 
+    # By default the rule runs in the image of `Boom`. The function still names the rule.
+    test "a raising body names its rule in the image by default" do
+      stacktrace =
+        try do
+          [Boom] |> Session.new() |> Session.insert([{:go, 0}]) |> Session.fire_rules()
+          flunk("expected the body to raise")
+        rescue
+          ArithmeticError -> __STACKTRACE__
+        end
+
+      assert Enum.any?(stacktrace, fn {mod, fun, _arity, _loc} ->
+               Rete.Image.image_name?(mod) and fun == :__rhs_burst__
+             end)
+    end
+
     test "a body that throws propagates the throw, concurrent or not" do
       for concurrency <- [1, 4] do
         thrown =

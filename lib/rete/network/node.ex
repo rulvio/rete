@@ -6,13 +6,13 @@ defmodule Rete.Network.Node do
   expression functions the engine needs, and nothing else. `Rete.Engine.Nodes` implements
   activation against these structs.
 
-  **No node carries its children.** They are forward edges in `Rete.Compiler.BetaGraph`
-  instead. A node is shared between rules exactly when it is equal. Equality must not
-  depend on how many rules have hung children off it yet.
+  **No beta node carries its children.** They are forward edges in
+  `Rete.Compiler.BetaGraph` instead. A beta node is shared between rules exactly when it
+  is equal. Equality must not depend on how many rules have hung children off it yet.
 
-  **`:id` is `nil` until the node is in a graph.** A node is described first and inserted
-  second, so `nil` means "a description, not yet a node". Every node reachable from a
-  built `Rete.Network` has an id. See `docs/design/network.md` §3.
+  **The `:id` of a beta node is `nil` until the node is in a graph.** A node is described
+  first and inserted second, so `nil` means "a description, not yet a node". Every beta
+  node reachable from a built `Rete.Network` has an id. See `docs/design/network.md` §3.
   """
 
   defmodule Alpha do
@@ -24,8 +24,9 @@ defmodule Rete.Network.Node do
     nodes a fact reaches. This is what lets `derive(:premium, :customer)` make a
     `:premium` fact reach a condition written against `:customer`.
 
-    `:children` holds the beta nodes the alpha feeds. Unlike a beta node, an alpha has one
-    owner, so it holds its edges itself.
+    `:id` is its expression code. `:children` holds the beta nodes the alpha feeds. An
+    alpha is found by its code, never by equality. So its children cannot change what it
+    shares, and it can hold them itself.
     """
     @type t :: %__MODULE__{
             id: atom(),

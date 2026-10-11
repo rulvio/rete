@@ -70,7 +70,7 @@ The ruleset module gets `__rete_image__/0`. It returns one of three values:
 * `nil` — the module declares no production.
 * `{:unavailable, reason}` — the image did not compile.
 
-`Rete.Image.fetch/1` reads it for `Rete.Snapshot`.
+`Rete.Image.fetch/1` reads it for the build, for `Rete.Session.latest?/1` and for a dump.
 
 ### How the image compiles
 
@@ -105,10 +105,10 @@ replace a loaded module.
 
 ### When a module has no image
 
-The ruleset module still compiles, and its rules run. `__rete_image__/0` returns
-`{:unavailable, reason}`, and `dump/2` returns
-`{:error, {:no_image, module, reason}}`. An image must never stop the ruleset module from
-compiling.
+The ruleset module still compiles. An image must never stop the ruleset module from
+compiling. `__rete_image__/0` returns `{:unavailable, reason}`. A build with images, the
+default, raises `ArgumentError` with that reason. `images: false` builds the module for
+tests, and `dump/2` then returns `{:error, {:no_image, module, reason}}`.
 
 The usual cause is a helper that a `@before_compile` hook defines after the hook of
 `use Rete.Ruleset`. Hooks run in the order they are registered, and a hook cannot add a
@@ -116,7 +116,7 @@ hook that runs later. So the image cannot see that helper. The fix is to put
 `use Rete.Ruleset` after the `use` that defines the helper.
 
 An image compile that takes more than two minutes stops. The module then has no image, and
-the build goes on. `:image_compile_timeout` in the `:rete` application environment sets
+its compile goes on. `:image_compile_timeout` in the `:rete` application environment sets
 another limit, in milliseconds.
 
 ### The hash
@@ -154,16 +154,16 @@ names. A capture of `MyRules` would reach v2 after a hot upgrade, while the netw
 has the shape of v1. A session would then run code of two versions, or raise when it
 fires. A capture of the image reaches v1 until the session is built again.
 
-The network records what `Rete.Image.register/1` gave for each module, in `:built_images`.
-That function also puts the beam in the registry of images. So the beam stays on the node
-after the module changes. `Rete.Session.latest?/1` compares the record with the image that
-each module offers now. A different name means other code, because the name is a hash of
-the code.
+The network records the image of each module in `:built_images`, as
+`%{module => image}`. `Rete.Session.latest?/1` compares the record with the image that each
+module offers now. A different name means other code, because the name is a hash of the
+code.
 
 `images: false` keeps the captures of `MyRules`. A coverage tool counts the calls of a
 module, and the image is another module. So the rules show no coverage when they run in
-the image. `config :rete, images: false` sets the default for a test env. A session built
-this way calls the code of the node, and it is not safe across a hot upgrade.
+the image. `config :rete, images: false` sets the default for a test env. A network built
+this way records no images, so `latest?/1` always returns `true`. It calls the code of the
+node, and it is not safe across a hot upgrade.
 
 ## 3. Dump
 
@@ -177,19 +177,18 @@ names the module you wrote. `dump/2` changes the snapshot, and not the session:
    tombstone until the tombstones outnumber the live items. So without this, a retracted
    fact could still be in the snapshot. Work that `fire_rules/2` has not done yet stays in
    the queue and travels with the snapshot, such as a pending retract.
-2. `Rete.Image.target/2` replaces each capture of a ruleset module with the same capture
-   of the image in `:built_images`. That is the image the network was built with, and not
-   the image the module offers now. After a hot upgrade the two differ, and the new image
-   would not fit the old network. The registry keeps the built beam (§2). With images, the
-   network captures images already, and this step changes nothing. This covers the network
-   only. A capture inside a fact stays as it is, because a fact is matched by equality.
-   Changing it would make a retract of the same fact miss after the load.
+2. With images, the network captures images already, and this step changes nothing. Under
+   `images: false`, `Rete.Image.target/2` replaces each capture of a ruleset module with
+   the same capture of the image the module offers now. After a hot upgrade, that image
+   does not fit the old network. So dump such a session before an upgrade. This covers the
+   network only. A capture inside a fact stays as it is, because a fact is matched by
+   equality. Changing it would make a retract of the same fact miss after the load.
 3. `Rete.Image.captures/1` finds any function that is not a remote capture, and `dump/2`
    returns `{:error, {:not_portable, fun}}`. An anonymous function runs only on the build
    that made it. An anonymous `:fact_type_fn` is the usual cause.
 4. The snapshot takes the images that the state still captures. An image comes from a
-   ruleset module of the network, or from the registry of images that this node compiled,
-   loaded, or built a network from. So a loaded session dumps again with its v1 images, on
+   ruleset module of the network, or from the registry of images that this node compiled
+   or loaded. So a loaded session dumps again with its v1 images, on
    a node that runs v2. So does a session that `from_network/1` built over the network of a
    loaded session. A captured image with no beam anywhere makes `dump/2` return
    `{:error, {:no_beam, image}}`.
@@ -270,8 +269,8 @@ module declares the query with the same head. On a node with no `MyRules`, use
   `MyRules.__rhs_flag__/2`. The function name still names the rule.
 * **`images: false` is not safe across a hot upgrade.** Its captures reach the current
   module. After an upgrade, a session runs code of two versions, or raises when it fires.
-  This can happen inside one `fire_rules/2`. Check `Rete.Session.latest?/1` before and
-  after a fire, and build the session again when it returns `false`.
+  This can happen inside one `fire_rules/2`. `Rete.Session.latest?/1` cannot see it, and a
+  dump takes the image the module offers then. Use `images: false` in tests only.
 * **OTP.** A beam from a newer OTP may not load on an older one. The error names the
   release that compiled the image, if it differs from the release of the node.
 * **A struct update in a helper checks less before Elixir 1.20.** The copy turns

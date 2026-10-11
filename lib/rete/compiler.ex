@@ -7,6 +7,7 @@ defmodule Rete.Compiler do
 
       Rete.Compiler.Negation   rewrite compound negations into helper productions
       disambiguate_codes/1     qualify an expression code two modules disagree on
+      Rete.Image.target/2      point the productions at the image of each module
       Rete.Compiler.BetaGraph  build the beta nodes, sharing them where possible
       Rete.Network             group conditions into alpha nodes, index the taxonomy
 
@@ -51,7 +52,8 @@ defmodule Rete.Compiler do
       calls the ruleset modules, so a coverage tool sees the rules run. Use `false` only
       in tests. `config :rete, images: false` changes the default.
 
-  Raises `ArgumentError` if the image of a ruleset module does not load.
+  With images, raises `ArgumentError` if the image of a ruleset module did not compile or
+  does not load.
 
       Rete.Compiler.build([MyRuleset])
       Rete.Compiler.build([MyRuleset, OtherRuleset], fact_type_fn: &MyApp.type/1)
@@ -67,7 +69,8 @@ defmodule Rete.Compiler do
   @doc """
   Builds a network from productions directly, bypassing module aggregation.
 
-  Useful for testing a set of productions without a ruleset module per case.
+  Useful for testing a set of productions without a ruleset module per case. It takes the
+  options of `build/2`, and raises as `build/2` does.
   """
   @spec build_productions([IR.Production.t()], [tuple()], keyword()) :: Network.t()
   def build_productions(productions, taxo_data \\ [], opts \\ []) do
@@ -75,12 +78,8 @@ defmodule Rete.Compiler do
 
     productions = productions |> Enum.flat_map(&extract/1) |> disambiguate_codes()
 
-    # A session keeps its network after its modules change. The image name is a hash of the
-    # code that the rules reach, so a different name later means other code.
-    built =
-      productions |> Enum.map(& &1.module) |> Enum.uniq() |> Map.new(&{&1, Image.register(&1)})
-
-    productions = if images?(opts), do: run_images(productions, built), else: productions
+    {productions, built} =
+      if images?(opts), do: run_images(productions), else: {productions, %{}}
 
     %Network{Network.new(productions, taxo_data, opts) | built_images: built}
   end
@@ -89,19 +88,33 @@ defmodule Rete.Compiler do
 
   # Every function of a network comes from its productions, so pointing them at the images
   # before the build points the whole network. That walks the input, which is much smaller
-  # than the network. `Image.register/1` put each beam in the registry, so `Image.beam/1`
-  # has it. An image that this node built and cannot load is a fault of the node. Calls to
-  # the module instead would hide it, and the session would no longer keep its rules
-  # across an upgrade.
-  defp run_images(productions, built) do
-    images = for {module, {:ok, name}} <- built, into: %{}, do: {module, {name, Image.beam(name)}}
+  # than the network. A module with no image, or an image that does not load, raises.
+  # Calls to the module instead would hide it, and the session would no longer keep its
+  # rules across an upgrade.
+  defp run_images(productions) do
+    images =
+      productions
+      |> Enum.map(& &1.module)
+      |> Enum.uniq()
+      |> Enum.flat_map(&image!/1)
+      |> Map.new()
 
     case Image.load(Map.new(Map.values(images))) do
       :ok ->
-        Image.target(productions, images)
+        built = Map.new(images, fn {module, {name, _beam}} -> {module, name} end)
+        {Image.target(productions, images), built}
 
       {:error, reason} ->
         raise ArgumentError, "Cannot build the network. " <> Snapshot.message(reason)
+    end
+  end
+
+  # `:none` is a module that is not a ruleset, such as one that built productions by hand.
+  defp image!(module) do
+    case Image.fetch(module) do
+      {:ok, image} -> [{module, image}]
+      :none -> []
+      {:error, reason} -> raise ArgumentError, "Cannot build the network. " <> reason
     end
   end
 

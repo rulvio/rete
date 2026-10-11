@@ -63,6 +63,9 @@ defmodule Rete.Session do
   after a hot upgrade of the module, until you build it again. `latest?/1` tells you when
   to do that. `images: false` makes it call the ruleset modules, for test coverage.
 
+  With images, raises `ArgumentError` if the image of a ruleset module did not compile or
+  does not load. See `Rete.Compiler.build/2`.
+
       iex> Rete.Session.new([Rete.Doc.Orders]) |> Rete.Session.facts()
       []
   """
@@ -297,12 +300,11 @@ defmodule Rete.Session do
   A session loaded on a node that runs another version is not the latest either. It runs
   the rules it was dumped with, and you decide whether to build again.
 
-  Under `images: false`, the session calls the modules directly. An upgrade during
-  `fire_rules/2` then gives a result from two versions. Call this after the fire as well
-  as before it, and discard a result that is not the latest.
+  Under `images: false`, the network records no images, so it is always the latest. It
+  calls the ruleset modules, and it is not safe across a hot upgrade. Use it in tests only.
 
-  It reads the image of each ruleset module once. It does not check a call to another
-  module, a `:fact_type_fn` that no rule calls, or a capture inside a fact.
+  Each call reads the image that each ruleset module offers now. It does not check a call
+  to another module, a `:fact_type_fn` that no rule calls, or a capture inside a fact.
 
       iex> Rete.Session.new([Rete.Doc.Orders]) |> Rete.Session.latest?()
       true
@@ -316,7 +318,8 @@ defmodule Rete.Session do
   The binary holds the working memory, the network and the compiled code of every rule. A
   node that loads it runs **these** rules, even if it defines other versions of the
   ruleset modules, or none of them. A session that is not `latest?/1` dumps the rules it
-  was built with, and not the rules its modules hold now.
+  was built with, and not the rules its modules hold now. A `:fact_type_fn`, and a call
+  from a rule to another module, run the version on the node that loads it.
 
   `secret` is a binary key. The snapshot carries an HMAC-SHA256 under it, and `load/2`
   refuses the snapshot without the same key. Use a random key, such as
@@ -335,8 +338,8 @@ defmodule Rete.Session do
       node.
     * `{:no_image, module, reason}` — the image of a ruleset module did not compile.
       `reason` says why.
-    * `{:no_beam, image}` — the session runs an image that this node never compiled,
-      loaded, or built a network from, such as a session that arrived by distribution.
+    * `{:no_beam, image}` — the session runs an image that this node never compiled or
+      loaded, such as a session that arrived by distribution.
 
   Raises `ArgumentError` if `secret` is empty or is not a binary. See
   `docs/design/snapshot.md`.
@@ -430,7 +433,7 @@ defmodule Rete.Session do
 
   @spec failed!(String.t(), term()) :: no_return()
   defp failed!(what, reason),
-    do: raise(ArgumentError, "cannot #{what}. " <> Snapshot.message(reason))
+    do: raise(ArgumentError, "Cannot #{what}. " <> Snapshot.message(reason))
 
   defp update(%__MODULE__{state: state}, fun), do: %__MODULE__{state: fun.(state)}
 end

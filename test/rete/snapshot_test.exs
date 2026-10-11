@@ -257,8 +257,8 @@ defmodule Rete.SnapshotTest do
       module = compile(Rete.SnapshotTest.Recorded, :v1)
       {:ok, {image, _beam}} = module.__rete_image__()
 
-      assert %{module => {:ok, image}} == Session.network(Session.new([module])).built_images
-      assert :none == Rete.Image.register(Enum)
+      assert %{module => image} == Session.network(Session.new([module])).built_images
+      assert %{} == Session.network(Session.new([module], images: false)).built_images
       assert nil == Rete.Image.name(Enum)
     end
 
@@ -298,27 +298,22 @@ defmodule Rete.SnapshotTest do
       assert [] == Session.query(fresh, {module, :flagged}, cid: 1)
     end
 
-    # The session calls the v2 module now. Its dump still carries the image it was built
-    # with, so the loaded session runs v1 and does not mix the two versions.
-    test "a session built without images dumps the image it was built with" do
+    # Nothing is recorded, so `latest?/1` has nothing to compare. Such a session is for tests.
+    test "a session built without images is always the latest" do
       module = compile(Rete.SnapshotTest.NoImages, :v1)
-      {:ok, {v1_image, _beam}} = module.__rete_image__()
-
-      session =
-        [module]
-        |> Session.new(images: false)
-        |> Session.insert([{:customer, 1}, {:order, 1, 500}])
-        |> Session.fire_rules()
+      session = Session.new([module], images: false)
 
       redeploy(module, :v2)
-      refute Session.latest?(session)
+      assert Session.latest?(session)
+    end
 
-      snapshot = Session.dump!(session, @key)
-      assert [v1_image] == images_in(snapshot)
+    # The record travels in the snapshot, so a load on a node of the same version is the
+    # latest.
+    test "a loaded session on a node of the same version is the latest" do
+      module = compile(Rete.SnapshotTest.SameVersion, :v1)
+      {:ok, loaded} = module |> v1_session() |> Session.dump!(@key) |> Session.load(@key)
 
-      {:ok, loaded} = Session.load(snapshot, @key)
-      grown = loaded |> Session.insert([{:customer, 2}, {:order, 2, 500}]) |> Session.fire_rules()
-      assert [:v1] == Session.query(grown, {module, :flagged}, cid: 2)
+      assert Session.latest?(loaded)
     end
   end
 
@@ -330,8 +325,14 @@ defmodule Rete.SnapshotTest do
       assert reason =~ "@before_compile"
       assert reason =~ "undefined function big?/1"
 
+      error = assert_raise ArgumentError, fn -> Session.new([module]) end
+      assert error.message =~ "Put `use Rete.Ruleset` after"
+
       session =
-        [module] |> Session.new() |> Session.insert({:order, 1, 5000}) |> Session.fire_rules()
+        [module]
+        |> Session.new(images: false)
+        |> Session.insert({:order, 1, 5000})
+        |> Session.fire_rules()
 
       assert {:flagged, 1, :v2} in Session.facts(session)
 
@@ -1078,7 +1079,7 @@ defmodule Rete.SnapshotTest do
             {"not a snapshot", "k1", "not a snapshot"}
           ] do
         error = assert_raise ArgumentError, fn -> Session.load!(binary, key) end
-        assert error.message =~ "cannot load the snapshot"
+        assert error.message =~ "Cannot load the snapshot"
         assert error.message =~ text
       end
     end

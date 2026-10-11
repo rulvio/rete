@@ -24,7 +24,7 @@ defmodule Rete.ImageTest do
     end
   end
 
-  test "an image that does not compile in time leaves the module without an image" do
+  test "an image that does not compile in time stops a build with images" do
     previous = Application.fetch_env(:rete, :image_compile_timeout)
     Application.put_env(:rete, :image_compile_timeout, 0)
 
@@ -40,9 +40,12 @@ defmodule Rete.ImageTest do
       assert {:unavailable, reason} = module.__rete_image__()
       assert reason =~ "did not compile in 0 ms"
 
+      error = assert_raise ArgumentError, fn -> Rete.Session.new([module]) end
+      assert error.message =~ "did not compile in 0 ms"
+
       session =
         [module]
-        |> Rete.Session.new()
+        |> Rete.Session.new(images: false)
         |> Rete.Session.insert({:order, 1, 5})
         |> Rete.Session.fire_rules()
 

@@ -167,15 +167,16 @@ defmodule Rete.Image do
 
   defp unavailable(module, detail) do
     """
-    rete could not compile the image of #{inspect(module)}, so a session built from it \
-    cannot be dumped. The module itself compiled, and its rules run.
+    rete could not compile the image of #{inspect(module)}. The module itself compiled. \
+    A build with images, the default, raises for it. `images: false` builds it, for tests \
+    only, and a session built that way cannot be dumped.
 
     The image is a copy of the functions that the rules compile to, and of the helpers \
-    they call. A snapshot carries it. See docs/design/snapshot.md.
+    they call. A session runs it, and a snapshot carries it. See docs/design/snapshot.md.
 
     The usual cause is a helper that a `@before_compile` hook defines after the hook of \
-    `use Rete.Ruleset`. Hooks run in the order they are registered, and the image is built \
-    in the hook of rete. Put `use Rete.Ruleset` after the `use` that defines the helper. \
+    `use Rete.Ruleset`. Hooks run in the order they are registered, and rete builds the \
+    image in its own hook. Put `use Rete.Ruleset` after the `use` that defines the helper. \
     For any other cause, please report it.
 
     The cause:
@@ -383,7 +384,6 @@ defmodule Rete.Image do
 
   A capture of a function that the image does not hold stays a capture of the module. No
   rule reaches that function, so the image did not copy it.
-
   """
   @spec target(term(), %{module() => t()}) :: term()
   def target(term, images) do
@@ -477,25 +477,6 @@ defmodule Rete.Image do
   end
 
   @doc """
-  What `fetch/1` returns, with the image name in place of `{name, beam}`. The beam goes
-  into the registry that `beam/1` reads.
-
-  A network calls this for each module when it is built. The beam must outlive an upgrade
-  of the module, because a dump carries the image that the network was built with.
-  """
-  @spec register(module()) :: {:ok, module()} | {:error, String.t()} | :none
-  def register(module) do
-    case fetch(module) do
-      {:ok, {name, beam}} ->
-        remember(name, beam)
-        {:ok, name}
-
-      no_image ->
-        no_image
-    end
-  end
-
-  @doc """
   The name of the image that a ruleset module offers, or `nil` when `fetch/1` gives no
   image.
   """
@@ -508,7 +489,7 @@ defmodule Rete.Image do
   end
 
   @doc """
-  Whether `module` is an image: named `<Module>.Image.M<hash>`, and marked by
+  Whether `module` is an image: named as `image_name?/1` accepts, and marked by
   `@rete_image` if it is loaded.
 
   A module that is not loaded is taken by its name, so a dump can report its missing beam.
@@ -531,8 +512,7 @@ defmodule Rete.Image do
     do: Atom.to_string(name) =~ ~r/\.Image\.M[0-9A-F]{16}$/
 
   @doc """
-  The `.beam` binary of an image that this node compiled, loaded, or built a network from,
-  or `nil`.
+  The `.beam` binary of an image that this node compiled or loaded, or `nil`.
 
   `Rete.Snapshot` reads it for an image that no ruleset module of this node offers, such as
   one that a loaded session captures, or one from before an upgrade.

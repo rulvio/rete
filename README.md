@@ -342,7 +342,8 @@ So a hot upgrade of `Retail` does not change a network built before it. That net
 running the old rules, consistently. `Rete.Session.latest?/1` returns `false` when the
 rules changed. Build the network again when it does. For test coverage, put
 `config :rete, images: false` in `config/test.exs`. The rules then run in `Retail`, where
-a coverage tool counts them.
+a coverage tool counts them. Such a network records no images, so it is always the latest,
+and it is not safe across a hot upgrade.
 
 ### Move a session to another node
 

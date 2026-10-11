@@ -12,10 +12,10 @@ defmodule Rete.Snapshot do
   alias Rete.Memory
   alias Rete.Network
 
-  # Increase this when an engine struct, or the contract of `Negation.marker/2`,
-  # `marker_alpha/1` or `Taxonomy.default_fact_type/1`, changes. The struct-shape test in `snapshot_test.exs` fails until it
-  # does. The envelope and the MAC input never change, so an older release can still
-  # report `{:format, n}`.
+  # Increase this when an engine struct changes. Increase it also when the contract of
+  # `Negation.marker/2`, `marker_alpha/1` or `Taxonomy.default_fact_type/1` changes. The
+  # struct-shape test in `snapshot_test.exs` fails until it does. The envelope and the MAC
+  # input never change, so an older release can still report `{:format, n}`.
   @format 1
 
   # The first two bytes of a compressed term in the external term format.
@@ -44,7 +44,7 @@ defmodule Rete.Snapshot do
     offers = Map.new(Network.modules(network), &{&1, Image.fetch(&1)})
 
     with {:ok, rule_modules} <- Image.captures(%Network{network | taxonomy: nil}),
-         {:ok, ruleset_images} <- ruleset_images(built_offers(network, offers), rule_modules),
+         {:ok, ruleset_images} <- ruleset_images(offers, rule_modules),
          state = %State{state | network: target_rules(network, ruleset_images)},
          {:ok, captured} <- Image.captures(state),
          {:ok, images} <- snapshot_images(offers, captured) do
@@ -164,33 +164,14 @@ defmodule Rete.Snapshot do
   defp shape(_value), do: "a value of another type"
 
   # The taxonomy keeps its captures. So a `:fact_type_fn` always runs the version of the
-  # node, as a call to another module does.
+  # node, as a call to another module does. A network built with images calls them
+  # already, so there is nothing to target, and the walk would only copy the network.
+  defp target_rules(network, images) when map_size(images) == 0, do: network
+
   defp target_rules(%Network{taxonomy: taxonomy} = network, images) do
     %Network{} = targeted = Image.target(%Network{network | taxonomy: nil}, images)
     %Network{targeted | taxonomy: taxonomy}
   end
-
-  # The network runs the code its modules had when it was built, so that is the image it
-  # takes. Under `images: false`, the module can offer another image after an upgrade. The
-  # registry keeps the built beam, because `Rete.Image.register/1` wrote it. A network with
-  # no record, such as one built by hand, takes what the module offers now.
-  defp built_offers(%Network{built_images: built}, offers) do
-    Map.new(offers, fn {module, offer} ->
-      {module, built_offer(Map.fetch(built, module), offer)}
-    end)
-  end
-
-  defp built_offer(:error, offer), do: offer
-  defp built_offer({:ok, {:ok, name}}, {:ok, {name, _beam}} = offer), do: offer
-
-  defp built_offer({:ok, {:ok, name}}, _offer) do
-    case Image.beam(name) do
-      nil -> {:no_beam, name}
-      beam -> {:ok, {name, beam}}
-    end
-  end
-
-  defp built_offer({:ok, recorded}, _offer), do: recorded
 
   # Only a module that the network still captures counts. A loaded session captures images,
   # so the module of this node does not matter to it.
@@ -201,13 +182,13 @@ defmodule Rete.Snapshot do
       {module, {:ok, image}}, {:ok, acc} -> {:cont, {:ok, Map.put(acc, module, image)}}
       {_module, :none}, acc -> {:cont, acc}
       {module, {:error, reason}}, _acc -> {:halt, {:error, {:no_image, module, reason}}}
-      {_module, {:no_beam, image}}, _acc -> {:halt, {:error, {:no_beam, image}}}
     end)
   end
 
-  # An image offered by any ruleset module of the network counts, captured or not. The
-  # registry is how a loaded session dumps again. A captured image with no beam is an error
-  # here, because the snapshot could not load without it.
+  # The snapshot takes each image that the state captures. Its beam comes from a ruleset
+  # module of the network, or from the registry. The registry is how a loaded session dumps
+  # again. A captured image with no beam is an error, because the snapshot could not load
+  # without it.
   defp snapshot_images(offers, captured) do
     offered = for {_module, {:ok, {name, beam}}} <- offers, into: %{}, do: {name, beam}
 

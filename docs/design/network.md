@@ -36,7 +36,7 @@ node depends on what every other rule already put in the graph.
   queries:        %{name => beta_id},
   productions:    [%Rete.IR.Production{}],    # including generated helpers
   reserved_types: MapSet.t(atom),             # the types of compound negation markers
-  built_images:   %{module => {:ok, image}}   # what Rete.Image.register/1 gave at build
+  built_images:   %{module => image}          # the image each module ran at build
 }
 ```
 
@@ -62,9 +62,11 @@ flag decides, and only an unqualified call clears it. See `ir.md` §5.
 
 ## 3. Node kinds
 
-Nodes are **data**. Activation logic lives in `Rete.Engine.Nodes`. No node carries its own
-children — the graph's forward edges hold that instead. A node is shared precisely when it
-is *equal*, and equality must not depend on how many rules happen to hang children off it.
+Nodes are **data**. Activation logic lives in `Rete.Engine.Nodes`. No beta node carries
+its own children — the graph's forward edges hold that instead. A beta node is shared
+precisely when it is *equal*, and equality must not depend on how many rules happen to
+hang children off it. An alpha holds its `:children` itself, because it is found by its
+code, never by equality.
 
 | Node | Produced by | What the engine does with it |
 |---|---|---|
