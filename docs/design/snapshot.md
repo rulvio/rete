@@ -26,12 +26,13 @@ v2 `MyRules`. The rules of a snapshot must live under a name that no other versi
 
 `use Rete.Ruleset` compiles a second module beside the ruleset module. This is the
 **image**. For `MyRules`, it is `MyRules.Image.M<hash>`, so the name shows where an image
-came from. When a module is defined, the code server looks for a file named
-`<name>.beam`, and a file name holds at most 255 bytes. So a module name too long for that
-takes `Rete.Image.M<hash>` instead. So does a module with a plain atom name, such as
-`:erl_rules`. `Rete.Image` builds the image in a `@before_compile`
-hook. `use Rete.Ruleset` registers that hook right after its own, so the functions its own
-hook defines, such as `get_version/0`, exist when the image copies them.
+came from. When a module is defined, the code server looks for a file named `<name>.beam`,
+and a file name holds at most 255 bytes. So a module name too long for that takes
+`Rete.Image.M<hash>` instead. So does a module with a plain atom name, such as
+`:erl_rules`. `Rete.Image.Builder` builds the image in a `@before_compile` hook.
+`use Rete.Ruleset` registers that hook right after its own, so the functions its own hook
+defines, such as `get_version/0`, exist when the image copies them. `Rete.Image` holds the
+runtime half, which loads and targets images.
 
 The image holds a copy of the functions the network captures. Each one is an alpha, a join
 filter, a test or a right hand side. The copy also holds every helper of the module that

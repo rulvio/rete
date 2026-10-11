@@ -1,6 +1,12 @@
+defmodule Rete.ImageTest.BadImage do
+  @moduledoc false
+  # Offers an image whose beam does not load.
+  def __rete_image__, do: {:ok, {:"Elixir.Rete.ImageTest.BadImage.Image.M0123456789ABCDEF", "no"}}
+end
+
 defmodule Rete.ImageTest do
   @moduledoc """
-  The failures of an image compile that no ruleset causes.
+  The failures of an image compile, and of an image load, that no ruleset causes.
 
   Not async, because two tests change the application environment. Every ruleset that
   compiles meanwhile reads `:image_compile_timeout`, and every build reads `:images`.
@@ -8,20 +14,38 @@ defmodule Rete.ImageTest do
 
   use ExUnit.Case, async: false
 
-  alias Rete.Image.Guard
+  alias Rete.Image.Builder
 
   # The ruleset module compiles inside the same call. A failure that escaped would stop it.
-  # The doctest of `Rete.Image.Guard` covers a raise and a plain result.
-  describe "Guard.run/1" do
+  describe "Builder.guard/1" do
+    test "a result passes through" do
+      assert {:ok, 1} == Builder.guard(fn -> {:ok, 1} end)
+    end
+
+    test "a raise becomes an error" do
+      assert {:error, "boom"} == Builder.guard(fn -> raise "boom" end)
+    end
+
     test "a throw becomes an error" do
-      assert {:error, message} = Guard.run(fn -> throw(:ball) end)
+      assert {:error, message} = Builder.guard(fn -> throw(:ball) end)
       assert message =~ "throw"
     end
 
     test "an exit becomes an error" do
-      assert {:error, message} = Guard.run(fn -> exit(:gone) end)
+      assert {:error, message} = Builder.guard(fn -> exit(:gone) end)
       assert message =~ "exit"
     end
+  end
+
+  test "a build with images raises when an image does not load" do
+    productions =
+      [Rete.Doc.Orders]
+      |> Rete.get_rule_data()
+      |> Enum.map(&%{&1 | module: Rete.ImageTest.BadImage})
+
+    error = assert_raise ArgumentError, fn -> Rete.Compiler.build_productions(productions) end
+    assert error.message =~ "Cannot build the network."
+    assert error.message =~ "did not load"
   end
 
   test "an image that does not compile in time stops a build with images" do

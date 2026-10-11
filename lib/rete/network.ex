@@ -24,7 +24,6 @@ defmodule Rete.Network do
   """
 
   alias Rete.Compiler.BetaGraph
-  alias Rete.Image
   alias Rete.IR
   alias Rete.Network.Node
   alias Rete.Taxonomy
@@ -78,18 +77,6 @@ defmodule Rete.Network do
   end
 
   @doc """
-  Whether every ruleset module that the network was built from still offers the image it
-  offered then.
-
-  The image name is a hash of the code that the rules reach. A different name means that
-  the module has other code now. A network with no record of its images is the latest.
-  """
-  @spec latest?(t()) :: boolean()
-  def latest?(%__MODULE__{built_images: built}) do
-    Enum.all?(built, fn {module, image} -> Image.name(module) == image end)
-  end
-
-  @doc """
   The beta node under an id, or `nil`.
   """
   @spec node(t(), BetaGraph.id()) :: Node.t() | nil
@@ -137,13 +124,16 @@ defmodule Rete.Network do
   def query_refs(%__MODULE__{queries: queries}), do: queries |> Map.keys() |> Enum.sort()
 
   @doc """
-  The modules that contributed a production to the network, sorted.
+  The modules that contributed a production to the network, or to a list of productions,
+  sorted.
 
   This is what a session was *built from*. It is what tells apart a typo in a query name
   from a ruleset never passed to `Rete.Session.new/2`.
   """
-  @spec modules(t()) :: [module()]
-  def modules(%__MODULE__{productions: productions}),
+  @spec modules(t() | [IR.Production.t()]) :: [module()]
+  def modules(%__MODULE__{productions: productions}), do: modules(productions)
+
+  def modules(productions) when is_list(productions),
     do: productions |> Enum.map(& &1.module) |> Enum.uniq() |> Enum.sort()
 
   @doc """

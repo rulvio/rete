@@ -38,7 +38,6 @@ defmodule Rete.Compiler do
   alias Rete.Image
   alias Rete.IR
   alias Rete.Network
-  alias Rete.Snapshot
 
   @doc """
   Builds a network from ruleset modules.
@@ -92,12 +91,7 @@ defmodule Rete.Compiler do
   # Calls to the module instead would hide it, and the session would no longer keep its
   # rules across an upgrade.
   defp run_images(productions) do
-    images =
-      productions
-      |> Enum.map(& &1.module)
-      |> Enum.uniq()
-      |> Enum.flat_map(&image!/1)
-      |> Map.new()
+    images = productions |> Network.modules() |> Enum.flat_map(&image!/1) |> Map.new()
 
     case Image.load(Map.new(Map.values(images))) do
       :ok ->
@@ -105,7 +99,7 @@ defmodule Rete.Compiler do
         {Image.target(productions, images), built}
 
       {:error, reason} ->
-        raise ArgumentError, "Cannot build the network. " <> Snapshot.message(reason)
+        raise ArgumentError, "Cannot build the network. " <> Image.message(reason)
     end
   end
 

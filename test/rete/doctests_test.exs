@@ -10,7 +10,6 @@ defmodule Rete.DoctestsTest do
   doctest Rete.Activation
   doctest Rete.Bucket
   doctest Rete.Element
-  doctest Rete.Image.Guard
   doctest Rete.Listener
   doctest Rete.Listener.Collect
   doctest Rete.Memory

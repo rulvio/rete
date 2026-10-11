@@ -700,12 +700,15 @@ defmodule Rete.Engine do
 
   defp check_reserved!(_state, _facts, _origin, _action), do: :ok
 
-  # A value with no type is not a marker. A retract of it stays a no-op, and an insert of
-  # it raises later, where the type is read for the alpha nodes.
+  # A value with no type is not a marker. `Taxonomy.default_fact_type/1` raises
+  # `ArgumentError` for one. A retract of it stays a no-op, and an insert of it raises later,
+  # where the type is read for the alpha nodes. Any other error comes from a user
+  # `:fact_type_fn`, and surfaces here. The type is read twice only when the network has
+  # reserved types, because `Network.reserved?/2` checks that first.
   defp reserved?(network, fact) do
     Network.reserved?(network, fact)
   rescue
-    _error -> false
+    ArgumentError -> false
   end
 
   defp not_a_fact(node, token, fact, error) do

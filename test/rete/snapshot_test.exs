@@ -315,6 +315,74 @@ defmodule Rete.SnapshotTest do
 
       assert Session.latest?(loaded)
     end
+
+    # The source above has an alpha test, a compound negation and a query. This one holds
+    # the other shapes that capture rule code: a collection, a plain negation, a join filter
+    # and a disjunction. It also holds a derive, which lives in the taxonomy. v2 changes
+    # every constant and tag, and drops the derive.
+    test "a loaded session keeps every rule shape across a redeploy" do
+      module = Rete.SnapshotTest.Shapes
+      Code.compile_string(shapes_source(module, :v1))
+      snapshot = [module] |> Session.new() |> Session.dump!(@key)
+
+      purge(module)
+      Code.compile_string(shapes_source(module, :v2))
+      {:ok, loaded} = Session.load(snapshot, @key)
+
+      facts = [
+        {:customer, 1},
+        {:order, 1, 600},
+        {:cap, 1, 300},
+        {:refund, 1, 200},
+        {:premium, 2}
+      ]
+
+      concluded = fn session ->
+        session
+        |> Session.insert(facts)
+        |> Session.fire_rules()
+        |> Session.facts()
+        |> Enum.filter(&(tuple_size(&1) == 3 and elem(&1, 2) in [:v1, :v2]))
+        |> Enum.sort()
+      end
+
+      assert [{:notable, 1, :v1}, {:over_cap, 1, :v1}, {:quiet, 2, :v1}, {:spender, 1, :v1}] ==
+               concluded.(loaded)
+
+      # The same facts on a v2 session, so the assertion above cannot pass by accident.
+      assert [{:quiet, 1, :v2}] == concluded.([module] |> Session.new())
+    end
+  end
+
+  defp shapes_source(module, version) do
+    {limit, tag, derive} =
+      if version == :v1,
+        do: {100, :v1, "derive(:premium, :customer)"},
+        else: {1000, :v2, ""}
+
+    """
+    defmodule #{inspect(module)} do
+      use Rete.Ruleset
+      #{derive}
+
+      defrule spender({:customer, cid}, orders = [{:order, cid, amt} when amt > #{limit}])
+              when orders != [] do
+        {:spender, cid, #{inspect(tag)}}
+      end
+
+      defrule quiet({:customer, cid}, {:not, [{:refund, cid, amt} when amt > #{limit}]}) do
+        {:quiet, cid, #{inspect(tag)}}
+      end
+
+      defrule over_cap({:cap, cid, cap}, {:order, cid, amt} when amt > cap + #{limit}) do
+        {:over_cap, cid, #{inspect(tag)}}
+      end
+
+      defrule notable({:or, [{:gold, cid}, {:order, cid, amt} when amt > 5 * #{limit}]}) do
+        {:notable, cid, #{inspect(tag)}}
+      end
+    end
+    """
   end
 
   # Building the image must never stop a ruleset module from compiling.
@@ -402,7 +470,8 @@ defmodule Rete.SnapshotTest do
           Code.compile_string(helper_source(module, 100, "big?(amt)", ""))
         end)
 
-      assert log == ""
+      # This module is async, and the log is global. Only this test names this module.
+      refute log =~ String.duplicate("A", 204)
 
       assert {:ok, {image, _beam}} = module.__rete_image__()
       assert ["Rete", "Image", "M" <> _hash] = Module.split(image)
@@ -433,7 +502,7 @@ defmodule Rete.SnapshotTest do
           assert message =~ "unused"
         end)
 
-      refute stderr =~ ".Image.M"
+      refute stderr =~ "#{inspect(module)}.Image.M"
     end
 
     # One VM compiles an image once. A second compile of the same rules takes the beam from
@@ -450,7 +519,7 @@ defmodule Rete.SnapshotTest do
           refute Enum.any?(diagnostics, &(&1.message =~ "redefining"))
         end)
 
-      refute stderr =~ "redefining"
+      refute stderr =~ "redefining module #{inspect(module)}"
       assert {:ok, {^first, _beam}} = module.__rete_image__()
 
       # A second load of a loaded module makes the running copy old code.
@@ -502,7 +571,11 @@ defmodule Rete.SnapshotTest do
     # processes of the compiler, and not to others. The image compiles in a process of its
     # own, so the ruleset must load the struct for it first. A direct call of the parallel
     # compiler loads each module at once, and does not show this.
+    # Tagged, so that a run can exclude it. It starts two `mix` processes. A barrier in place
+    # of the sleep would deadlock, because `load_structs/2` makes the ruleset wait for the
+    # struct.
     @tag :tmp_dir
+    @tag :mix_subprocess
     test "a struct module that Mix compiles after the ruleset", %{tmp_dir: dir} do
       root = File.cwd!()
 

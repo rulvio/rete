@@ -39,11 +39,11 @@ defmodule Rete.Snapshot do
 
     # Only the rules of the network are targeted at their images. A fact is matched by
     # equality, so a changed capture inside one would make a retract of that fact miss after
-    # the load. The taxonomy can hold a `:fact_type_fn`, which is not part of any rule.
+    # the load.
     network = state.network
     offers = Map.new(Network.modules(network), &{&1, Image.fetch(&1)})
 
-    with {:ok, rule_modules} <- Image.captures(%Network{network | taxonomy: nil}),
+    with {:ok, rule_modules} <- Image.captures(rules(network)),
          {:ok, ruleset_images} <- ruleset_images(offers, rule_modules),
          state = %State{state | network: target_rules(network, ruleset_images)},
          {:ok, captured} <- Image.captures(state),
@@ -53,6 +53,7 @@ defmodule Rete.Snapshot do
       body =
         :erlang.term_to_binary(%{images: images, state: state}, [:compressed, minor_version: 2])
 
+      # This copies the body once more. `dump/2` returns one binary, so the copy is needed.
       {:ok, :erlang.term_to_binary({:rete_session, @format, mac(@format, body, secret), body})}
     end
   end
@@ -115,29 +116,12 @@ defmodule Rete.Snapshot do
       "release of rete wrote it."
   end
 
-  def message({:image, image, reason, otp}) do
-    "The image #{inspect(image)} did not load, with the reason #{inspect(reason)}." <>
-      otp_hint(otp)
-  end
+  def message({:image, _image, _reason, _otp} = reason), do: Image.message(reason)
 
   def message({:missing, mfas}) do
     names = Enum.map_join(mfas, ", ", fn {m, f, a} -> Exception.format_mfa(m, f, a) end)
     "The rules call functions that this node does not define: #{names}."
   end
-
-  # Only a difference in release can explain a failed load this way.
-  defp otp_hint(otp) when is_binary(otp) do
-    case System.otp_release() do
-      ^otp ->
-        ""
-
-      here ->
-        " OTP #{otp} compiled it, and this node runs OTP #{here}. A beam from a newer OTP " <>
-          "may not load on an older one."
-    end
-  end
-
-  defp otp_hint(_otp), do: ""
 
   # An empty key gives an HMAC that anyone can compute, so this refuses it with the rest.
   defp check_secret!(secret, _caller) when is_binary(secret) and byte_size(secret) > 0,
@@ -163,13 +147,17 @@ defmodule Rete.Snapshot do
   defp shape(value) when is_map(value), do: "a map"
   defp shape(_value), do: "a value of another type"
 
-  # The taxonomy keeps its captures. So a `:fact_type_fn` always runs the version of the
-  # node, as a call to another module does. A network built with images calls them
-  # already, so there is nothing to target, and the walk would only copy the network.
+  # The network without its taxonomy. The taxonomy can hold a `:fact_type_fn`, which is not
+  # part of any rule. It keeps its captures, so it always runs the version of the node, as a
+  # call to another module does.
+  defp rules(%Network{} = network), do: %Network{network | taxonomy: nil}
+
+  # A network built with images calls them already, so there is nothing to target, and the
+  # walk would only copy the network.
   defp target_rules(network, images) when map_size(images) == 0, do: network
 
   defp target_rules(%Network{taxonomy: taxonomy} = network, images) do
-    %Network{} = targeted = Image.target(%Network{network | taxonomy: nil}, images)
+    %Network{} = targeted = Image.target(rules(network), images)
     %Network{targeted | taxonomy: taxonomy}
   end
 

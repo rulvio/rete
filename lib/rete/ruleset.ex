@@ -67,7 +67,7 @@ defmodule Rete.Ruleset do
       @rete_expr_attrs %{}
 
       @before_compile Rete.Ruleset
-      @before_compile Rete.Image
+      @before_compile Rete.Image.Builder
     end
   end
 

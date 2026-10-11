@@ -46,6 +46,7 @@ defmodule Rete.Session do
   alias Rete.Compiler
   alias Rete.Engine
   alias Rete.Engine.State
+  alias Rete.Image
   alias Rete.Network
   alias Rete.Snapshot
 
@@ -310,7 +311,9 @@ defmodule Rete.Session do
       true
   """
   @spec latest?(t()) :: boolean()
-  def latest?(%__MODULE__{state: state}), do: Network.latest?(state.network)
+  def latest?(%__MODULE__{state: state}) do
+    Enum.all?(state.network.built_images, fn {module, image} -> Image.name(module) == image end)
+  end
 
   @doc """
   Turns a session into a binary that `load/2` reads on another node.

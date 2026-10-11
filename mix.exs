@@ -140,7 +140,7 @@ defmodule Rete.MixProject do
           Rete.Compiler.BetaGraph,
           Rete.Network,
           Rete.Image,
-          Rete.Image.Guard,
+          Rete.Image.Builder,
           Rete.Snapshot
         ],
         "Internals: network nodes": [Rete.Network.Node, ~r/^Rete\.Network\.Node\./],
