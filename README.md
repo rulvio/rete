@@ -337,6 +337,41 @@ cheap to fork, and safe to pass between processes.
 Compiling is the expensive part. Do it once, with `Rete.Compiler.build/2`. Start sessions
 from the result with `Rete.Session.from_network/1`.
 
+### Move a session to another node
+
+`Rete.Session.dump/2` turns a session into a binary. `Rete.Session.load/2` reads it on
+another node, which can run another version of your program. Both return `{:ok, value}` or
+`{:error, reason}`:
+
+```elixir
+{:ok, binary} = Rete.Session.dump(busy, key)
+
+# on the other node
+{:ok, session} = Rete.Session.load(binary, key)
+Rete.Session.query(session, {Retail, :large_orders}, cid: 1)
+```
+
+The binary holds the compiled code of the rules. The loaded session runs **those** rules,
+even if the node defines another version of `Retail`, or none. A query keeps its
+`{module, name}`, so `Rete.Session.query/3` reaches it on any node. Listeners do not travel,
+so attach them again after the load. `dump!/2` and `load!/2` return the plain value, and
+raise on an error.
+
+**The key is required.** A snapshot holds code, and loading it runs that code on your
+node. So `dump/2` signs every snapshot with an HMAC-SHA256 under the key. `load/2` checks
+the signature before it decodes the body, and refuses a snapshot that does not match. Use a
+random key, such as `:crypto.strong_rand_bytes(32)`. Keep it in your secret store, apart
+from the place that keeps the snapshots.
+
+**A snapshot is signed, not encrypted.** Anyone who has the binary can read the facts in it.
+Encrypt the snapshots at rest if the facts are sensitive.
+
+`use Rete.Ruleset, image: false` turns off the compiled copy of the rules for one module.
+That module then compiles once, and `dump/2` refuses a session that runs its rules.
+
+A rule that calls a function of another module runs the version on the node that loads it.
+[docs/design/snapshot.md](docs/design/snapshot.md) has the details and the limits.
+
 ## What is public
 
 Seven modules are public. They are the ones the examples above use:
@@ -345,7 +380,7 @@ Seven modules are public. They are the ones the examples above use:
 |---|---|
 | `Rete` | aggregating rule, expression and taxonomy data across ruleset modules |
 | `Rete.Ruleset` | `defrule`, `defquery`, `derive`, `underive` |
-| `Rete.Session` | building a session, inserting, retracting, firing, querying |
+| `Rete.Session` | building a session, inserting, retracting, firing, querying, dumping and loading |
 | `Rete.Inspect` | `explain/1,2`, `why_not/1,2` |
 | `Rete.Listener` (+ `.Collect`, `.Trace`) | watching what a session does |
 
@@ -381,14 +416,10 @@ docs under `docs/design/` record why.
   `:concurrency` (and optionally `:timeout`) to run them on tasks, instead of one at a time.
   This is worth it only for a body that does real work — see
   [docs/design/engine.md](docs/design/engine.md) §11 for the ~5 µs break-even point.
-* **No checkpoint or migration API, but a session is trivially serializable.** There is no
-  `Session.dump/1`, no versioned migration, and no distributed sync built in. A session
-  holds no PID, no ETS table, and no other process-local handle. It is plain data all the
-  way down, plus function references into the ruleset and listener modules that built it.
-  Because of this, `:erlang.term_to_binary/1` and `:erlang.binary_to_term/1` round-trip a
-  whole session as-is, including its compiled network, with no wrapper needed. The one real
-  requirement: the receiving process must have the same compiled ruleset and listener
-  modules loaded, since the function references resolve against them.
+* **Snapshots carry rules, not data migrations.** `Rete.Session.dump/2` and `load/2` move
+  a session to a node that runs other code, and the session keeps its own rules. There is no
+  way to move a session onto the **new** rules of that node, and no distributed sync. Images
+  that a node loads stay loaded. See [docs/design/snapshot.md](docs/design/snapshot.md).
 * **Performance is measured by shape, not tuned for a number.** The algorithm is the right
   one: alpha and beta node sharing across modules as well as within one, hash joins,
   incremental retraction. Two profiling passes have run, and `mix bench` keeps their

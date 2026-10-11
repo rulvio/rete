@@ -62,6 +62,15 @@ defmodule Rete.Agenda do
     |> Enum.reduce(0, fn bucket, total -> total + Bucket.size(bucket) end)
   end
 
+  @doc """
+  The same agenda with every tombstone dropped. See `Rete.Bucket.compact/1`.
+  """
+  @spec compact(t()) :: t()
+  def compact(%__MODULE__{buckets: buckets}),
+    do: %__MODULE__{
+      buckets: :gb_trees.map(fn _key, bucket -> Bucket.compact(bucket) end, buckets)
+    }
+
   @doc "Adds an activation, behind the ones already queued for its rule."
   @spec add(t(), Activation.t()) :: t()
   def add(%__MODULE__{} = agenda, %Activation{} = activation) do

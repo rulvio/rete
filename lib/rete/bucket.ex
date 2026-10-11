@@ -115,7 +115,7 @@ defmodule Rete.Bucket do
 
     if Map.has_key?(counts, target) do
       {:ok,
-       compact(%__MODULE__{
+       maybe_compact(%__MODULE__{
          bucket
          | counts: unbump(counts, target),
            dead: bump(bucket.dead, target),
@@ -148,6 +148,16 @@ defmodule Rete.Bucket do
   def to_list(%__MODULE__{queue: queue, dead: dead}) do
     queue |> :queue.to_list() |> skip_dead(dead, [])
   end
+
+  @doc """
+  Drops every tombstone now, however few there are.
+
+  `take/2` waits until the tombstones outnumber the live items. A snapshot cannot wait,
+  because a tombstone still holds the value that was removed.
+  """
+  @spec compact(t()) :: t()
+  def compact(%__MODULE__{dead_total: 0} = bucket), do: bucket
+  def compact(%__MODULE__{} = bucket), do: rebuild(bucket)
 
   @doc "Whether anything live is left."
   @spec empty?(t()) :: boolean()
@@ -213,8 +223,13 @@ defmodule Rete.Bucket do
 
   # A rebuild costs a pass. It cannot happen again until the dead outnumber the living a
   # second time. Each removal that causes a rebuild pays for it.
-  defp compact(%__MODULE__{dead_total: dead_total, live: live} = bucket)
-       when dead_total > live do
+  defp maybe_compact(%__MODULE__{dead_total: dead_total, live: live} = bucket)
+       when dead_total > live,
+       do: rebuild(bucket)
+
+  defp maybe_compact(%__MODULE__{} = bucket), do: bucket
+
+  defp rebuild(%__MODULE__{} = bucket) do
     %__MODULE__{
       bucket
       | queue: bucket |> to_list() |> :queue.from_list(),
@@ -222,8 +237,6 @@ defmodule Rete.Bucket do
         dead_total: 0
     }
   end
-
-  defp compact(%__MODULE__{} = bucket), do: bucket
 
   defp bump(counts, value), do: Map.update(counts, value, 1, &(&1 + 1))
 

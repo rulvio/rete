@@ -92,7 +92,7 @@ alpha expressions, join filters, and tests alike, deduplicated by code.
 |---|---|---|---|
 | `:name` | `atom` | W1 | rule name; also the name of the generated RHS function |
 | `:type` | `:rule \| :query` | W1 | |
-| `:hash` | `integer` | W1 | `:erlang.phash2([decl_ast, body_ast])` after module-attribute qualification. `decl_ast` includes the head |
+| `:hash` | `integer \| {atom, [atom]}` | W1 | `:erlang.phash2([decl_ast, body_ast])` after module-attribute qualification. `decl_ast` includes the head. A compound negation helper holds `{name, carried}` instead, which the engine passes to `Rete.Compiler.Negation.marker/2` |
 | `:opts` | `keyword` | W1 | from the leading options map, e.g. `[salience: 100]`; `[]` if absent |
 | `:bind` | `[atom]`, **sorted** | W2c | every variable the LHS can make visible to the RHS, including fact/collection bindings; see below |
 | `:params` | `[atom]`, **sorted** | W1, checked by W2c | what the head of a query binds: the keys of its matches. `[]` on a rule. See below |

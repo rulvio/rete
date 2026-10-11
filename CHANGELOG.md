@@ -4,6 +4,48 @@ All notable changes to `rete` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.1.0
+
+### Added
+
+* `Rete.Session.dump/2` and `Rete.Session.load/2`. Both return `{:ok, value}` or
+  `{:error, reason}`. `dump!/2` and `load!/2` return the plain value, and raise on an
+  error. A snapshot holds the compiled code of
+  its rules. So a session loads on a node that runs another version of the ruleset modules,
+  or none of them, and it keeps running its own rules. A query keeps its `{module, name}`.
+  Both functions require a secret key. `dump/2` signs every snapshot with an HMAC-SHA256
+  under it, and `load/2` checks the signature before it decodes the body. Neither function
+  takes options. Listeners do not travel, so attach them again after `load/2`. A snapshot is
+  signed, not encrypted, so anyone who has it can read its facts. A fact that was retracted
+  is not in it. See `docs/design/snapshot.md`.
+* `use Rete.Ruleset` compiles an image module beside each ruleset module. For `MyRules`, it
+  is `MyRules.Image.M<hash>`. The hash is taken over the code of the rules. So two versions
+  of a ruleset get two images, and they load on one node together. A call to a helper of
+  the module, written `__MODULE__.big?(x)`, `&__MODULE__.big?/1` or `super(x)`, runs the
+  copy in the image. An image that does not compile never stops the ruleset module from
+  compiling. The module then has no image, and only `dump/2` refuses it, with the reason.
+  `use Rete.Ruleset, image: false` turns the image off. `:image_compile_timeout` in the
+  `:rete` application environment changes the two-minute limit on an image compile.
+* `load/2` returns `{:error, :undecodable}` when the signature matches but the body does
+  not decode. A newer release of OTP or of rete is the likely cause. It returns
+  `{:error, :invalid}` for a value that is not a binary, and does not raise. The
+  `{:image, module, reason, otp}` error gives the release that compiled that image.
+* Four `bench/run.exs` scenarios. One flips a compound negation on and off. One dumps a
+  session of n customers, and one loads it. One dumps that session after half the customers
+  are retracted. "match one condition written in k modules" now runs on a fresh process.
+
+### Changed
+
+* A compound negation helper captures `Rete.Compiler.Negation.marker/2` and
+  `marker_alpha/1`, where it held closures. Its `:hash` is now `{name, carried}`. The marker
+  alpha no longer checks the tag of a marker. The alpha index already routes a marker by its
+  type, which is its name.
+* The type of a marker is reserved for the engine. `Rete.Session.insert/2` and `retract/2`
+  raise `ArgumentError` for a fact of that type. This includes a fact that a
+  `:fact_type_fn` gives that type. A rule that returns such a fact raises when it fires. A
+  `derive` that names the type raises when the network is built.
+* `rete` now lists `:crypto` in `:extra_applications`.
+
 ## 1.0.0
 
 The public API is stable from here. Semantic versioning covers the seven modules the README

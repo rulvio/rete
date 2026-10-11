@@ -210,12 +210,17 @@ Three properties make this correct:
   by truth maintenance — a visible, spurious activation.
 
 The marker's *type* is the generated name, so the alpha index routes it to exactly one
-place. Its alpha is the one exception to "an alpha matches a fact of any type": it checks
-the tag instead. A marker is engine machinery, not a user fact, so a stray tuple of the
-same shape must never be mistaken for one.
+place. Every alpha matches a fact of any type, and the marker alpha does too. It does not
+check the tag. So the engine keeps every other fact away from the generated name. It
+refuses a user insert or retract of a fact of that type. This also covers a
+`:fact_type_fn` that returns the name. It refuses a fact of that type that a user rule
+concludes. `Rete.Network.new/3` refuses a `derive` that names it on either side.
 
-Extraction runs after macro expansion. So a helper's expressions are plain closures
-wrapped in `Rete.IR.Expr`, not functions generated into a module.
+Extraction runs after macro expansion, so no module holds code generated for a helper. Its
+expressions are captures of `Rete.Compiler.Negation.marker/2` and `marker_alpha/1`. The
+helper's `:hash` is `{name, carried}`, and the engine passes it to `marker/2` as the first
+argument. That is the data a closure would hold. A remote capture works on another node,
+and a closure does not. See `snapshot.md`.
 
 ---
 

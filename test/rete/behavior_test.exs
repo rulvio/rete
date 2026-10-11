@@ -1942,13 +1942,10 @@ defmodule Rete.BehaviorTest do
       refute {:flagged, 2, 900} in Session.facts(shrunk)
     end
 
-    # The caveat the README puts on that round trip: the receiving side needs the same
-    # compiled ruleset loaded. Checkpointing a session and reading it back after a redeploy
-    # is the case that tests, and it is not free. Most of the network holds external
-    # captures, which resolve by name, but a compound negation compiles to a generated
-    # helper whose marker alpha and RHS are local funs. A local fun resolves by a hash of
-    # the module's compiled form, so it survives a rebuild of the same source and nothing
-    # else. `Everything` has a compound negation, so this covers the harder half.
+    # The network holds only remote captures, which resolve by name. So a session that is
+    # encoded and decoded again on the same build still runs after a recompile. A compound
+    # negation is the harder half, because its generated helper has no code in the ruleset
+    # module. Its captures name `Rete.Compiler.Negation` instead.
     test "a checkpointed session survives the ruleset being recompiled" do
       source = """
       defmodule Rete.BehaviorTest.Redeployed do
@@ -1972,6 +1969,7 @@ defmodule Rete.BehaviorTest do
       # The redeploy: the same source compiled again, replacing the loaded version.
       :code.purge(module)
       :code.delete(module)
+
       Code.compile_string(source)
 
       restored = :erlang.binary_to_term(checkpoint)

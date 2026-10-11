@@ -426,6 +426,24 @@ defmodule Rete.Memory do
     }
   end
 
+  @doc """
+  The same memory with every tombstone dropped. See `Rete.Bucket.compact/1`.
+  """
+  @spec compact(t()) :: t()
+  def compact(%__MODULE__{} = memory) do
+    %__MODULE__{
+      memory
+      | elements: compacted(memory.elements),
+        tokens: compacted(memory.tokens)
+    }
+  end
+
+  defp compacted(store) do
+    Map.new(store, fn {node_id, by_key} ->
+      {node_id, Map.new(by_key, fn {key, bucket} -> {key, Bucket.compact(bucket)} end)}
+    end)
+  end
+
   defp listed(store) do
     Map.new(store, fn {node_id, by_key} ->
       {node_id, Map.new(by_key, fn {key, bucket} -> {key, Bucket.to_list(bucket)} end)}

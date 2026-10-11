@@ -46,6 +46,7 @@ defmodule Rete.Session do
   alias Rete.Engine
   alias Rete.Engine.State
   alias Rete.Network
+  alias Rete.Snapshot
 
   @type t :: %__MODULE__{state: State.t()}
 
@@ -277,5 +278,153 @@ defmodule Rete.Session do
   @spec network(t()) :: Network.t()
   def network(%__MODULE__{state: state}), do: state.network
 
-  defp update(%__MODULE__{state: state}, fun), do: %__MODULE__{state: fun.(state)}
+  @doc """
+  Turns a session into a binary that `load/2` reads on another node.
+
+  The binary holds the working memory, the network and the compiled code of every rule.
+  A node that loads it runs **these** rules, even if it defines other versions of the same
+  ruleset modules, or none of them. See `docs/design/snapshot.md`.
+
+  **A snapshot is signed, not encrypted.** Anyone who has the binary can read every fact
+  and every pending match in it. The signature shows who wrote it and that nobody changed
+  it. It does not keep the data secret. Encrypt the snapshots at rest if the facts are
+  sensitive. A retracted fact is not in the snapshot.
+
+  `secret` is required. It is a binary key, and the snapshot carries an HMAC-SHA256 of its
+  format and its body under that key. `load/2` refuses the snapshot unless it gets the same
+  key. A snapshot holds code, and the signature is what tells the node that loads it who
+  wrote it. Use a random key, such as `:crypto.strong_rand_bytes(32)`, and keep it in your
+  secret store.
+
+  **Listeners do not travel.** The snapshot holds no listener. Attach them again with
+  `with_listener/3` after `load/2`. A listener only watches, so the rules, the facts and the
+  matches are the same without it. Its state can also hold a pid, such as the device of
+  `Rete.Listener.Trace`, and a pid means nothing on another node. To carry what a listener
+  collected, read it with `listener_state/2` before the dump, and give it to
+  `with_listener/3` after the load.
+
+  Returns `{:ok, binary}`, or `{:error, reason}`:
+
+    * `{:not_portable, fun}` — the session holds an anonymous function, such as an
+      anonymous `:fact_type_fn`. Only a remote capture, `&Mod.fun/arity`, works on another
+      node.
+    * `{:no_image, module, message}` — the image of a ruleset module did not compile.
+      `message` gives the reason.
+    * `{:no_beam, image}` — the session runs an image that this node never compiled or
+      loaded, such as a session that arrived by distribution.
+
+  Raises `ArgumentError` if `secret` is empty or is not a binary. See
+  `docs/design/snapshot.md`.
+
+      iex> alias Rete.Session
+      iex> session =
+      ...>   Session.new([Rete.Doc.Orders])
+      ...>   |> Session.insert([{:customer, 1}, {:order, 1, 250}])
+      ...>   |> Session.fire_rules()
+      iex> key = "a key from your secret store"
+      iex> {:ok, binary} = Session.dump(session, key)
+      iex> {:ok, loaded} = Session.load(binary, key)
+      iex> Rete.Doc.Orders.flagged_for(loaded, 1)
+      [{1, 250}]
+  """
+  @spec dump(t(), binary()) :: {:ok, binary()} | {:error, term()}
+  def dump(%__MODULE__{state: %State{} = state}, secret), do: Snapshot.dump(state, secret)
+
+  @doc """
+  Turns a session into a binary, as `dump/2` does, and returns the binary.
+
+  Raises `ArgumentError` where `dump/2` returns `{:error, reason}`. The message says what
+  went wrong.
+
+      iex> alias Rete.Session
+      iex> key = "a key from your secret store"
+      iex> binary = [Rete.Doc.Orders] |> Session.new() |> Session.dump!(key)
+      iex> is_binary(binary)
+      true
+  """
+  @spec dump!(t(), binary()) :: binary()
+  def dump!(%__MODULE__{} = session, secret) do
+    case dump(session, secret) do
+      {:ok, binary} ->
+        binary
+
+      {:error, reason} ->
+        raise ArgumentError, "cannot dump the session. " <> Snapshot.message(reason)
+    end
+  end
+
+  @doc """
+  Reads a binary that `dump/2` wrote, and loads the rule code it holds.
+
+  `secret` is the key that `dump/2` signed with. It is required, and the signature is
+  checked before the body is decoded.
+
+  The loaded session has no listener, because none travels. Attach them again with
+  `with_listener/3`.
+
+  The session runs the rules it was dumped with. Each image module loads once on a node,
+  so many sessions of one version share it. A query keeps its `{module, name}`, so
+  `query/3` reaches it by the name it was written under. Call the query function, such as
+  `MyRules.flagged_for(session, 1)`, only where `MyRules` still declares that query with
+  that head.
+
+  **Security. A snapshot holds code, and loading it runs that code.** Decoding a body also
+  creates atoms, and the atom table of a node has a fixed size. So `load/2` reads only the
+  outer envelope, with `:safe`, and then checks the signature. A binary that was written
+  or changed without the key fails the check. Its body is then not decoded, and no code
+  from it loads. The check protects you only while the key stays secret. Keep it in your
+  secret store, apart from the place that stores the snapshots.
+
+  Returns `{:ok, session}`, or `{:error, reason}`:
+
+    * `:invalid` — the value is not a snapshot. This includes a value that is not a binary.
+    * `{:format, n}` — another release of rete wrote it, with a format this one cannot
+      read.
+    * `:signature` — the signature does not match `secret`. Another key signed the
+      snapshot, or someone changed it.
+    * `:undecodable` — the signature matches, but this node cannot read the body. A newer
+      release of OTP or of rete probably wrote it.
+    * `{:image, module, reason, otp}` — an image did not load. `otp` is the release that
+      compiled that image. A beam from a newer OTP may not load on an older one.
+    * `{:missing, mfas}` — the rules call functions that this node does not define.
+
+  An image that loaded stays loaded, also when `load/2` then returns an error. Another
+  session that loads or already runs on this node can need the same image. So no image is
+  purged.
+
+  Raises `ArgumentError` if `secret` is empty or is not a binary.
+
+  A rule that calls a function of another module runs the version on **this** node. The
+  check for missing functions makes sure each one exists. It cannot make sure that each
+  one behaves as it did.
+  """
+  @spec load(term(), binary()) :: {:ok, t()} | {:error, term()}
+  def load(binary, secret) do
+    with {:ok, state} <- Snapshot.load(binary, secret), do: {:ok, %__MODULE__{state: state}}
+  end
+
+  @doc """
+  Reads a binary that `dump/2` wrote, as `load/2` does, and returns the session.
+
+  Raises `ArgumentError` where `load/2` returns `{:error, reason}`. The message says what
+  went wrong.
+
+      iex> alias Rete.Session
+      iex> key = "a key from your secret store"
+      iex> binary = [Rete.Doc.Orders] |> Session.new() |> Session.dump!(key)
+      iex> %Session{} = Session.load!(binary, key)
+  """
+  @spec load!(term(), binary()) :: t()
+  def load!(binary, secret) do
+    case load(binary, secret) do
+      {:ok, session} ->
+        session
+
+      {:error, reason} ->
+        raise ArgumentError, "cannot load the snapshot. " <> Snapshot.message(reason)
+    end
+  end
+
+  defp update(%__MODULE__{state: state} = session, fun),
+    do: %__MODULE__{session | state: fun.(state)}
 end

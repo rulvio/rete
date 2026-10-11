@@ -490,6 +490,19 @@ defmodule Bench.UnkeyedNegation do
   end
 end
 
+defmodule Bench.CompoundNegation do
+  @moduledoc false
+  use Rete.Ruleset
+
+  # A negated conjunction. The compiler extracts it into a helper rule that concludes a
+  # marker fact, and `clean` negates the marker. So this covers what `Bench.Negation` does
+  # not: the helper's right hand side and the marker's alpha,
+  # `Rete.Compiler.Negation.marker/2` and `marker_alpha/1`.
+  defrule clean({:cust, id}, {:nand, [{:order, id}, {:refund, id}]}) do
+    {:clean, id}
+  end
+end
+
 defmodule Bench.Shared do
   @moduledoc false
   use Rete.Ruleset
@@ -628,6 +641,10 @@ defmodule Bench.Spread do
       name
     end
   end
+
+  # Read without copying, for the reason `Bench.Explain.put/1` gives.
+  def put(k), do: :persistent_term.put({__MODULE__, k}, Rete.Compiler.build(modules(k)))
+  def get(k), do: :persistent_term.get({__MODULE__, k})
 end
 
 defmodule Bench.Query do
@@ -705,7 +722,7 @@ end
 # --- the scenarios ---------------------------------------------------------------
 
 alias Bench.{Agenda, Blocking, Cascade, Chain, Collection, FanIn, ManyKeys, Negation, OneKey}
-alias Bench.{Shared, UnkeyedNegation}
+alias Bench.{CompoundNegation, Shared, UnkeyedNegation}
 
 one_key = Bench.network(OneKey)
 many_keys = Bench.network(ManyKeys)
@@ -715,6 +732,7 @@ chain = Bench.network(Chain)
 collection = Bench.network(Collection)
 negation = Bench.network(Negation)
 unkeyed_negation = Bench.network(UnkeyedNegation)
+compound_negation = Bench.network(CompoundNegation)
 shared = Bench.network(Shared)
 blocking = Bench.network(Blocking)
 fan_in = Bench.network(FanIn)
@@ -909,6 +927,29 @@ Bench.scenario(
 )
 
 Bench.scenario(
+  "a compound negation flipping on and off",
+  [500, 1_000, 2_000],
+  fn n ->
+    custs = for i <- 1..n, do: {:cust, i}
+    orders = for i <- 1..n, do: {:order, i}
+    refunds = for i <- 1..n, do: {:refund, i}
+
+    session =
+      compound_negation
+      |> Bench.session()
+      |> Rete.Session.insert(custs ++ orders)
+      |> Rete.Session.fire_rules()
+
+    session
+    |> Rete.Session.insert(refunds)
+    |> Rete.Session.fire_rules()
+    |> Rete.Session.retract(refunds)
+    |> Rete.Session.fire_rules()
+  end,
+  note: "n markers concluded and retracted, so n conclusions suppressed and then released"
+)
+
+Bench.scenario(
   "filling one collection, no token yet",
   [250, 500, 1_000],
   fn n ->
@@ -1075,17 +1116,20 @@ Bench.compare(
 # not the build that made the network.
 spread_sizes = [4, 8, 16, 32]
 
-spread_networks =
-  for k <- spread_sizes, into: %{}, do: {k, Rete.Compiler.build(Bench.Spread.modules(k))}
+for k <- spread_sizes, do: Bench.Spread.put(k)
 
+# `isolate: true`, because this timing is a fraction of a millisecond. On the shared bench
+# heap, it moves with what the scenarios before it allocated. That noise is larger than the
+# effect the scenario measures.
 Bench.scenario(
   "match one condition written in k modules",
   spread_sizes,
   fn k ->
     facts = for i <- 1..200, do: {:ping, i}
 
-    spread_networks[k] |> Bench.session() |> Rete.Session.insert(facts)
+    k |> Bench.Spread.get() |> Bench.session() |> Rete.Session.insert(facts)
   end,
+  isolate: true,
   note:
     "200 facts against the same condition in k modules, nothing firing — flat is the " <>
       "goal, since all k share one alpha and one root join"
@@ -1440,6 +1484,75 @@ Bench.scenario(
   fn r -> r |> Bench.Explain.get() |> Rete.Inspect.why_not() end,
   isolate: true,
   note: "one chain walk per rule — was a beta graph scan per rule to find its terminal"
+)
+
+defmodule Bench.Snapshot do
+  @moduledoc false
+
+  # n customers, each with one order, fired. So the session holds 2n inserted facts, n
+  # concluded ones, and the tokens between them.
+  def session(n) do
+    facts = for i <- 1..n, fact <- [{:cust, i}, {:order, i, i}], do: fact
+
+    [Bench.ManyKeys]
+    |> Rete.Session.new()
+    |> Rete.Session.insert(facts)
+    |> Rete.Session.fire_rules()
+  end
+
+  # The same session with every second customer retracted. The retractions leave
+  # tombstones, and `dump/2` compacts them before it encodes the state.
+  def retracted(n) do
+    gone = for i <- 1..n//2, do: {:cust, i}
+
+    n
+    |> session()
+    |> Rete.Session.retract(gone)
+    |> Rete.Session.fire_rules()
+  end
+
+  # Read without copying, for the reason `Bench.Explain.put/1` gives. The binary is dumped
+  # once here, so the load scenario times the load alone.
+  def put(n) do
+    session = session(n)
+    :persistent_term.put({__MODULE__, n}, session)
+    :persistent_term.put({__MODULE__, :binary, n}, Rete.Session.dump!(session, "bench"))
+    :persistent_term.put({__MODULE__, :retracted, n}, retracted(n))
+  end
+
+  def get(n), do: :persistent_term.get({__MODULE__, n})
+  def get_binary(n), do: :persistent_term.get({__MODULE__, :binary, n})
+  def get_retracted(n), do: :persistent_term.get({__MODULE__, :retracted, n})
+end
+
+snapshot_sizes = [500, 1_000, 2_000, 4_000]
+
+for n <- snapshot_sizes, do: Bench.Snapshot.put(n)
+
+Bench.scenario(
+  "dump a session of n customers",
+  snapshot_sizes,
+  fn n -> n |> Bench.Snapshot.get() |> Rete.Session.dump!("bench") end,
+  isolate: true,
+  note: "the compaction, the walks over the state, encoding and the signature"
+)
+
+Bench.scenario(
+  "load a session of n customers",
+  snapshot_sizes,
+  fn n -> n |> Bench.Snapshot.get_binary() |> Rete.Session.load!("bench") end,
+  isolate: true,
+  note:
+    "the image is loaded already on this node, so this times the signature, decoding " <>
+      "and the check for missing functions"
+)
+
+Bench.scenario(
+  "dump a session of n customers after half are retracted",
+  snapshot_sizes,
+  fn n -> n |> Bench.Snapshot.get_retracted() |> Rete.Session.dump!("bench") end,
+  isolate: true,
+  note: "the dump compacts the tombstones that the retractions left"
 )
 
 # Last, because it sets the exit status of the run.

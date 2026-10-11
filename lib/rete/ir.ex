@@ -272,13 +272,15 @@ defmodule Rete.IR do
     @type t :: %__MODULE__{
             name: atom(),
             type: :rule | :query,
-            hash: integer(),
+            # A compound negation helper holds `{name, carried}`, which its RHS reads. See
+            # `Rete.Compiler.Negation.marker/2`.
+            hash: integer() | {atom(), [atom()]},
             opts: keyword(),
             bind: [atom()],
             params: [atom()],
             head: [String.t()],
             lhs: Rete.IR.lhs(),
-            rhs: (integer(), map() -> any()) | nil,
+            rhs: (integer() | {atom(), [atom()]}, map() -> any()) | nil,
             module: module(),
             __ast__: map() | nil
           }

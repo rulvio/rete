@@ -22,6 +22,11 @@ defmodule Rete.Ruleset do
   defines `<query_name>/(N+1)` for each query, which is the public face of a query, plus the
   `__rhs_<name>__/2` and `__<expr_code>__/1,2` machinery the engine calls.
 
+  `use Rete.Ruleset` also compiles an image of the rules, which a snapshot carries. See
+  `Rete.Session.dump/2`. `use Rete.Ruleset, image: false` turns it off. The module then
+  compiles once and is smaller, and `Rete.Session.dump/2` refuses a session that runs its
+  rules.
+
   Every `defrule` and `defquery` expands by running the front end pipeline:
 
       Rete.DSL.Parser      parse the quoted declaration into Rete.IR
@@ -42,9 +47,18 @@ defmodule Rete.Ruleset do
   alias Rete.IR
 
   @doc false
-  defmacro __using__(_opts) do
+  defmacro __using__(opts) do
+    image? = Keyword.get(opts, :image, true)
+
+    unless is_boolean(image?) do
+      raise ArgumentError,
+            "use Rete.Ruleset takes image: true or image: false, got: #{inspect(image?)}"
+    end
+
     quote do
       import Rete.Ruleset
+
+      @rete_image_enabled unquote(image?)
 
       @rule_data []
       @taxo_data []
@@ -60,6 +74,7 @@ defmodule Rete.Ruleset do
       @rete_expr_attrs %{}
 
       @before_compile Rete.Ruleset
+      @before_compile Rete.Image
     end
   end
 

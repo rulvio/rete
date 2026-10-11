@@ -709,14 +709,12 @@ the rule instead.
   question after the fact, on a settled session.
 
   `Rete.Session.pending/1` was the function that tried the other way, and 0.5.0 removed it.
-* **No checkpoint or migration API, but a session is trivially serializable.** A session
-  holds no PID, ETS table, or other process-local handle. It is plain data, plus function
-  references into the ruleset and listener modules that built it. Because of this,
-  `:erlang.term_to_binary/1` and `:erlang.binary_to_term/1` round-trip a whole session,
-  including its compiled network, with no wrapper needed. What is still missing: a
-  checkpoint API, versioned migration, and distributed sync. The receiving process also
-  needs the same compiled ruleset and listener modules loaded, since the function
-  references resolve against them.
+* **Snapshots carry rules, not data migrations.** A session holds no PID, ETS table, or
+  other process-local handle. It is plain data, plus captures of the functions that the
+  ruleset modules compiled. `Rete.Session.dump/2` copies the code behind those captures into
+  the snapshot, so a node with other versions of the modules runs the rules of the session.
+  What is still missing: a move onto the new rules of a node, and distributed sync. See
+  `snapshot.md`.
 
 ---
 
