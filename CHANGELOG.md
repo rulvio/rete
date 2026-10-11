@@ -16,15 +16,12 @@ All notable changes to `rete` are recorded here. The format follows
   `dump/2` signs every snapshot with an HMAC-SHA256 under it, and `load/2` checks the
   signature before it decodes the body. Listeners do not travel, so attach them again after
   `load/2`. A snapshot is signed, not encrypted, so anyone who has it can read its facts.
-  `Rete.Session.load/2` lists its errors. See `docs/design/snapshot.md`.
+  See `docs/design/snapshot.md`.
 * `use Rete.Ruleset` compiles an image module beside each ruleset module. For `MyRules`, it
-  is `MyRules.Image.M<hash>`. The hash is taken over the code of the rules. So two versions
-  of a ruleset get two images, and they load on one node together. A call to a helper of
-  the module, written `__MODULE__.big?(x)`, `&__MODULE__.big?/1`, `&MyRules.big?/1` or
-  `super(x)`, runs the copy in the image. An image that does not compile never stops the
-  ruleset module from compiling. The module then has no image, and only `dump/2` refuses
-  it, with the reason. `:image_compile_timeout` in the `:rete` application environment
-  changes the two-minute limit on an image compile.
+  is `MyRules.Image.M<hash>`, and the hash is taken over the code of the rules. An image
+  that does not compile never stops the ruleset module from compiling. Only `dump/2`
+  refuses the module then. `:image_compile_timeout` in the `:rete` application environment
+  changes the two-minute limit on an image compile. See `docs/design/snapshot.md` §2.
 * Four `bench/run.exs` scenarios. One flips a compound negation on and off. One dumps a
   session of n customers, and one loads it. One dumps that session after half the customers
   are retracted. "match one condition written in k modules" now runs on a fresh process.

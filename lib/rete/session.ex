@@ -325,7 +325,7 @@ defmodule Rete.Session do
       [{1, 250}]
   """
   @spec dump(t(), binary()) :: {:ok, binary()} | {:error, term()}
-  def dump(%__MODULE__{state: %State{} = state}, secret), do: Snapshot.dump(state, secret)
+  def dump(%__MODULE__{state: state}, secret), do: Snapshot.dump(state, secret)
 
   @doc """
   Turns a session into a binary, as `dump/2` does, and returns the binary.
@@ -342,11 +342,8 @@ defmodule Rete.Session do
   @spec dump!(t(), binary()) :: binary()
   def dump!(%__MODULE__{} = session, secret) do
     case dump(session, secret) do
-      {:ok, binary} ->
-        binary
-
-      {:error, reason} ->
-        raise ArgumentError, "cannot dump the session. " <> Snapshot.message(reason)
+      {:ok, binary} -> binary
+      {:error, reason} -> failed!("dump the session", reason)
     end
   end
 
@@ -398,13 +395,14 @@ defmodule Rete.Session do
   @spec load!(term(), binary()) :: t()
   def load!(binary, secret) do
     case load(binary, secret) do
-      {:ok, session} ->
-        session
-
-      {:error, reason} ->
-        raise ArgumentError, "cannot load the snapshot. " <> Snapshot.message(reason)
+      {:ok, session} -> session
+      {:error, reason} -> failed!("load the snapshot", reason)
     end
   end
+
+  @spec failed!(String.t(), term()) :: no_return()
+  defp failed!(what, reason),
+    do: raise(ArgumentError, "cannot #{what}. " <> Snapshot.message(reason))
 
   defp update(%__MODULE__{state: state}, fun), do: %__MODULE__{state: fun.(state)}
 end

@@ -183,6 +183,10 @@ defmodule Rete.SnapshotTest do
       redeploy(module, :v2)
       {:ok, loaded} = Session.load(snapshot, @key)
 
+      # v2 declares the query with the same head, so the function v2 defines reaches the
+      # v1 query node by its `{module, name}`.
+      assert [:v1] == module.flagged(loaded, 1)
+
       grown = loaded |> Session.insert({:order, 2, 500}) |> Session.fire_rules()
 
       assert [:v1] == Session.query(grown, {module, :flagged}, cid: 2)
@@ -196,18 +200,6 @@ defmodule Rete.SnapshotTest do
         |> Session.fire_rules()
 
       assert [] == Session.query(fresh, {module, :flagged}, cid: 2)
-    end
-
-    # v2 declares the query with the same head, so the function v2 defines reaches the
-    # v1 query node by its `{module, name}`.
-    test "the query function of the new version reads the old session" do
-      module = compile(Rete.SnapshotTest.QueryName, :v1)
-      snapshot = module |> v1_session() |> Session.dump!(@key)
-
-      redeploy(module, :v2)
-      {:ok, loaded} = Session.load(snapshot, @key)
-
-      assert [:v1] == module.flagged(loaded, 1)
     end
 
     # A v1 session dumped again on a v2 node must carry the v1 image, and not the image
@@ -259,14 +251,6 @@ defmodule Rete.SnapshotTest do
 
       assert v1_image in images_in(fresh)
     end
-
-    test "the same rules compiled twice give one image" do
-      module = compile(Rete.SnapshotTest.Stable, :v1)
-      {:ok, {first, _beam}} = module.__rete_image__()
-
-      assert ["Image", "M" <> _hash] = Module.split(first) -- Module.split(module)
-      assert {:ok, {^first, _beam}} = module |> redeploy(:v1) |> then(& &1.__rete_image__())
-    end
   end
 
   # Building the image must never stop a ruleset module from compiling.
@@ -308,7 +292,6 @@ defmodule Rete.SnapshotTest do
       """
 
       module = compile_source(source, Rete.SnapshotTest.CaptureLate)
-      assert {:ok, {_image, _beam}} = module.__rete_image__()
 
       {:ok, loaded} = [module] |> Session.new() |> Session.dump!(@key) |> Session.load(@key)
       facts = loaded |> Session.insert({:order, 1, 21}) |> Session.fire_rules() |> Session.facts()
@@ -333,7 +316,6 @@ defmodule Rete.SnapshotTest do
           )
         end)
 
-      assert {:ok, {_image, _beam}} = module.__rete_image__()
       {:ok, loaded} = [module] |> Session.new() |> Session.dump!(@key) |> Session.load(@key)
       facts = loaded |> Session.insert({:a, 1}) |> Session.fire_rules() |> Session.facts()
       assert {:b, {:mine, 1}} in facts
@@ -389,6 +371,7 @@ defmodule Rete.SnapshotTest do
     test "the same rules compiled again reuse the image, and redefine nothing" do
       module = compile(Rete.SnapshotTest.Reused, :v1)
       {:ok, {first, _beam}} = module.__rete_image__()
+      assert ["Image", "M" <> _hash] = Module.split(first) -- Module.split(module)
       purge(module)
 
       stderr =
@@ -413,7 +396,6 @@ defmodule Rete.SnapshotTest do
       """
 
       module = compile_source(source, Rete.SnapshotTest.Versioned)
-      assert {:ok, {_image, _beam}} = module.__rete_image__()
 
       {:ok, loaded} = [module] |> Session.new() |> Session.dump!(@key) |> Session.load(@key)
       facts = loaded |> Session.insert({:a, 1}) |> Session.fire_rules() |> Session.facts()
@@ -437,7 +419,6 @@ defmodule Rete.SnapshotTest do
       """
 
       module = compile_source(source, Rete.SnapshotTest.UsesOther)
-      assert {:ok, {_image, _beam}} = module.__rete_image__()
 
       live = [module] |> Session.new() |> Session.insert({:a, 5}) |> Session.fire_rules()
       {:ok, loaded} = [module] |> Session.new() |> Session.dump!(@key) |> Session.load(@key)
@@ -527,7 +508,6 @@ defmodule Rete.SnapshotTest do
       """
 
       module = compile_source(source, Rete.SnapshotTest.OwnUpdate)
-      assert {:ok, {_image, _beam}} = module.__rete_image__()
 
       {:ok, loaded} = [module] |> Session.new() |> Session.dump!(@key) |> Session.load(@key)
       facts = loaded |> Session.insert({:a, 5}) |> Session.fire_rules() |> Session.facts()
@@ -555,7 +535,6 @@ defmodule Rete.SnapshotTest do
       """
 
       module = compile_source(source, Rete.SnapshotTest.Quoted)
-      assert {:ok, {_image, _beam}} = module.__rete_image__()
 
       live = [module] |> Session.new() |> Session.insert({:a, 1}) |> Session.fire_rules()
       {:ok, loaded} = [module] |> Session.new() |> Session.dump!(@key) |> Session.load(@key)
@@ -576,7 +555,6 @@ defmodule Rete.SnapshotTest do
       """
 
       module = compile_source(source, Rete.SnapshotTest.OwnStruct)
-      assert {:ok, {_image, _beam}} = module.__rete_image__()
 
       {:ok, loaded} = [module] |> Session.new() |> Session.dump!(@key) |> Session.load(@key)
       facts = loaded |> Session.insert({:a, 1}) |> Session.fire_rules() |> Session.facts()
@@ -699,7 +677,7 @@ defmodule Rete.SnapshotTest do
       purge(image)
 
       1..20
-      |> Task.async_stream(fn _ -> Rete.Image.load([{image, beam}]) end,
+      |> Task.async_stream(fn _ -> Rete.Image.load(%{image => beam}) end,
         max_concurrency: 20
       )
       |> Enum.each(fn result -> assert {:ok, :ok} == result end)

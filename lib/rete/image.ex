@@ -32,11 +32,10 @@ defmodule Rete.Image do
   @doc false
   # Registered right after `Rete.Ruleset`'s own hook, so the functions that hook defines,
   # such as `get_version/0`, exist when the image copies what the rules call.
-  defmacro __before_compile__(env), do: define(env)
-
+  #
   # Compiles the image as a side effect, and defines `__rete_image__/0`. Its three values
   # are in `docs/design/snapshot.md` §2.
-  defp define(env) do
+  defmacro __before_compile__(env) do
     image =
       case seeds(env.module) do
         [] -> nil
@@ -49,8 +48,7 @@ defmodule Rete.Image do
     end
   end
 
-  # An image must never stop the ruleset module from compiling. A failure leaves it without
-  # an image, and only a dump refuses it.
+  # A failure leaves the module without an image, and only a dump refuses it.
   defp build(env, seeds) do
     case Guard.run(fn -> build!(env, seeds) end) do
       {:ok, image} -> {:ok, image}
@@ -63,7 +61,7 @@ defmodule Rete.Image do
 
     defs =
       env.module
-      |> closure(seeds, defined)
+      |> walk(seeds, defined, %{})
       |> Enum.sort()
       |> Enum.map(&definition(env.module, &1, defined))
 
@@ -135,15 +133,8 @@ defmodule Rete.Image do
     task = Task.async(fn -> compile_alone(name, body, location) end)
 
     case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
-      {:ok, {:ok, beam}} ->
-        remember(name, beam)
-        {:ok, beam}
-
-      {:ok, {:error, detail}} ->
-        {:error, detail}
-
-      nil ->
-        {:error, "the image did not compile in #{timeout} ms"}
+      {:ok, result} -> result
+      nil -> {:error, "the image did not compile in #{timeout} ms"}
     end
   end
 
@@ -159,6 +150,7 @@ defmodule Rete.Image do
 
     case result do
       {:ok, beam} ->
+        remember(name, beam)
         {:ok, beam}
 
       {:error, message} ->
@@ -207,15 +199,13 @@ defmodule Rete.Image do
     |> Module.get_attribute(:rule_data, [])
     |> funs()
     |> Enum.flat_map(fn fun ->
-      case Function.info(fun, :module) do
-        {:module, ^module} -> [{fun_name(fun), fun_arity(fun)}]
+      case mfa(fun) do
+        {^module, name, arity} -> [{name, arity}]
         _ -> []
       end
     end)
     |> Enum.uniq()
   end
-
-  defp closure(module, seeds, defined), do: walk(module, seeds, defined, %{})
 
   # `seen` is a plain map. Dialyzer loses the opaque type of a `MapSet` through this
   # recursion.
@@ -327,9 +317,9 @@ defmodule Rete.Image do
   end
 
   defp head(call, []), do: call
-  defp head(call, guards), do: {:when, [], [call, Enum.reduce(Enum.reverse(guards), &when_/2)]}
 
-  defp when_(guard, acc), do: {:when, [], [guard, acc]}
+  defp head(call, guards),
+    do: {:when, [], [call, Enum.reduce(Enum.reverse(guards), &{:when, [], [&1, &2]})]}
 
   # 64 bits of SHA-256, because two images that share a name would run one code for both.
   # The options fix the encoding, so a new OTP default does not rename an image.
@@ -391,17 +381,17 @@ defmodule Rete.Image do
   session, as a call to any other module does.
   """
   @spec retarget(term(), %{module() => t()}) :: term()
-  def retarget(term, images) when map_size(images) == 0, do: term
-
   def retarget(term, images) do
-    exports =
-      Map.new(images, fn {module, {_name, beam}} -> {module, MapSet.new(exports(beam))} end)
+    targets =
+      Map.new(images, fn {module, {image, beam}} ->
+        {module, {image, MapSet.new(exports(beam))}}
+      end)
 
     map_funs(term, fn fun ->
-      with {:module, module} <- Function.info(fun, :module),
-           {:ok, {image, _beam}} <- Map.fetch(images, module),
-           {name, arity} = fa = {fun_name(fun), fun_arity(fun)},
-           true <- MapSet.member?(Map.fetch!(exports, module), fa) do
+      {module, name, arity} = mfa(fun)
+
+      with {:ok, {image, exported}} <- Map.fetch(targets, module),
+           true <- MapSet.member?(exported, {name, arity}) do
         Function.capture(image, name, arity)
       else
         _ -> fun
@@ -422,7 +412,7 @@ defmodule Rete.Image do
     modules =
       reduce_funs(term, MapSet.new(), fn fun, acc ->
         if Function.info(fun, :type) == {:type, :external},
-          do: MapSet.put(acc, fun_module(fun)),
+          do: MapSet.put(acc, elem(mfa(fun), 0)),
           else: throw({__MODULE__, :not_portable, fun})
       end)
 
@@ -432,18 +422,12 @@ defmodule Rete.Image do
   end
 
   @doc """
-  The modules that the captures in `term` name.
-  """
-  @spec modules(term()) :: MapSet.t(module())
-  def modules(term), do: reduce_funs(term, MapSet.new(), &MapSet.put(&2, fun_module(&1)))
-
-  @doc """
   Loads every image this node has not loaded yet.
 
   Returns `{:error, {:image, module, reason, otp}}` for an image that does not load. `otp`
   comes from `otp/1`.
   """
-  @spec load([t()]) :: :ok | {:error, term()}
+  @spec load(%{module() => binary()}) :: :ok | {:error, term()}
   def load(images) do
     Enum.reduce_while(images, :ok, fn {name, beam}, :ok ->
       case ensure(name, beam) do
@@ -556,9 +540,9 @@ defmodule Rete.Image do
   its code. An empty list means every one of them resolves here. It does not mean they
   behave as they did on the node that dumped the session.
   """
-  @spec missing(term(), [t()]) :: [mfa()]
+  @spec missing(term(), %{module() => binary()}) :: [mfa()]
   def missing(term, images) do
-    captured = Enum.map(funs(term), &{fun_module(&1), fun_name(&1), fun_arity(&1)})
+    captured = Enum.map(funs(term), &mfa/1)
     imported = Enum.flat_map(images, fn {_name, beam} -> imports(beam) end)
 
     (captured ++ imported)
@@ -579,28 +563,26 @@ defmodule Rete.Image do
 
   defp funs(term), do: term |> reduce_funs(MapSet.new(), &MapSet.put(&2, &1)) |> MapSet.to_list()
 
-  defp fun_module(fun), do: fun |> Function.info(:module) |> elem(1)
-  defp fun_name(fun), do: fun |> Function.info(:name) |> elem(1)
-  defp fun_arity(fun), do: fun |> Function.info(:arity) |> elem(1)
+  # Three keys and not `Function.info/1`, which also copies the environment of a closure.
+  defp mfa(fun) do
+    {:module, module} = Function.info(fun, :module)
+    {:name, name} = Function.info(fun, :name)
+    {:arity, arity} = Function.info(fun, :arity)
+    {module, name, arity}
+  end
 
   # `Enum` refuses a struct, so these walk a map through `:maps`. The `:__struct__` key
   # comes back with the rest, so the result is still the struct.
   defp map_funs(fun, f) when is_function(fun), do: f.(fun)
-  defp map_funs(list, f) when is_list(list), do: map_list(list, f)
-  defp map_funs(tuple, f) when is_tuple(tuple), do: map_tuple(tuple, f)
+  defp map_funs([head | tail], f), do: [map_funs(head, f) | map_funs(tail, f)]
+
+  defp map_funs(tuple, f) when is_tuple(tuple),
+    do: tuple |> Tuple.to_list() |> map_funs(f) |> List.to_tuple()
 
   defp map_funs(map, f) when is_map(map),
-    do: map |> :maps.to_list() |> map_list(f) |> :maps.from_list()
+    do: map |> :maps.to_list() |> map_funs(f) |> :maps.from_list()
 
   defp map_funs(term, _f), do: term
-
-  # An improper list, such as `[a | b]`, is legal in a term and `Enum` refuses it.
-  defp map_list([head | tail], f), do: [map_funs(head, f) | map_list(tail, f)]
-  defp map_list([], _f), do: []
-  defp map_list(tail, f), do: map_funs(tail, f)
-
-  defp map_tuple(tuple, f),
-    do: tuple |> Tuple.to_list() |> map_list(f) |> List.to_tuple()
 
   defp reduce_funs(fun, acc, f) when is_function(fun), do: f.(fun, acc)
   defp reduce_funs([head | tail], acc, f), do: reduce_funs(tail, reduce_funs(head, acc, f), f)

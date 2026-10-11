@@ -1500,29 +1500,21 @@ defmodule Bench.Snapshot do
     |> Rete.Session.fire_rules()
   end
 
-  # The same session with every second customer retracted. The retractions leave
-  # tombstones, and `dump/2` compacts them before it encodes the state.
-  def retracted(n) do
-    gone = for i <- 1..n//2, do: {:cust, i}
-
-    n
-    |> session()
-    |> Rete.Session.retract(gone)
-    |> Rete.Session.fire_rules()
-  end
-
   # Read without copying, for the reason `Bench.Explain.put/1` gives. The binary is dumped
-  # once here, so the load scenario times the load alone.
+  # once here, so the load scenario times the load alone. The third session has every
+  # second customer retracted.
   def put(n) do
     session = session(n)
-    :persistent_term.put({__MODULE__, n}, session)
-    :persistent_term.put({__MODULE__, :binary, n}, Rete.Session.dump!(session, "bench"))
-    :persistent_term.put({__MODULE__, :retracted, n}, retracted(n))
+    gone = for i <- 1..n//2, do: {:cust, i}
+    retracted = session |> Rete.Session.retract(gone) |> Rete.Session.fire_rules()
+
+    :persistent_term.put(
+      {__MODULE__, n},
+      {session, Rete.Session.dump!(session, "bench"), retracted}
+    )
   end
 
   def get(n), do: :persistent_term.get({__MODULE__, n})
-  def get_binary(n), do: :persistent_term.get({__MODULE__, :binary, n})
-  def get_retracted(n), do: :persistent_term.get({__MODULE__, :retracted, n})
 end
 
 snapshot_sizes = [500, 1_000, 2_000, 4_000]
@@ -1532,7 +1524,7 @@ for n <- snapshot_sizes, do: Bench.Snapshot.put(n)
 Bench.scenario(
   "dump a session of n customers",
   snapshot_sizes,
-  fn n -> n |> Bench.Snapshot.get() |> Rete.Session.dump!("bench") end,
+  fn n -> n |> Bench.Snapshot.get() |> elem(0) |> Rete.Session.dump!("bench") end,
   isolate: true,
   note: "the compaction, the walks over the state, encoding and the signature"
 )
@@ -1540,7 +1532,7 @@ Bench.scenario(
 Bench.scenario(
   "load a session of n customers",
   snapshot_sizes,
-  fn n -> n |> Bench.Snapshot.get_binary() |> Rete.Session.load!("bench") end,
+  fn n -> n |> Bench.Snapshot.get() |> elem(1) |> Rete.Session.load!("bench") end,
   isolate: true,
   note:
     "the image is loaded already on this node, so this times the signature, decoding " <>
@@ -1550,7 +1542,7 @@ Bench.scenario(
 Bench.scenario(
   "dump a session of n customers after half are retracted",
   snapshot_sizes,
-  fn n -> n |> Bench.Snapshot.get_retracted() |> Rete.Session.dump!("bench") end,
+  fn n -> n |> Bench.Snapshot.get() |> elem(2) |> Rete.Session.dump!("bench") end,
   isolate: true,
   note: "the dump compacts the tombstones that the retractions left"
 )

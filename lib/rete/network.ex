@@ -226,9 +226,8 @@ defmodule Rete.Network do
         do: production.name
   end
 
-  # A derive from a marker type sends markers into user conditions. A derive to one sends
-  # user facts into the marker alpha, which does not check the name. Both break the
-  # negation, so a generated name is reserved in both places.
+  # A derive in either direction would mix markers and user facts. See
+  # `Rete.Compiler.Negation.marker_alpha/1`.
   defp check_derives!(taxo_data, markers) do
     for {:derive, child, parent} <- taxo_data,
         type <- [child, parent],

@@ -677,9 +677,8 @@ defmodule Rete.Engine do
     """
   end
 
-  # `Rete.Compiler.Negation.marker_alpha/1` does not check the marker's name. So a marker
-  # that a user inserts or retracts would join the negation as if a helper had made it.
-  # All facts are checked before any of them changes the state.
+  # All facts are checked before any of them changes the state. See
+  # `Rete.Compiler.Negation.marker_alpha/1` for why a marker type is reserved.
   defp check_markers!(%State{network: network}, facts, :asserted, action) do
     case Enum.find(facts, &marker?(network, &1)) do
       nil ->

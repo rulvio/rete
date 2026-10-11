@@ -417,8 +417,8 @@ defmodule Rete.Memory do
         }
   def dump(%__MODULE__{} = memory) do
     %{
-      elements: listed(memory.elements),
-      tokens: listed(memory.tokens),
+      elements: map_buckets(memory.elements, &Bucket.to_list/1),
+      tokens: map_buckets(memory.tokens, &Bucket.to_list/1),
       accum: memory.accum,
       insertions: memory.insertions,
       facts: memory.facts,
@@ -433,20 +433,14 @@ defmodule Rete.Memory do
   def compact(%__MODULE__{} = memory) do
     %__MODULE__{
       memory
-      | elements: compacted(memory.elements),
-        tokens: compacted(memory.tokens)
+      | elements: map_buckets(memory.elements, &Bucket.compact/1),
+        tokens: map_buckets(memory.tokens, &Bucket.compact/1)
     }
   end
 
-  defp compacted(store) do
+  defp map_buckets(store, fun) do
     Map.new(store, fn {node_id, by_key} ->
-      {node_id, Map.new(by_key, fn {key, bucket} -> {key, Bucket.compact(bucket)} end)}
-    end)
-  end
-
-  defp listed(store) do
-    Map.new(store, fn {node_id, by_key} ->
-      {node_id, Map.new(by_key, fn {key, bucket} -> {key, Bucket.to_list(bucket)} end)}
+      {node_id, Map.new(by_key, fn {key, bucket} -> {key, fun.(bucket)} end)}
     end)
   end
 

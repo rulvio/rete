@@ -40,11 +40,11 @@ defmodule Rete.Snapshot do
     # Only the network is retargeted. A fact is matched by equality, so a changed capture
     # inside one would make a retract of that fact miss after the load. The taxonomy can
     # hold a `:fact_type_fn`, which is not part of any rule, so it does not count here.
-    %Network{} = network = state.network
-    rule_modules = Image.modules(%Network{network | taxonomy: nil})
+    network = state.network
     offers = Map.new(Network.modules(network), &{&1, Image.fetch(&1)})
 
-    with {:ok, ruleset_images} <- ruleset_images(offers, rule_modules),
+    with {:ok, rule_modules} <- Image.captures(%Network{network | taxonomy: nil}),
+         {:ok, ruleset_images} <- ruleset_images(offers, rule_modules),
          state = %State{state | network: Image.retarget(network, ruleset_images)},
          {:ok, captured} <- Image.captures(state),
          {:ok, images} <- snapshot_images(offers, captured) do
@@ -69,8 +69,8 @@ defmodule Rete.Snapshot do
          :ok <- check_format(format),
          {:ok, %{images: images, state: state}} <- decode(body),
          # A refused load keeps these images. Another session can need them.
-         :ok <- Image.load(Map.to_list(images)),
-         [] <- Image.missing(state, Map.to_list(images)) do
+         :ok <- Image.load(images),
+         [] <- Image.missing(state, images) do
       {:ok, state}
     else
       [_ | _] = missing -> {:error, {:missing, missing}}
@@ -249,15 +249,11 @@ defmodule Rete.Snapshot do
   end
 
   defp beam_of?({name, beam}) when is_atom(name) and is_binary(beam) do
-    Image.image_name?(name) and beam_module?(beam, name)
-  end
-
-  defp beam_of?(_entry), do: false
-
-  defp beam_module?(beam, name) do
     case :beam_lib.info(beam) do
-      info when is_list(info) -> Keyword.get(info, :module) == name
+      info when is_list(info) -> Image.image_name?(name) and info[:module] == name
       {:error, :beam_lib, _reason} -> false
     end
   end
+
+  defp beam_of?(_entry), do: false
 end

@@ -95,8 +95,7 @@ nothing new.
 Two rewrites keep the copy compiling. The struct of the module itself becomes a map with
 `:__struct__`, because that module is still compiling the image. Expansion already filled
 in its fields, and in a pattern the map matches what the struct matched. An update of it
-becomes a map update. Since Elixir 1.20 that is what a struct update compiles to. An older
-Elixir also checks the struct name of the value, and the copy does not. A call that `quote`
+becomes a map update. See §6 for what that changes before Elixir 1.20. A call that `quote`
 expands to goes through `:erlang.apply/3`, because the compiler reads a direct call of
 `:elixir_quote.unquote/1` inside a function as an unquote fragment.
 
@@ -119,11 +118,6 @@ hook that runs later. So the image cannot see that helper. The fix is to put
 An image compile that takes more than two minutes stops. The module then has no image, and
 the build goes on. `:image_compile_timeout` in the `:rete` application environment sets
 another limit, in milliseconds.
-
-A dynamic call, such as `apply(__MODULE__, :big?, [x])`, stays as it is. The copy cannot
-see which function it names. `struct(__MODULE__, fields)`, `struct!/2` and
-`raise __MODULE__` are dynamic calls too. They call `__struct__` of the module at run time,
-so they build the struct of the node that runs them.
 
 ### The hash
 
@@ -164,8 +158,7 @@ A live session keeps its captures of `MyRules`. So a stack trace names the modul
    of its image. The image is a copy from the same compile, so the code is the same. This
    covers the network only. A capture inside a fact stays as it is, because a fact is
    matched by equality. Changing it would make a retract of the same fact miss after the
-   load. A module counts only if a rule captures it. A `:fact_type_fn` of the module does
-   not make `dump/2` ask for its image.
+   load.
 3. `Rete.Image.captures/1` finds any function that is not a remote capture, and `dump/2`
    returns `{:error, {:not_portable, fun}}`. An anonymous function runs only on the build
    that made it. An anonymous `:fact_type_fn` is the usual cause.
@@ -174,6 +167,8 @@ A live session keeps its captures of `MyRules`. So a stack trace names the modul
    loaded. So a loaded session dumps again with its v1 images, on a node that runs v2. So
    does a session that `from_network/1` built over the network of a loaded session. A
    captured image with no beam anywhere makes `dump/2` return `{:error, {:no_beam, image}}`.
+   A session that arrived by distribution can cause this. Load the snapshot on this node
+   with `load/2` instead.
 
    Only a ruleset module that the state still captures can make `dump/2` return an error
    for a missing image. The v2 module of a node does not matter to a loaded v1 session,
@@ -237,9 +232,6 @@ module declares the query with the same head. On a node with no `MyRules`, use
   helper changes the module, and not the image. A loaded session then runs the first
   version, and nothing reports it. Put `use Rete.Ruleset` after any `use` whose hook
   overrides functions.
-* **A session that arrived by distribution cannot always dump.** It may capture an image that
-  this node never compiled or loaded. `dump/2` then returns an error, and does not write a
-  snapshot without that code. Load the snapshot on this node with `load/2` instead.
 * **A remote call runs the code of the node.** The image copies the helpers of the ruleset
   module, and nothing else. A rule that calls `MyApp.Pricing.discount/1` runs the version of
   `MyApp.Pricing` on the node that loads it. Step 5 of the load makes sure that the function
@@ -260,9 +252,9 @@ module declares the query with the same head. On a node with no `MyRules`, use
   node, as a call to another module does. So do `struct(__MODULE__, fields)`, `struct!/2`
   and `raise __MODULE__`. Write the struct literal, `%__MODULE__{}`, to build the struct of
   the image.
-* **A capture inside a fact runs the code of the node.** A fact is your data, and a fact is
-  matched by equality. So `dump/2` leaves a capture inside one alone. After the load, a
-  fact that holds `&MyRules.helper/1` runs the `MyRules` of the node, as a remote call does.
+* **A capture inside a fact runs the code of the node.** After the load, a fact that holds
+  `&MyRules.helper/1` runs the `MyRules` of the node, as a remote call does. §3 step 2 gives
+  the reason.
 * **Images stay loaded.** Nothing purges an image that no session uses. A node that loads
   snapshots of many versions keeps every image it loaded. This is also true when `load/2`
   loads an image and then returns an error, such as `{:missing, mfas}`. Another session

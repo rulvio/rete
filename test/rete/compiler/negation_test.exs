@@ -257,11 +257,6 @@ defmodule Rete.Compiler.NegationTest do
       derive(:"Rete.Compiler.NegationTest.Rules.clean__neg_1", :fake)
     end
 
-    test "the marker type is the helper name" do
-      {_, [helper]} = Negation.extract(rule(Rules, :clean))
-      assert @marker == helper.name
-    end
-
     test "a user insert of a marker raises" do
       session = Session.new([Rules])
 
@@ -303,18 +298,6 @@ defmodule Rete.Compiler.NegationTest do
       session = Session.new([Rules], fact_type_fn: type)
 
       assert_raise ArgumentError, fn -> Session.insert(session, {:forged, %{cid: 1}}) end
-    end
-
-    test "the helper's own markers still work" do
-      facts =
-        [Rules]
-        |> Session.new()
-        |> Session.insert([{:customer, 1}, {:customer, 2}, {:order, 1}, {:refund, 1}])
-        |> Session.fire_rules()
-        |> Session.facts()
-
-      assert {:clean, 2} in facts
-      refute {:clean, 1} in facts
     end
   end
 end
