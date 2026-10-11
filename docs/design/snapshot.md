@@ -154,15 +154,23 @@ A live session keeps its captures of `MyRules`. So a stack trace names the modul
    tombstone until the tombstones outnumber the live items. So without this, a retracted
    fact could still be in the snapshot. Work that `fire_rules/2` has not done yet stays in
    the queue and travels with the snapshot, such as a pending retract.
-2. `Rete.Image.retarget/2` replaces each capture of a ruleset module with the same capture
+2. Refuse a stale session. A network records the image name of each ruleset module when it
+   is built. A session keeps that network after a hot upgrade of its modules, and its
+   captures then call the new code. The image name is a hash of the code, so a different
+   name means other code. `dump/2` returns `{:error, {:stale, module}}` for a module that
+   the network captures and that now offers another image. Without this check, the old
+   network would get the new image. The snapshot would then run the new helpers, or raise
+   on the first fire, or never load. A loaded session captures its images and not the
+   modules, so this check never refuses it.
+3. `Rete.Image.retarget/2` replaces each capture of a ruleset module with the same capture
    of its image. The image is a copy from the same compile, so the code is the same. This
    covers the network only. A capture inside a fact stays as it is, because a fact is
    matched by equality. Changing it would make a retract of the same fact miss after the
    load.
-3. `Rete.Image.captures/1` finds any function that is not a remote capture, and `dump/2`
+4. `Rete.Image.captures/1` finds any function that is not a remote capture, and `dump/2`
    returns `{:error, {:not_portable, fun}}`. An anonymous function runs only on the build
    that made it. An anonymous `:fact_type_fn` is the usual cause.
-4. The snapshot takes the images that the state still captures. An image comes from a
+5. The snapshot takes the images that the state still captures. An image comes from a
    ruleset module of the network, or from the registry of images that this node compiled or
    loaded. So a loaded session dumps again with its v1 images, on a node that runs v2. So
    does a session that `from_network/1` built over the network of a loaded session. A
@@ -253,7 +261,7 @@ module declares the query with the same head. On a node with no `MyRules`, use
   and `raise __MODULE__`. Write the struct literal, `%__MODULE__{}`, to build the struct of
   the image.
 * **A capture inside a fact runs the code of the node.** After the load, a fact that holds
-  `&MyRules.helper/1` runs the `MyRules` of the node, as a remote call does. §3 step 2 gives
+  `&MyRules.helper/1` runs the `MyRules` of the node, as a remote call does. §3 step 3 gives
   the reason.
 * **Images stay loaded.** Nothing purges an image that no session uses. A node that loads
   snapshots of many versions keeps every image it loaded. This is also true when `load/2`

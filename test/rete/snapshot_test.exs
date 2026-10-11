@@ -74,6 +74,7 @@ defmodule Rete.SnapshotTest do
       :alpha_beta,
       :alphas,
       :graph,
+      :image_names,
       :marker_types,
       :productions,
       :queries,
@@ -250,6 +251,36 @@ defmodule Rete.SnapshotTest do
       fresh = loaded |> Session.network() |> Session.from_network() |> Session.dump!(@key)
 
       assert v1_image in images_in(fresh)
+    end
+
+    test "a network records the image that each ruleset module offers" do
+      module = compile(Rete.SnapshotTest.Recorded, :v1)
+      {:ok, {image, _beam}} = module.__rete_image__()
+
+      assert %{module => image} == Session.network(Session.new([module])).image_names
+      assert nil == Rete.Image.name(Enum)
+    end
+
+    # The live session calls the v2 code now. The v2 image would pair that code with the v1
+    # network, so the dump refuses.
+    test "a session built before a redeploy does not dump" do
+      module = compile(Rete.SnapshotTest.Stale, :v1)
+      session = v1_session(module)
+
+      redeploy(module, :v2)
+
+      assert {:error, {:stale, ^module}} = Session.dump(session, @key)
+
+      assert_raise ArgumentError, ~r/another version of Rete.SnapshotTest.Stale/, fn ->
+        Session.dump!(session, @key)
+      end
+    end
+
+    test "a session built after a redeploy dumps" do
+      module = compile(Rete.SnapshotTest.Fresh, :v1)
+      redeploy(module, :v2)
+
+      assert {:ok, _snapshot} = module |> v1_session() |> Session.dump(@key)
     end
   end
 
@@ -757,6 +788,20 @@ defmodule Rete.SnapshotTest do
       """
 
       assert flags_after_redeploy?(Rete.SnapshotTest.Super, "bounded?(amt)", extra)
+    end
+
+    # The rule text is the same in both versions, so no generated function changes. Only
+    # the helper does. Without the check, the snapshot ran the v2 helper and said nothing.
+    test "a change to a helper alone makes a session built before it stale" do
+      module = Rete.SnapshotTest.StaleHelper
+      Code.compile_string(helper_source(module, 100, "big?(amt)", ""))
+      session = Session.new([module])
+
+      :code.purge(module)
+      :code.delete(module)
+      Code.compile_string(helper_source(module, 1000, "big?(amt)", ""))
+
+      assert {:error, {:stale, ^module}} = Session.dump(session, @key)
     end
   end
 

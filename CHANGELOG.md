@@ -16,7 +16,9 @@ All notable changes to `rete` are recorded here. The format follows
   `dump/2` signs every snapshot with an HMAC-SHA256 under it, and `load/2` checks the
   signature before it decodes the body. Listeners do not travel, so attach them again after
   `load/2`. A snapshot is signed, not encrypted, so anyone who has it can read its facts.
-  See `docs/design/snapshot.md`.
+  `dump/2` returns `{:error, {:stale, module}}` for a session built from another version
+  of `module` than the node runs, such as a session that lived through a hot upgrade. See
+  `docs/design/snapshot.md`.
 * `use Rete.Ruleset` compiles an image module beside each ruleset module. For `MyRules`, it
   is `MyRules.Image.M<hash>`, and the hash is taken over the code of the rules. An image
   that does not compile never stops the ruleset module from compiling. Only `dump/2`

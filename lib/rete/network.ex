@@ -12,6 +12,7 @@ defmodule Rete.Network do
       graph       %Rete.Compiler.BetaGraph{}, the beta nodes and their edges
       queries     {module, query name} => query node id
       productions the productions compiled in, including generated helpers
+      image_names module => the image it offered when the network was built, or nil
 
   A fact travels in three steps. `Rete.Taxonomy.alpha_ids/2` maps its type to alpha node
   ids — the **only** place the taxonomy is consulted. Each alpha's arity-1 function turns
@@ -23,6 +24,7 @@ defmodule Rete.Network do
   """
 
   alias Rete.Compiler.BetaGraph
+  alias Rete.Image
   alias Rete.IR
   alias Rete.Network.Node
   alias Rete.Taxonomy
@@ -34,7 +36,8 @@ defmodule Rete.Network do
           graph: BetaGraph.t(),
           queries: %{{module(), atom()} => BetaGraph.id()},
           productions: [IR.Production.t()],
-          marker_types: MapSet.t(atom())
+          marker_types: MapSet.t(atom()),
+          image_names: %{module() => module() | nil}
         }
 
   defstruct alphas: %{},
@@ -43,7 +46,8 @@ defmodule Rete.Network do
             graph: nil,
             queries: %{},
             productions: [],
-            marker_types: MapSet.new()
+            marker_types: MapSet.new(),
+            image_names: %{}
 
   @doc """
   Assembles a network from productions already sorted, classified and free of compound
@@ -65,7 +69,7 @@ defmodule Rete.Network do
       |> Taxonomy.new(Keyword.take(opts, [:fact_type_fn]))
       |> Taxonomy.index(alpha_types(alphas, productions))
 
-    %__MODULE__{
+    network = %__MODULE__{
       alphas: alphas,
       alpha_beta: alpha_beta,
       taxonomy: taxonomy,
@@ -74,6 +78,10 @@ defmodule Rete.Network do
       productions: productions,
       marker_types: markers
     }
+
+    # A session keeps this network after its modules change. The image name is a hash of
+    # the code that the rules reach, so `dump/2` reads a different name as other code.
+    %__MODULE__{network | image_names: Map.new(modules(network), &{&1, Image.name(&1)})}
   end
 
   @doc """

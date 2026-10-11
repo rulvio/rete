@@ -476,6 +476,21 @@ defmodule Rete.Image do
   end
 
   @doc """
+  The name of the image that a ruleset module offers, or `nil` when `fetch/1` gives no
+  image.
+
+  A network records it for each module when it is built. `dump/2` compares that record
+  with the name the module offers then.
+  """
+  @spec name(module()) :: module() | nil
+  def name(module) do
+    case fetch(module) do
+      {:ok, {name, _beam}} -> name
+      _no_image -> nil
+    end
+  end
+
+  @doc """
   Whether `module` is an image: named `<Module>.Image.M<hash>`, and marked by
   `@rete_image` if it is loaded.
 

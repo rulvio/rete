@@ -288,7 +288,9 @@ defmodule Rete.Session do
 
   The binary holds the working memory, the network and the compiled code of every rule. A
   node that loads it runs **these** rules, even if it defines other versions of the
-  ruleset modules, or none of them.
+  ruleset modules, or none of them. So dump a session on a node that runs the version of
+  the ruleset modules it was built from. After a hot upgrade, an old session returns
+  `{:error, {:stale, module}}`.
 
   `secret` is a binary key. The snapshot carries an HMAC-SHA256 under it, and `load/2`
   refuses the snapshot without the same key. Use a random key, such as
@@ -307,6 +309,10 @@ defmodule Rete.Session do
       node.
     * `{:no_image, module, reason}` — the image of a ruleset module did not compile.
       `reason` says why.
+    * `{:stale, module}` — the session was built from another version of `module` than
+      this node runs. A session built before a hot upgrade causes this. So does a session
+      that arrived by distribution from a node that runs another version. A loaded
+      session never causes it, because it runs the images that it was loaded with.
     * `{:no_beam, image}` — the session runs an image that this node never compiled or
       loaded, such as a session that arrived by distribution.
 
