@@ -243,11 +243,15 @@ term as well, because `dump/2` never writes one either.
 5. Check every function that the state captures and that the images call. Each one must
    exist on this node. A missing one returns `{:error, {:missing, mfas}}`.
 
-## 5. Queries keep their names
+## 5. Rules and queries keep their names
 
-`target/2` changes captures and nothing else. A production keeps `{MyRules, :flagged}` as
-its identity. So `Rete.Session.query(session, {MyRules, :flagged}, cid: 1)` reaches the v1
-query on any node.
+`target/2` changes captures and nothing else. The `{module, name}` atoms of a node are data,
+so a production keeps `{MyRules, :flagged}` as its identity. So
+`Rete.Session.query(session, {MyRules, :flagged}, cid: 1)` reaches the v1 query on any node.
+
+Inspection reads the same atoms. `Rete.Inspect.explain/2`, `Rete.Inspect.why_not/2`, the
+origin of a concluded fact and listener events all name `MyRules`, and never its image.
+This is true on any node, even one where `MyRules` no longer defines that rule.
 
 `MyRules.flagged(session, 1)` is a function of the `MyRules` on the node. It works where that
 module declares the query with the same head. On a node with no `MyRules`, use
@@ -267,7 +271,8 @@ module declares the query with the same head. On a node with no `MyRules`, use
   depends on in the ruleset module, or in a module that does not change.
 * **A stack trace names the image.** By default, a rule runs in `MyRules.Image.M<hash>`.
   So a frame reads `MyRules.Image.M<hash>.__rhs_flag__/2`, and not
-  `MyRules.__rhs_flag__/2`. The function name still names the rule.
+  `MyRules.__rhs_flag__/2`. The function name still names the rule. A raw `inspect` of a
+  session shows the captures of the image too. Inspection and listeners do not (§5).
 * **`images: false` is not safe across a hot upgrade.** Its captures reach the current
   module. After an upgrade, a session runs code of two versions, or raises when it fires.
   This can happen inside one `fire_rules/2`. `Rete.Session.latest?/1` cannot see it, and a

@@ -316,6 +316,38 @@ defmodule Rete.SnapshotTest do
       assert Session.latest?(loaded)
     end
 
+    # Inspection reads the `{module, name}` atoms of the nodes, and `target/2` changes only
+    # functions. So a loaded session names the ruleset module, and never its image.
+    test "a loaded session names its rules after the ruleset module" do
+      module = compile(Rete.SnapshotTest.Named, :v1)
+      snapshot = module |> v1_session() |> Session.dump!(@key)
+
+      redeploy(module, :v2)
+      {:ok, loaded} = Session.load(snapshot, @key)
+
+      assert %{module: ^module, rule: :flag, activations: [activation]} =
+               Rete.Inspect.explain(loaded, {module, :flag})
+
+      assert [{:flagged, 1, :v1}] == activation.inserted
+
+      %{activations: [%{matches: [match]}]} = Rete.Inspect.explain(loaded, {module, :flagged})
+      assert [{module, :flag}] == match.from
+
+      refs = loaded |> Rete.Inspect.why_not() |> Enum.map(&{&1.module, &1.rule})
+      assert Enum.all?(refs, fn {ref_module, _rule} -> ref_module == module end)
+
+      sources =
+        loaded
+        |> Session.with_listener(Collect, [])
+        |> Session.insert({:order, 2, 500})
+        |> Session.fire_rules()
+        |> Collect.by_tag(:activation_fired)
+        |> Enum.map(fn {_tag, source, _token, _facts} -> source.rule end)
+
+      assert {module, :flag} in sources
+      refute Enum.any?(sources, fn {ref_module, _rule} -> Rete.Image.image_name?(ref_module) end)
+    end
+
     # The source above has an alpha test, a compound negation and a query. This one holds
     # the other shapes that capture rule code: a collection, a plain negation, a join filter
     # and a disjunction. It also holds a derive, which lives in the taxonomy. v2 changes
