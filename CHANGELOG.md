@@ -51,6 +51,10 @@ All notable changes to `rete` are recorded here. The format follows
   only the tasks that bodies return run in parallel, so a body that does I/O returns one.
   A body no longer pays for a task of its own, and its bindings are no longer copied.
   `:timeout` limits the wait for a returned task, at every `:concurrency`.
+* Above `concurrency: 1`, a body no longer runs for a match that an earlier activation in
+  its group cancelled, when no task is in flight. A body can still run for such a match
+  while a task is in flight. `Rete.Agenda.pending/2` and `Rete.Bucket.member/2` make the
+  check. See `docs/design/engine.md` §11.
 * "a blocking rule body, by :concurrency" in `bench/run.exs` is now "a rule body that
   returns a task, by :concurrency".
 * A compound negation helper captures `Rete.Compiler.Negation.marker/2` and
