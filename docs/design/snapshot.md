@@ -108,9 +108,9 @@ replace a loaded module.
 ### When a module has no image
 
 The ruleset module still compiles. An image must never stop the ruleset module from
-compiling. `__rete_image__/0` returns `{:no_image, detail}`. A build with images, the
-default, raises `ArgumentError`. `images: false` builds the module for tests, and `dump/2`
-then returns `{:error, {:no_image, module, detail}}`. `Rete.Image.message/1` writes the
+compiling. `__rete_image__/0` returns `{:no_image, detail}`. A build with
+`target_images: true` raises `ArgumentError`. A build without target images works, and
+`dump/2` then returns `{:error, {:no_image, module, detail}}`. `Rete.Image.message/1` writes the
 text of both at runtime. So a change to that text does not need the rulesets to compile
 again.
 
@@ -147,9 +147,14 @@ Two properties follow from the hash:
 * **The same code gets the same name.** An image loads once, and every session of that
   version shares it. A rebuild with no change to the rules keeps the name.
 
-### A session runs its images
+### A session can run its images
 
-`Rete.Compiler.build/2` points the network at the images by default. It loads each image
+By default, `Rete.Compiler.build/2` keeps the captures of `MyRules`. A coverage tool counts
+the calls of a module, and a stack trace names the module you wrote. The network records
+no images, so `latest?/1` returns `true`. A dump points the rules at the images and records
+them (§3). So `latest?/1` checks a loaded session as it checks any other.
+
+With `target_images: true`, the build points the network at the images. It loads each image
 with `Rete.Image.load/1`, and `Rete.Image.target/2` replaces each capture of a ruleset
 module with the same capture of its image. It does this to the productions, before it
 builds the network. Every function of the network comes from them, and they are much
@@ -163,27 +168,25 @@ The network records the image of each module in `:built_images`, as
 module offers now. A different name means other code, because the name is a hash of the
 code.
 
-`images: false` keeps the captures of `MyRules`. A coverage tool counts the calls of a
-module, and the image is another module. So the rules show no coverage when they run in
-the image. `config :rete, images: false` sets the default for a test env. A network built
-this way records no images, so `latest?/1` returns `true`. It calls the code of the node,
-and it is not safe across a hot upgrade. A dump points its rules at the images and records
-them. So `latest?/1` checks a loaded copy of it as it checks any other loaded session.
+**If you deploy with hot code upgrades, build with `target_images: true`.** Call
+`latest?/1` after each upgrade, and build a new session when it returns `false`. A network
+built without target images calls the code of the node, so it is not safe across a hot
+upgrade. `config :rete, target_images: true` sets the default for an env.
 
 ## 3. Dump
 
-By default, the network runs its images already (§2). So `dump/2` has little to change.
-Under `images: false`, a live session keeps its captures of `MyRules`, and a stack trace
-names the module you wrote. `dump/2` changes the snapshot, and not the session:
+By default, a live session keeps its captures of `MyRules` (§2). With
+`target_images: true`, the network runs its images already, so `dump/2` has less to change.
+`dump/2` changes the snapshot, and not the session:
 
 1. Listeners go, always. A listener only watches, and its state can hold a pid that means
    nothing on another node. The caller attaches listeners again after `load/2`. The rest
    of the state travels as it is, so a loaded session is in exactly the state that was
-   dumped. Work that `fire_rules/2` has not done yet stays in the queue, such as a pending
+   dumped, apart from step 2. Work that `fire_rules/2` has not done yet stays in the queue, such as a pending
    retract. A bucket keeps a retracted item as a tombstone until the tombstones outnumber
    the live items. So a snapshot can hold a fact that was retracted.
-2. With images, the network captures images already, and this step changes nothing. Under
-   `images: false`, `Rete.Image.target/2` replaces each capture of a ruleset module with
+2. With target images, the network captures images already, and this step changes
+   nothing. Otherwise, `Rete.Image.target/2` replaces each capture of a ruleset module with
    the same capture of the image the module offers now. After a hot upgrade, that image
    does not fit the old network. So dump such a session before an upgrade. This covers the
    network only. A capture inside a fact stays as it is, because a fact is matched by
@@ -273,22 +276,24 @@ module declares the query with the same head. On a node with no `MyRules`, use
   `MyApp.Pricing` on the node that loads it. Step 5 of the load makes sure that the function
   exists. It cannot make sure that the function behaves the same. Keep the logic a rule
   depends on in the ruleset module, or in a module that does not change.
-* **A stack trace names the image.** By default, a rule runs in `MyRules.Image.M<hash>`.
+* **A stack trace names the image.** With target images, or after a load, a rule runs in
+  `MyRules.Image.M<hash>`.
   So a frame reads `MyRules.Image.M<hash>.__rhs_flag__/2`, and not
   `MyRules.__rhs_flag__/2`. The function name still names the rule. A raw `inspect` of a
   session shows the captures of the image too. Inspection and listeners do not (§5).
-* **`images: false` is not safe across a hot upgrade.** Its captures reach the current
-  module. After an upgrade, a session runs code of two versions, or raises when it fires.
-  This can happen inside one `fire_rules/2`. `Rete.Session.latest?/1` cannot see it, and a
-  dump takes the image the module offers then. Use `images: false` in tests only.
+* **The default is not safe across a hot upgrade.** Its captures reach the current module.
+  After an upgrade, a session runs code of two versions, or raises when it fires. This can
+  happen inside one `fire_rules/2`. `Rete.Session.latest?/1` cannot see it, and a dump
+  takes the image the module offers then. With hot code upgrades, build with
+  `target_images: true`, and call `latest?/1` after each upgrade.
 * **OTP.** A beam from a newer OTP may not load on an older one. The error names the
   release that compiled the image, if it differs from the release of the node.
 * **A struct update in a helper checks less before Elixir 1.20.** The copy turns
   `%MyRules{s | k: v}` into a map update. Since Elixir 1.20 that is what a struct update
   compiles to. An older Elixir also checks that `s` is a `MyRules`, and raises
   `BadStructError` if it is not. The copy does not check. So on Elixir 1.18 and 1.19, a
-  session that runs images accepts a value that an `images: false` session refuses. A test
-  env with `images: false` can thus refuse a value that production accepts.
+  session that runs images accepts a value that a session without target images refuses.
+  So a session can accept a value after a load that it refused before the dump.
 * **Trust.** A snapshot holds code, and loading it runs that code. Decoding it also creates
   atoms, and the atom table of a node has a fixed size. Every snapshot is signed, and a
   snapshot that fails the check is not decoded. The check protects you only while the key

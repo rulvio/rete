@@ -38,8 +38,8 @@ defmodule Rete.Image.Builder do
     end
   end
 
-  # A failure leaves the module compiled, without an image. A build with images then
-  # raises, and a dump of an `images: false` session refuses it. Only the cause goes in the
+  # A failure leaves the module compiled, without an image. A build with target images then
+  # raises, and a dump of any other session refuses it. Only the cause goes in the
   # beam. `Rete.Image.message/1` writes the text at runtime, so a wording fix needs no
   # recompile of the rulesets.
   defp build(env, seeds) do

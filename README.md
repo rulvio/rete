@@ -339,14 +339,17 @@ cheap to fork, and safe to pass between processes.
 Compiling is the expensive part. Do it once, with `Rete.Compiler.build/2`. Start sessions
 from the result with `Rete.Session.from_network/1`.
 
-A network runs the image of each ruleset module, a copy of its rules that never changes.
-So a hot upgrade of `Retail` does not change a network built before it. That network keeps
-running the old rules, consistently. `Rete.Session.latest?/1` returns `false` when the
-rules changed. Build the network again when it does. For test coverage, put
-`config :rete, images: false` in `config/test.exs`. The rules then run in `Retail`, where
-a coverage tool counts them. Such a network records no images, so it is the latest, and
-it is not safe across a hot upgrade. A dump records the images, so `latest?/1` still works
-after a load.
+A network calls the ruleset modules by default, so a coverage tool counts the rules, and a
+stack trace names `Retail`. A hot upgrade of `Retail` then changes the code that a network
+built before it calls. That network can run code of two versions, or raise when it fires.
+
+**If you deploy with hot code upgrades, build with `target_images: true`.** The network
+then runs the image of each ruleset module, a copy of its rules that never changes. So it
+keeps running the old rules, consistently. Call `Rete.Session.latest?/1` after each
+upgrade. It returns `false` when the rules changed, and you then build the network again.
+`config :rete, target_images: true` makes this the default.
+
+A dump carries the images either way, so a loaded session keeps its own rules.
 
 ### Move a session to another node
 

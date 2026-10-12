@@ -2696,13 +2696,12 @@ defmodule Rete.EngineTest do
     end
 
     # The generated `__rhs_<name>__` frame is what names the rule, so waiting for its turn
-    # in the group must not lose the stacktrace. With images, the frame names
-    # the image of `Boom`, so this builds without them to match the module exactly.
+    # in the group must not lose the stacktrace.
     test "a raising body still names its rule in the stacktrace under concurrency" do
       stacktrace =
         try do
           [Boom]
-          |> Session.new(images: false)
+          |> Session.new()
           |> Session.insert([{:go, 0}])
           |> Session.fire_rules(concurrency: 4)
 
@@ -2716,11 +2715,16 @@ defmodule Rete.EngineTest do
              end)
     end
 
-    # By default the rule runs in the image of `Boom`. The function still names the rule.
-    test "a raising body names its rule in the image by default" do
+    # With target images the rule runs in the image of `Boom`. The function still names
+    # the rule.
+    test "a raising body names its rule in the image with target images" do
       stacktrace =
         try do
-          [Boom] |> Session.new() |> Session.insert([{:go, 0}]) |> Session.fire_rules()
+          [Boom]
+          |> Session.new(target_images: true)
+          |> Session.insert([{:go, 0}])
+          |> Session.fire_rules()
+
           flunk("expected the body to raise")
         rescue
           ArithmeticError -> __STACKTRACE__

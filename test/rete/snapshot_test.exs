@@ -168,9 +168,9 @@ defmodule Rete.SnapshotTest do
     compile(module, version)
   end
 
-  defp v1_session(module) do
+  defp v1_session(module, opts \\ []) do
     [module]
-    |> Session.new()
+    |> Session.new(opts)
     |> Session.insert([{:customer, 1}, {:order, 1, 500}, {:customer, 2}])
     |> Session.fire_rules()
   end
@@ -257,8 +257,9 @@ defmodule Rete.SnapshotTest do
       module = compile(Rete.SnapshotTest.Recorded, :v1)
       {:ok, {image, _beam}} = module.__rete_image__()
 
-      assert %{module => image} == Session.network(Session.new([module])).built_images
-      assert %{} == Session.network(Session.new([module], images: false)).built_images
+      targeted = Session.new([module], target_images: true)
+      assert %{module => image} == Session.network(targeted).built_images
+      assert %{} == Session.network(Session.new([module])).built_images
       assert nil == Rete.Image.name(Enum)
     end
 
@@ -282,9 +283,9 @@ defmodule Rete.SnapshotTest do
 
     # The session runs the v1 image, so the v2 module does not reach it. A new session
     # picks up v2.
-    test "a session built with images keeps its rules across a redeploy" do
+    test "a session built with target images keeps its rules across a redeploy" do
       module = compile(Rete.SnapshotTest.Kept, :v1)
-      session = v1_session(module)
+      session = v1_session(module, target_images: true)
       assert Session.latest?(session)
 
       redeploy(module, :v2)
@@ -293,15 +294,15 @@ defmodule Rete.SnapshotTest do
       grown = session |> Session.insert({:order, 2, 500}) |> Session.fire_rules()
       assert [:v1] == Session.query(grown, {module, :flagged}, cid: 2)
 
-      fresh = v1_session(module)
+      fresh = v1_session(module, target_images: true)
       assert Session.latest?(fresh)
       assert [] == Session.query(fresh, {module, :flagged}, cid: 1)
     end
 
-    # Nothing is recorded, so `latest?/1` has nothing to compare. Such a session is for tests.
-    test "a session built without images is always the latest" do
+    # Nothing is recorded, so `latest?/1` has nothing to compare.
+    test "a session built without target images is always the latest" do
       module = compile(Rete.SnapshotTest.NoImages, :v1)
-      session = Session.new([module], images: false)
+      session = Session.new([module])
 
       redeploy(module, :v2)
       assert Session.latest?(session)
@@ -309,12 +310,12 @@ defmodule Rete.SnapshotTest do
 
     # The dump points the rules at the images, and leaves the taxonomy alone. The record
     # must follow the rules, or the loaded session reads as the latest forever.
-    test "a session built without images runs and records its images after a load" do
+    test "a session built without target images runs and records its images after a load" do
       module = compile(Rete.SnapshotTest.NoImagesDumped, :v1)
 
       session =
         [module]
-        |> Session.new(images: false)
+        |> Session.new()
         |> Session.insert([{:customer, 1}, {:order, 1, 500}])
         |> Session.fire_rules()
 
@@ -332,7 +333,8 @@ defmodule Rete.SnapshotTest do
       assert [] == Session.query(retracted, {module, :flagged}, cid: 1)
     end
 
-    # The live session keeps running v1 after the redeploy, so it is the oracle. Each step
+    # The live session runs its images, so it keeps running v1 after the redeploy and is
+    # the oracle. Each step
     # takes back support for conclusions made before the dump, over every rule shape.
     test "a loaded session withdraws conclusions it made before the dump" do
       main = compile(Rete.SnapshotTest.TmsMain, :v1)
@@ -341,7 +343,7 @@ defmodule Rete.SnapshotTest do
 
       live =
         [main, shapes]
-        |> Session.new()
+        |> Session.new(target_images: true)
         |> Session.insert([{:customer, 1}, {:order, 1, 600}, {:cap, 1, 300}, {:premium, 2}])
         |> Session.fire_rules()
 
@@ -498,14 +500,14 @@ defmodule Rete.SnapshotTest do
       assert {:no_image, detail} = module.__rete_image__()
       assert detail =~ "undefined function big?/1"
 
-      error = assert_raise ArgumentError, fn -> Session.new([module]) end
+      error = assert_raise ArgumentError, fn -> Session.new([module], target_images: true) end
       assert error.message =~ "@before_compile"
       assert error.message =~ "Put `use Rete.Ruleset` after"
       assert error.message =~ "undefined function big?/1"
 
       session =
         [module]
-        |> Session.new(images: false)
+        |> Session.new()
         |> Session.insert({:order, 1, 5000})
         |> Session.fire_rules()
 
@@ -1014,7 +1016,7 @@ defmodule Rete.SnapshotTest do
     test "a change to a helper alone makes a session built before it not the latest" do
       module = Rete.SnapshotTest.HelperOnly
       Code.compile_string(helper_source(module, 100, "big?(amt)", ""))
-      session = Session.new([module])
+      session = Session.new([module], target_images: true)
 
       :code.purge(module)
       :code.delete(module)
@@ -1118,26 +1120,39 @@ defmodule Rete.SnapshotTest do
   end
 
   describe "what a snapshot holds" do
-    # The tombstone of the retracted customer travels too, so the equality covers it.
+    # The tombstone of the retracted customer travels too, so the equality covers it. A
+    # session with target images runs its images already, so even its network is equal.
+    # Any other session differs only in its network, because the dump points its rules at
+    # the images.
     test "a loaded session is in exactly the state that was dumped" do
       others = for cid <- 1..10, do: {:customer, cid}
 
-      session =
-        [Rete.Doc.Orders]
-        |> Session.new()
-        |> Session.insert([{:customer, 777_123_456} | others])
-        |> Session.fire_rules()
-        |> Session.retract({:customer, 777_123_456})
-        |> Session.fire_rules()
-        |> Session.retract({:customer, 1})
-        |> Session.insert({:order, 2, 900})
+      for opts <- [[target_images: true], []] do
+        session =
+          [Rete.Doc.Orders]
+          |> Session.new(opts)
+          |> Session.insert([{:customer, 777_123_456} | others])
+          |> Session.fire_rules()
+          |> Session.retract({:customer, 777_123_456})
+          |> Session.fire_rules()
+          |> Session.retract({:customer, 1})
+          |> Session.insert({:order, 2, 900})
 
-      snapshot = Session.dump!(session, @key)
-      assert snapshot |> body_state() |> inspect(limit: :infinity) =~ "777123456"
+        snapshot = Session.dump!(session, @key)
+        assert snapshot |> body_state() |> inspect(limit: :infinity) =~ "777123456"
 
-      {:ok, loaded} = Session.load(snapshot, @key)
-      assert loaded.state == session.state
-      assert Session.fire_rules(loaded).state == Session.fire_rules(session).state
+        {:ok, loaded} = Session.load(snapshot, @key)
+        fired = Session.fire_rules(session)
+        fired_loaded = Session.fire_rules(loaded)
+
+        if opts[:target_images] do
+          assert loaded.state == session.state
+          assert fired_loaded.state == fired.state
+        else
+          assert %{loaded.state | network: nil} == %{session.state | network: nil}
+          assert %{fired_loaded.state | network: nil} == %{fired.state | network: nil}
+        end
+      end
     end
 
     # A snapshot holds these structs as they are. A body from another shape still decodes,

@@ -101,8 +101,9 @@ defmodule Rete.Image do
   def message({:no_image, module, detail}) do
     """
     rete could not compile the image of #{inspect(module)}. The module itself compiled. \
-    A session runs the image, and a snapshot carries it. `images: false` builds a session \
-    without it, for tests only.
+    A session built with `target_images: true` runs the image, and a snapshot carries it. \
+    A session built without target images calls the module, and does not need the image \
+    until it is dumped.
 
     The usual cause is a helper that a `@before_compile` hook defines after the hook of \
     `use Rete.Ruleset`. Hooks run in the order they are registered, and rete builds the \

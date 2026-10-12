@@ -1050,7 +1050,8 @@ Bench.compare(
 # expansion that defines the rules.
 width_modules = for r <- [128, 256, 512, 1024], into: %{}, do: {r, Bench.Width.module(r)}
 
-# Without an image, `images: true` does nothing, and the two scenarios below would match.
+# Without an image, `target_images: true` does nothing, and the two scenarios below would
+# match.
 for {_r, module} <- width_modules, do: {:ok, _image} = module.__rete_image__()
 
 Bench.scenario(
@@ -1068,11 +1069,11 @@ Bench.scenario(
 )
 
 Bench.scenario(
-  "compile r rules over one fact type, images: false",
+  "compile r rules over one fact type, target_images: true",
   [128, 256, 512, 1024],
-  fn r -> Rete.Compiler.build([width_modules[r]], images: false) end,
+  fn r -> Rete.Compiler.build([width_modules[r]], target_images: true) end,
   isolate: true,
-  note: "the same build without images. The gap to the scenario above is the cost of images."
+  note: "the same build with target images. The gap to the scenario above is their cost."
 )
 
 # Compiled up front, for the reason the width scenario gives: the scenario times firing,

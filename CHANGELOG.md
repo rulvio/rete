@@ -23,17 +23,19 @@ All notable changes to `rete` are recorded here. The format follows
 * `use Rete.Ruleset` compiles an image module beside each ruleset module. For `MyRules`,
   it is `MyRules.Image.M<hash>`, and the hash is taken over the code of the rules. An
   image that does not compile never stops the ruleset module from compiling. A build with
-  images raises for the module then. `:image_compile_timeout` in the `:rete` application
+  target images raises for the module then. `:image_compile_timeout` in the `:rete` application
   environment changes the two-minute limit on an image compile. See
   `docs/design/snapshot.md` §2.
-* A session runs the image of each ruleset module by default. So a session built before a
-  hot upgrade keeps running its own rules, consistently, until you build it again.
-  `Rete.Session.latest?/1` returns `false` when a ruleset module now offers other code.
-  `images: false` on `Rete.Session.new/2` or `Rete.Compiler.build/2` calls the ruleset
-  modules instead, for test coverage. `config :rete, images: false` sets that default for a
-  test env. A network built that way records no images, so it is the latest until a dump
-  records them. With images, a build raises `ArgumentError` if an image did not compile or
-  does not load, and a stack trace names the image module.
+* `target_images: true` on `Rete.Session.new/2` or `Rete.Compiler.build/2` makes a session
+  run the image of each ruleset module. So a session built before a hot upgrade keeps
+  running its own rules, consistently, until you build it again. `Rete.Session.latest?/1`
+  returns `false` when a ruleset module now offers other code. The default is `false`, and
+  the session calls the ruleset modules. `config :rete, target_images: true` changes the
+  default. **If you deploy with hot code upgrades, use `target_images: true`, and call
+  `latest?/1` after each upgrade.** A session built without target images records no
+  images, so it is the latest until a dump records them. With target images, a build raises
+  `ArgumentError` if an image did not compile or does not load, and a stack trace names the
+  image module.
 * A rule body may return a `Task` instead of its facts. The result of the task is the
   facts. At `concurrency: 1` the engine awaits each task before the next body runs. Above
   `1`, it awaits up to that many tasks of one activation group together, and applies the
@@ -43,8 +45,8 @@ All notable changes to `rete` are recorded here. The format follows
   See `docs/design/engine.md` §11.
 * Five `bench/run.exs` scenarios. One flips a compound negation on and off. One dumps a
   session of n customers, and one loads it. One dumps that session after half the customers
-  are retracted. One compiles r rules with `images: false`, so its gap to the compile
-  scenario is the cost of images. "match one condition written in k modules" now runs on a
+  are retracted. One compiles r rules with `target_images: true`, so its gap to the compile
+  scenario is the cost of target images. "match one condition written in k modules" now runs on a
   fresh process.
 
 ### Changed

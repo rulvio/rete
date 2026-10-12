@@ -149,7 +149,7 @@ defmodule Rete.Snapshot do
   defp target_rules(network, images) when map_size(images) == 0, do: network
 
   # The rules now run the images, so `built_images` records them. Without the record, a
-  # session built under `images: false` would be `latest?/1` after any load.
+  # session built without target images would be `latest?/1` after any load.
   defp target_rules(%Network{taxonomy: taxonomy} = network, images) do
     %Network{} = targeted = Image.target(rules(network), images)
     targeted_images = Map.new(images, fn {module, {name, _beam}} -> {module, name} end)

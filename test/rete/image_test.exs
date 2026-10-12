@@ -9,7 +9,7 @@ defmodule Rete.ImageTest do
   The failures of an image compile, and of an image load, that no ruleset causes.
 
   Not async, because two tests change the application environment. Every ruleset that
-  compiles meanwhile reads `:image_compile_timeout`, and every build reads `:images`.
+  compiles meanwhile reads `:image_compile_timeout`, and every build reads `:target_images`.
   """
 
   use ExUnit.Case, async: false
@@ -37,18 +37,22 @@ defmodule Rete.ImageTest do
     end
   end
 
-  test "a build with images raises when an image does not load" do
+  test "a build with target images raises when an image does not load" do
     productions =
       [Rete.Doc.Orders]
       |> Rete.get_rule_data()
       |> Enum.map(&%{&1 | module: Rete.ImageTest.BadImage})
 
-    error = assert_raise ArgumentError, fn -> Rete.Compiler.build_productions(productions) end
+    error =
+      assert_raise ArgumentError, fn ->
+        Rete.Compiler.build_productions(productions, [], target_images: true)
+      end
+
     assert error.message =~ "Cannot build the network."
     assert error.message =~ "did not load"
   end
 
-  test "an image that does not compile in time stops a build with images" do
+  test "an image that does not compile in time stops a build with target images" do
     previous = Application.fetch_env(:rete, :image_compile_timeout)
     Application.put_env(:rete, :image_compile_timeout, 0)
 
@@ -64,12 +68,14 @@ defmodule Rete.ImageTest do
       assert {:no_image, detail} = module.__rete_image__()
       assert detail =~ "did not compile in 0 ms"
 
-      error = assert_raise ArgumentError, fn -> Rete.Session.new([module]) end
+      error =
+        assert_raise ArgumentError, fn -> Rete.Session.new([module], target_images: true) end
+
       assert error.message =~ "did not compile in 0 ms"
 
       session =
         [module]
-        |> Rete.Session.new(images: false)
+        |> Rete.Session.new()
         |> Rete.Session.insert({:order, 1, 5})
         |> Rete.Session.fire_rules()
 
@@ -82,8 +88,8 @@ defmodule Rete.ImageTest do
     end
   end
 
-  # A test env turns images off in its config, so that a coverage tool sees the rules run.
-  test "the :images environment sets the default of a build" do
+  # A hot-upgraded env turns target images on in its config.
+  test "the :target_images environment sets the default of a build" do
     [{module, _beam}] =
       Code.compile_string("""
       defmodule Rete.ImageTest.Default do
@@ -93,19 +99,19 @@ defmodule Rete.ImageTest do
       """)
 
     {:ok, {image, _beam}} = module.__rete_image__()
-    previous = Application.fetch_env(:rete, :images)
-    Application.put_env(:rete, :images, false)
+    previous = Application.fetch_env(:rete, :target_images)
+    Application.put_env(:rete, :target_images, true)
 
     try do
-      assert {:ok, off} = Rete.Image.captures(Rete.Compiler.build([module]))
-      assert module in off and image not in off
-
-      assert {:ok, on} = Rete.Image.captures(Rete.Compiler.build([module], images: true))
+      assert {:ok, on} = Rete.Image.captures(Rete.Compiler.build([module]))
       assert image in on and module not in on
+
+      assert {:ok, off} = Rete.Image.captures(Rete.Compiler.build([module], target_images: false))
+      assert module in off and image not in off
     after
       case previous do
-        {:ok, value} -> Application.put_env(:rete, :images, value)
-        :error -> Application.delete_env(:rete, :images)
+        {:ok, value} -> Application.put_env(:rete, :target_images, value)
+        :error -> Application.delete_env(:rete, :target_images)
       end
     end
   end

@@ -790,7 +790,8 @@ defmodule Rete.PropertyTest do
   # --- a dump and a load change nothing -----------------------------------------------------------
 
   # A snapshot carries the state as it is, tombstones and pending work included. So the
-  # loaded session must equal the one it came from, before a fire and after one.
+  # loaded session must equal the one it came from, before a fire and after one. Only the
+  # network differs, because the dump points the rules of this session at their images.
   describe "dump and load" do
     property "a dump and a load leave the session exactly as it was" do
       check all(
@@ -808,11 +809,13 @@ defmodule Rete.PropertyTest do
 
         {:ok, loaded} = session |> Session.dump!("key") |> Session.load("key")
 
-        assert loaded.state == session.state
-        assert Session.fire_rules(loaded).state == Session.fire_rules(session).state
+        assert unnetworked(loaded) == unnetworked(session)
+        assert unnetworked(Session.fire_rules(loaded)) == unnetworked(Session.fire_rules(session))
       end
     end
   end
+
+  defp unnetworked(%Session{state: state}), do: %{state | network: nil}
 
   # --- settled? answers for the agenda as well as the queue ----------------------------------
 

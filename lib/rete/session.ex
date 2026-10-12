@@ -60,12 +60,15 @@ defmodule Rete.Session do
   Options go to `Rete.Compiler.build/2`. Compiling the network is the expensive part, so
   a long-lived application should do it once and use `from_network/1`.
 
-  By default, the session runs the image of each ruleset module. So it keeps its rules
-  after a hot upgrade of the module, until you build it again. `latest?/1` tells you when
-  to do that. `images: false` makes it call the ruleset modules, for test coverage.
+  By default, the session calls the ruleset modules. `target_images: true` makes it run the
+  image of each ruleset module. Then it keeps its rules after a hot upgrade of the module,
+  until you build it again.
 
-  With images, raises `ArgumentError` if the image of a ruleset module did not compile or
-  does not load. See `Rete.Compiler.build/2`.
+  **With hot code upgrades, build with `target_images: true`.** Call `latest?/1` after each
+  upgrade, and build a new session when it returns `false`.
+
+  With `target_images: true`, raises `ArgumentError` if the image of a ruleset module did
+  not compile or does not load. See `Rete.Compiler.build/2`.
 
       iex> Rete.Session.new([Rete.Doc.Orders]) |> Rete.Session.facts()
       []
@@ -298,16 +301,17 @@ defmodule Rete.Session do
   @doc """
   Whether the session runs the rules that its ruleset modules hold now.
 
-  It is `false` after a hot upgrade changes the code that the rules reach. A session that
-  runs images keeps running its own rules, consistently. Build a new session with `new/2`
-  to run the new rules. The facts do not move to it, so insert them again.
+  It is `false` after a hot upgrade changes the code that the rules reach. A session built
+  with `target_images: true` keeps running its own rules, consistently. Build a new session
+  with `new/2` to run the new rules. The facts do not move to it, so insert them again.
 
-  A loaded session is not the latest when this node runs another version of a module, or
-  none. It still runs the rules it was dumped with.
+  **With hot code upgrades, build with `target_images: true`, and call this after each
+  upgrade.** A session built without target images records no images, so it is the latest.
+  It calls the ruleset modules, and it is not safe across a hot upgrade.
 
-  Under `images: false`, the network records no images, so it is the latest. It calls the
-  ruleset modules, and it is not safe across a hot upgrade. Use it in tests only. A dump
-  points its rules at the images and records them, so a load of it is checked as above.
+  A dump points the rules at the images and records them. So a loaded session is not the
+  latest when this node runs another version of a module, or none. It still runs the rules
+  it was dumped with.
 
   Each call reads the image that each ruleset module offers now. It does not check a call
   to another module, a `:fact_type_fn` that no rule calls, or a capture inside a fact.

@@ -912,8 +912,8 @@ every alpha its type routes to. `BetaGraph` found a shareable node by scanning e
 of every parent, and r rules that share nothing all hang off the root. `link/3` then
 appended to that child list, which is O(children) per node added. Sharing is an index now,
 and children are stored newest first and reversed by `children/2`. Compiling 1,024 rules
-over one fact type went from an extrapolated ~225 ms to 4.1 ms. That figure is the
-`images: false` variant of the scenario, because the claim is about the network build alone.
+over one fact type went from an extrapolated ~225 ms to 4.1 ms, in the scenario
+"compile r rules over one fact type".
 
 `mix bench` measures that scenario on a **fresh process**, which is what `isolate: true`
 asks for. A build allocates a whole network, so five builds in one process grow its heap

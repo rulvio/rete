@@ -46,13 +46,16 @@ defmodule Rete.Compiler do
 
     * `:fact_type_fn` goes to `Rete.Taxonomy.new/2`. It defaults to struct, tagged tuple
       and tagged map.
-    * `:images` is `true` by default. The network then runs the image of each ruleset
-      module, so it keeps its rules after a hot upgrade of the module. With `false`, it
-      calls the ruleset modules, so a coverage tool sees the rules run. Use `false` only
-      in tests. `config :rete, images: false` changes the default.
+    * `:target_images` is `false` by default. The network then calls the ruleset modules.
+      With `true`, it runs the image of each ruleset module, so it keeps its rules after a
+      hot upgrade of the module. `config :rete, target_images: true` changes the default.
 
-  With images, raises `ArgumentError` if the image of a ruleset module did not compile or
-  does not load.
+  **With hot code upgrades, build with `target_images: true`.** Call
+  `Rete.Session.latest?/1` after each upgrade, and build a new network when it returns
+  `false`. Without target images, a network built before an upgrade calls the new code.
+
+  With `target_images: true`, raises `ArgumentError` if the image of a ruleset module did
+  not compile or does not load.
 
       Rete.Compiler.build([MyRuleset])
       Rete.Compiler.build([MyRuleset, OtherRuleset], fact_type_fn: &MyApp.type/1)
@@ -78,12 +81,13 @@ defmodule Rete.Compiler do
     productions = productions |> Enum.flat_map(&extract/1) |> disambiguate_codes()
 
     {productions, built} =
-      if images?(opts), do: run_images(productions), else: {productions, %{}}
+      if target_images?(opts), do: run_images(productions), else: {productions, %{}}
 
     %Network{Network.new(productions, taxo_data, opts) | built_images: built}
   end
 
-  defp images?(opts), do: Keyword.get(opts, :images, Application.get_env(:rete, :images, true))
+  defp target_images?(opts),
+    do: Keyword.get(opts, :target_images, Application.get_env(:rete, :target_images, false))
 
   # Every function of a network comes from its productions, so pointing them at the images
   # before the build points the whole network. That walks the input, which is much smaller
