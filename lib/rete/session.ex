@@ -334,8 +334,9 @@ defmodule Rete.Session do
   `:crypto.strong_rand_bytes(32)`, and keep it in your secret store.
 
   **A snapshot is signed, not encrypted.** Anyone who has the binary can read every fact in
-  it. Work that `fire_rules/2` has not done yet travels with the snapshot, such as a
-  pending retract.
+  it. That can include a fact that was retracted, because the session keeps it internally
+  for a time. A loaded session is in exactly the state that was dumped. So work that
+  `fire_rules/2` has not done yet travels too, such as a pending retract.
 
   Listeners do not travel. Attach them again with `with_listener/3` after `load/2`.
 

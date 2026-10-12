@@ -417,8 +417,8 @@ defmodule Rete.Memory do
         }
   def dump(%__MODULE__{} = memory) do
     %{
-      elements: map_buckets(memory.elements, &Bucket.to_list/1),
-      tokens: map_buckets(memory.tokens, &Bucket.to_list/1),
+      elements: listed(memory.elements),
+      tokens: listed(memory.tokens),
       accum: memory.accum,
       insertions: memory.insertions,
       facts: memory.facts,
@@ -426,21 +426,9 @@ defmodule Rete.Memory do
     }
   end
 
-  @doc """
-  The same memory with every tombstone dropped. See `Rete.Bucket.compact/1`.
-  """
-  @spec compact(t()) :: t()
-  def compact(%__MODULE__{} = memory) do
-    %__MODULE__{
-      memory
-      | elements: map_buckets(memory.elements, &Bucket.compact/1),
-        tokens: map_buckets(memory.tokens, &Bucket.compact/1)
-    }
-  end
-
-  defp map_buckets(store, fun) do
+  defp listed(store) do
     Map.new(store, fn {node_id, by_key} ->
-      {node_id, Map.new(by_key, fn {key, bucket} -> {key, fun.(bucket)} end)}
+      {node_id, Map.new(by_key, fn {key, bucket} -> {key, Bucket.to_list(bucket)} end)}
     end)
   end
 

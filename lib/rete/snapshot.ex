@@ -6,10 +6,8 @@ defmodule Rete.Snapshot do
   to carry. `Rete.Image` holds the images. See `docs/design/snapshot.md` §3 and §4.
   """
 
-  alias Rete.Agenda
   alias Rete.Engine.State
   alias Rete.Image
-  alias Rete.Memory
   alias Rete.Network
 
   # Increase this when an engine struct changes. Increase it also when the contract of
@@ -29,13 +27,7 @@ defmodule Rete.Snapshot do
   def dump(%State{} = state, secret) do
     check_secret!(secret, :dump)
 
-    # A tombstone still holds a retracted fact, and a snapshot must not carry it.
-    state = %State{
-      state
-      | listeners: [],
-        memory: Memory.compact(state.memory),
-        agenda: Agenda.compact(state.agenda)
-    }
+    state = %State{state | listeners: []}
 
     # Only the rules of the network are targeted at their images. A fact is matched by
     # equality, so a changed capture inside one would make a retract of that fact miss after

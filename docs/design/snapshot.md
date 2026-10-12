@@ -177,11 +177,11 @@ Under `images: false`, a live session keeps its captures of `MyRules`, and a sta
 names the module you wrote. `dump/2` changes the snapshot, and not the session:
 
 1. Listeners go, always. A listener only watches, and its state can hold a pid that means
-   nothing on another node. The caller attaches listeners again after `load/2`. The buckets
-   of the memory and the agenda are compacted. A bucket keeps a retracted item as a
-   tombstone until the tombstones outnumber the live items. So without this, a retracted
-   fact could still be in the snapshot. Work that `fire_rules/2` has not done yet stays in
-   the queue and travels with the snapshot, such as a pending retract.
+   nothing on another node. The caller attaches listeners again after `load/2`. The rest
+   of the state travels as it is, so a loaded session is in exactly the state that was
+   dumped. Work that `fire_rules/2` has not done yet stays in the queue, such as a pending
+   retract. A bucket keeps a retracted item as a tombstone until the tombstones outnumber
+   the live items. So a snapshot can hold a fact that was retracted.
 2. With images, the network captures images already, and this step changes nothing. Under
    `images: false`, `Rete.Image.target/2` replaces each capture of a ruleset module with
    the same capture of the image the module offers now. After a hot upgrade, that image

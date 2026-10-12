@@ -374,8 +374,9 @@ the signature before it decodes the body, and refuses a snapshot that does not m
 random key, such as `:crypto.strong_rand_bytes(32)`. Keep it in your secret store, apart
 from the place that keeps the snapshots.
 
-**A snapshot is signed, not encrypted.** Anyone who has the binary can read the facts in it.
-Encrypt the snapshots at rest if the facts are sensitive.
+**A snapshot is signed, not encrypted.** Anyone who has the binary can read the facts in it,
+including a fact that was retracted. Encrypt the snapshots at rest if the facts are
+sensitive.
 
 A rule that calls a function of another module runs the version on the node that loads it.
 [docs/design/snapshot.md](docs/design/snapshot.md) has the details and the limits.

@@ -137,21 +137,4 @@ defmodule Rete.AgendaTest do
       assert [:a, :c] == drain(agenda)
     end
   end
-
-  # A snapshot compacts the agenda, so a cancelled match does not travel in a tombstone.
-  describe "compact/1" do
-    test "drops a cancelled activation that its bucket still holds" do
-      kept = for cid <- 1..3, do: activation(bindings: %{cid: cid})
-      gone = activation(bindings: %{cid: 777_123_456})
-
-      agenda = Enum.reduce(kept ++ [gone], Agenda.new(), &Agenda.add(&2, &1))
-      {agenda, :removed} = Agenda.remove(agenda, gone)
-
-      assert inspect(agenda, limit: :infinity) =~ "777123456"
-
-      compacted = Agenda.compact(agenda)
-      refute inspect(compacted, limit: :infinity) =~ "777123456"
-      assert drain(agenda) == drain(compacted)
-    end
-  end
 end

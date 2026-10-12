@@ -787,6 +787,33 @@ defmodule Rete.PropertyTest do
   defp maybe_fire(session, :fire_each), do: Session.fire_rules(session)
   defp maybe_fire(session, :fire_last), do: session
 
+  # --- a dump and a load change nothing -----------------------------------------------------------
+
+  # A snapshot carries the state as it is, tombstones and pending work included. So the
+  # loaded session must equal the one it came from, before a fire and after one.
+  describe "dump and load" do
+    property "a dump and a load leave the session exactly as it was" do
+      check all(
+              ops <- list_of(op(), max_length: 30),
+              pending <- list_of(op(), max_length: 5),
+              max_runs: 40
+            ) do
+        {settled, _multiset} = apply_ops(ops)
+
+        session =
+          Enum.reduce(pending, settled, fn
+            {:insert, f}, session -> Session.insert(session, f)
+            {:retract, f}, session -> Session.retract(session, f)
+          end)
+
+        {:ok, loaded} = session |> Session.dump!("key") |> Session.load("key")
+
+        assert loaded.state == session.state
+        assert Session.fire_rules(loaded).state == Session.fire_rules(session).state
+      end
+    end
+  end
+
   # --- settled? answers for the agenda as well as the queue ----------------------------------
 
   # `Rete.Session.settled?/1` reads the queue alone. Its docstring says why that answers
