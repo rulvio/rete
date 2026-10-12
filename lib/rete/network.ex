@@ -12,7 +12,7 @@ defmodule Rete.Network do
       queries        {module, query name} => query node id
       productions    the productions compiled in, including generated helpers
       reserved_types the fact types that compound negations reserve for their markers
-      built_images   module => the image it ran at build time, none under images: false
+      built_images   module => the image its rules run, none under images: false until a dump
 
   A fact travels in three steps. `Rete.Taxonomy.alpha_ids/2` maps its type to alpha node
   ids — the **only** place the taxonomy is consulted. Each alpha's arity-1 function turns

@@ -398,8 +398,9 @@ defmodule Rete.PropertyTest do
       end
     end
 
-    # Raising :concurrency moves the rule bodies of an activation group onto tasks. What it
-    # must not change is the session that results, down to the truth-maintenance ledger.
+    # Raising :concurrency fires a whole activation group in each cycle, and applies its
+    # conclusions in group order. What it must not change is the session that results, down
+    # to the truth-maintenance ledger.
     # `Everything` spans every node kind, so negation, collections and disjunctions are
     # covered too.
     #

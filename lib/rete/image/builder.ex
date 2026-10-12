@@ -38,11 +38,14 @@ defmodule Rete.Image.Builder do
     end
   end
 
-  # A failure leaves the module without an image, and only a dump refuses it.
+  # A failure leaves the module compiled, without an image. A build with images then
+  # raises, and a dump of an `images: false` session refuses it. Only the cause goes in the
+  # beam. `Rete.Image.message/1` writes the text at runtime, so a wording fix needs no
+  # recompile of the rulesets.
   defp build(env, seeds) do
     case guard(fn -> build!(env, seeds) end) do
       {:ok, image} -> {:ok, image}
-      {:error, detail} -> {:unavailable, unavailable(env.module, detail)}
+      {:error, detail} -> {:no_image, detail}
     end
   end
 
@@ -152,26 +155,6 @@ defmodule Rete.Image.Builder do
         errors = for %{severity: :error, message: m} <- diagnostics, do: m
         {:error, Enum.join(errors ++ [message], "\n")}
     end
-  end
-
-  defp unavailable(module, detail) do
-    """
-    rete could not compile the image of #{inspect(module)}. The module itself compiled. \
-    A build with images, the default, raises for it. `images: false` builds it, for tests \
-    only.
-
-    The image is a copy of the functions that the rules compile to, and of the helpers \
-    they call. A session runs it, and a snapshot carries it. See docs/design/snapshot.md.
-
-    The usual cause is a helper that a `@before_compile` hook defines after the hook of \
-    `use Rete.Ruleset`. Hooks run in the order they are registered, and rete builds the \
-    image in its own hook. Put `use Rete.Ruleset` after the `use` that defines the helper. \
-    For any other cause, please report it.
-
-    The cause:
-
-    #{detail}\
-    """
   end
 
   # Kernel is narrowed, because a helper can share a name with a function of Kernel.

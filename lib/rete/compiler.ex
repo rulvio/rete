@@ -87,9 +87,10 @@ defmodule Rete.Compiler do
 
   # Every function of a network comes from its productions, so pointing them at the images
   # before the build points the whole network. That walks the input, which is much smaller
-  # than the network. A module with no image, or an image that does not load, raises.
-  # Calls to the module instead would hide it, and the session would no longer keep its
-  # rules across an upgrade.
+  # than the network. An image that did not compile, or does not load, raises. Calls to the
+  # module instead would hide it, and the session would no longer keep its rules across an
+  # upgrade. A module that offers no image, such as one that is not a ruleset, keeps its
+  # calls.
   defp run_images(productions) do
     images = productions |> Network.modules() |> Enum.flat_map(&image!/1) |> Map.new()
 
@@ -106,9 +107,14 @@ defmodule Rete.Compiler do
   # `:none` is a module that is not a ruleset, such as one that built productions by hand.
   defp image!(module) do
     case Image.fetch(module) do
-      {:ok, image} -> [{module, image}]
-      :none -> []
-      {:error, reason} -> raise ArgumentError, "Cannot build the network. " <> reason
+      {:ok, image} ->
+        [{module, image}]
+
+      :none ->
+        []
+
+      {:error, reason} ->
+        raise ArgumentError, "Cannot build the network. " <> Image.message(reason)
     end
   end
 

@@ -94,9 +94,27 @@ defmodule Rete.Image do
   end
 
   @doc """
-  The text of the error that `load/1` returns.
+  The text of the error that `load/1` or `fetch/1` returns.
   """
-  @spec message({:image, module(), term(), String.t() | nil}) :: String.t()
+  @spec message({:image, module(), term(), String.t() | nil} | {:no_image, module(), String.t()}) ::
+          String.t()
+  def message({:no_image, module, detail}) do
+    """
+    rete could not compile the image of #{inspect(module)}. The module itself compiled. \
+    A session runs the image, and a snapshot carries it. `images: false` builds a session \
+    without it, for tests only.
+
+    The usual cause is a helper that a `@before_compile` hook defines after the hook of \
+    `use Rete.Ruleset`. Hooks run in the order they are registered, and rete builds the \
+    image in its own hook. Put `use Rete.Ruleset` after the `use` that defines the helper. \
+    For any other cause, please report it. See docs/design/snapshot.md.
+
+    The cause:
+
+    #{detail}\
+    """
+  end
+
   def message({:image, image, reason, otp}) do
     "The image #{inspect(image)} did not load, with the reason #{inspect(reason)}." <>
       otp_hint(otp)
@@ -132,15 +150,16 @@ defmodule Rete.Image do
   @doc """
   The image that a ruleset module offers, as `{:ok, image}`.
 
-  Returns `{:error, reason}` when the image did not compile, and `:none` when the module
-  has no production or is not a ruleset module.
+  Returns `{:error, {:no_image, module, detail}}` when the image did not compile, and
+  `:none` when the module has no production or is not a ruleset module. `message/1` gives
+  the text of the error.
   """
-  @spec fetch(module()) :: {:ok, t()} | {:error, String.t()} | :none
+  @spec fetch(module()) :: {:ok, t()} | {:error, {:no_image, module(), String.t()}} | :none
   def fetch(module) do
     if Code.ensure_loaded?(module) and function_exported?(module, :__rete_image__, 0) do
       case module.__rete_image__() do
         {:ok, image} -> {:ok, image}
-        {:unavailable, reason} -> {:error, reason}
+        {:no_image, detail} -> {:error, {:no_image, module, detail}}
         nil -> :none
       end
     else

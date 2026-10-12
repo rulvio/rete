@@ -229,7 +229,7 @@ defmodule Rete.SnapshotTest do
 
       purge(module)
       late_hook_ruleset(Rete.SnapshotTest.RedumpLate, Rete.SnapshotTest.RedumpLateLib)
-      assert {:unavailable, _reason} = module.__rete_image__()
+      assert {:no_image, _detail} = module.__rete_image__()
 
       {:ok, loaded} = Session.load(snapshot, @key)
       redump = Session.dump!(loaded, @key)
@@ -305,6 +305,31 @@ defmodule Rete.SnapshotTest do
 
       redeploy(module, :v2)
       assert Session.latest?(session)
+    end
+
+    # The dump points the rules at the images, and leaves the taxonomy alone. The record
+    # must follow the rules, or the loaded session reads as the latest forever.
+    test "a session built without images runs and records its images after a load" do
+      module = compile(Rete.SnapshotTest.NoImagesDumped, :v1)
+
+      session =
+        [module]
+        |> Session.new(images: false)
+        |> Session.insert([{:customer, 1}, {:order, 1, 500}])
+        |> Session.fire_rules()
+
+      snapshot = Session.dump!(session, @key)
+      redeploy(module, :v2)
+      {:ok, loaded} = Session.load(snapshot, @key)
+
+      refute Session.latest?(loaded)
+      assert [:v1] == Session.query(loaded, {module, :flagged}, cid: 1)
+
+      assert session.state.network.taxonomy.fact_type_fn ==
+               loaded.state.network.taxonomy.fact_type_fn
+
+      retracted = loaded |> Session.retract({:order, 1, 500}) |> Session.fire_rules()
+      assert [] == Session.query(retracted, {module, :flagged}, cid: 1)
     end
 
     # The record travels in the snapshot, so a load on a node of the same version is the
@@ -421,12 +446,13 @@ defmodule Rete.SnapshotTest do
   describe "rulesets the image must not break" do
     test "a helper from a later @before_compile leaves the module without an image" do
       module = late_hook_ruleset(Rete.SnapshotTest.LateHook, Rete.SnapshotTest.LateLib)
-      assert {:unavailable, reason} = module.__rete_image__()
-      assert reason =~ "@before_compile"
-      assert reason =~ "undefined function big?/1"
+      assert {:no_image, detail} = module.__rete_image__()
+      assert detail =~ "undefined function big?/1"
 
       error = assert_raise ArgumentError, fn -> Session.new([module]) end
+      assert error.message =~ "@before_compile"
       assert error.message =~ "Put `use Rete.Ruleset` after"
+      assert error.message =~ "undefined function big?/1"
 
       session =
         [module]
@@ -436,8 +462,8 @@ defmodule Rete.SnapshotTest do
 
       assert {:flagged, 1, :v2} in Session.facts(session)
 
-      assert {:error, {:no_image, ^module, reason}} = Session.dump(session, @key)
-      assert reason =~ "Put `use Rete.Ruleset` after"
+      assert {:error, {:no_image, ^module, detail}} = Session.dump(session, @key)
+      assert detail =~ "undefined function big?/1"
 
       error = assert_raise ArgumentError, fn -> Session.dump!(session, @key) end
       assert error.message =~ "Put `use Rete.Ruleset` after"

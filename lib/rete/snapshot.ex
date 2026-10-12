@@ -90,7 +90,7 @@ defmodule Rete.Snapshot do
       ":fact_type_fn, and in your facts."
   end
 
-  def message({:no_image, _module, reason}), do: reason
+  def message({:no_image, _module, _detail} = reason), do: Image.message(reason)
 
   def message({:no_beam, image}) do
     "The session runs the rules of #{inspect(image)}, and this node has no beam of it. So " <>
@@ -156,9 +156,17 @@ defmodule Rete.Snapshot do
   # walk would only copy the network.
   defp target_rules(network, images) when map_size(images) == 0, do: network
 
+  # The rules now run the images, so `built_images` records them. Without the record, a
+  # session built under `images: false` would be `latest?/1` after any load.
   defp target_rules(%Network{taxonomy: taxonomy} = network, images) do
     %Network{} = targeted = Image.target(rules(network), images)
-    %Network{targeted | taxonomy: taxonomy}
+    targeted_images = Map.new(images, fn {module, {name, _beam}} -> {module, name} end)
+
+    %Network{
+      targeted
+      | taxonomy: taxonomy,
+        built_images: Map.merge(network.built_images, targeted_images)
+    }
   end
 
   # Only a module that the network still captures counts. A loaded session captures images,
@@ -169,7 +177,7 @@ defmodule Rete.Snapshot do
     |> Enum.reduce_while({:ok, %{}}, fn
       {module, {:ok, image}}, {:ok, acc} -> {:cont, {:ok, Map.put(acc, module, image)}}
       {_module, :none}, acc -> {:cont, acc}
-      {module, {:error, reason}}, _acc -> {:halt, {:error, {:no_image, module, reason}}}
+      {_module, {:error, reason}}, _acc -> {:halt, {:error, reason}}
     end)
   end
 

@@ -49,7 +49,8 @@ one at the image, and then follows it:
 | `&__MODULE__.big?/1` or `&MyRules.big?/1` | `&__MODULE__.big?/1`, where `__MODULE__` is now the image |
 | `super(x)` in an overriding helper | a call to the hidden function that holds the overridden clauses |
 
-Without this, the first two would run the `MyRules` of the node that loads the session. The
+Without this, the first two would run the `MyRules` that the node runs now. That is v2
+after a hot upgrade, or the version of the node that loads the session. The
 check for missing functions would not catch it, because that function exists. The third
 would not compile, because the image declares nothing overridable.
 
@@ -69,7 +70,7 @@ The ruleset module gets `__rete_image__/0`. It returns one of three values:
 
 * `{:ok, {image, beam}}` — the image module and its `.beam` binary.
 * `nil` — the module declares no production.
-* `{:unavailable, reason}` — the image did not compile.
+* `{:no_image, detail}` — the image did not compile. `detail` holds only the cause.
 
 `Rete.Image.fetch/1` reads it for the build, for `Rete.Session.latest?/1` and for a dump.
 
@@ -107,9 +108,11 @@ replace a loaded module.
 ### When a module has no image
 
 The ruleset module still compiles. An image must never stop the ruleset module from
-compiling. `__rete_image__/0` returns `{:unavailable, reason}`. A build with images, the
-default, raises `ArgumentError` with that reason. `images: false` builds the module for
-tests, and `dump/2` then returns `{:error, {:no_image, module, reason}}`.
+compiling. `__rete_image__/0` returns `{:no_image, detail}`. A build with images, the
+default, raises `ArgumentError`. `images: false` builds the module for tests, and `dump/2`
+then returns `{:error, {:no_image, module, detail}}`. `Rete.Image.message/1` writes the
+text of both at runtime. So a change to that text does not need the rulesets to compile
+again.
 
 The usual cause is a helper that a `@before_compile` hook defines after the hook of
 `use Rete.Ruleset`. Hooks run in the order they are registered, and a hook cannot add a
@@ -163,8 +166,9 @@ code.
 `images: false` keeps the captures of `MyRules`. A coverage tool counts the calls of a
 module, and the image is another module. So the rules show no coverage when they run in
 the image. `config :rete, images: false` sets the default for a test env. A network built
-this way records no images, so `latest?/1` always returns `true`. It calls the code of the
-node, and it is not safe across a hot upgrade.
+this way records no images, so `latest?/1` returns `true`. It calls the code of the node,
+and it is not safe across a hot upgrade. A dump points its rules at the images and records
+them. So `latest?/1` checks a loaded copy of it as it checks any other loaded session.
 
 ## 3. Dump
 
@@ -283,7 +287,8 @@ module declares the query with the same head. On a node with no `MyRules`, use
   `%MyRules{s | k: v}` into a map update. Since Elixir 1.20 that is what a struct update
   compiles to. An older Elixir also checks that `s` is a `MyRules`, and raises
   `BadStructError` if it is not. The copy does not check. So on Elixir 1.18 and 1.19, a
-  loaded session accepts a value that the live session refuses.
+  session that runs images accepts a value that an `images: false` session refuses. A test
+  env with `images: false` can thus refuse a value that production accepts.
 * **Trust.** A snapshot holds code, and loading it runs that code. Decoding it also creates
   atoms, and the atom table of a node has a fixed size. Every snapshot is signed, and a
   snapshot that fails the check is not decoded. The check protects you only while the key

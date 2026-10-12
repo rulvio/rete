@@ -29,9 +29,9 @@ All notable changes to `rete` are recorded here. The format follows
   `Rete.Session.latest?/1` returns `false` when a ruleset module now offers other code.
   `images: false` on `Rete.Session.new/2` or `Rete.Compiler.build/2` calls the ruleset
   modules instead, for test coverage. `config :rete, images: false` sets that default for a
-  test env. A network built that way records no images, so it is always the latest. With
-  images, a build raises `ArgumentError` if an image did not compile or does not load, and
-  a stack trace names the image module.
+  test env. A network built that way records no images, so it is the latest until a dump
+  records them. With images, a build raises `ArgumentError` if an image did not compile or
+  does not load, and a stack trace names the image module.
 * A rule body may return a `Task` instead of its facts. The result of the task is the
   facts. At `concurrency: 1` the engine awaits each task before the next body runs. Above
   `1`, it awaits up to that many tasks of one activation group together, and applies the

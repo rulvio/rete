@@ -305,8 +305,9 @@ defmodule Rete.Session do
   A loaded session is not the latest when this node runs another version of a module, or
   none. It still runs the rules it was dumped with.
 
-  Under `images: false`, the network records no images, so it is always the latest. It
-  calls the ruleset modules, and it is not safe across a hot upgrade. Use it in tests only.
+  Under `images: false`, the network records no images, so it is the latest. It calls the
+  ruleset modules, and it is not safe across a hot upgrade. Use it in tests only. A dump
+  points its rules at the images and records them, so a load of it is checked as above.
 
   Each call reads the image that each ruleset module offers now. It does not check a call
   to another module, a `:fact_type_fn` that no rule calls, or a capture inside a fact.
@@ -343,8 +344,8 @@ defmodule Rete.Session do
     * `{:not_portable, fun}` — the session holds an anonymous function, such as an
       anonymous `:fact_type_fn`. Only a remote capture, `&Mod.fun/arity`, works on another
       node.
-    * `{:no_image, module, reason}` — the image of a ruleset module did not compile.
-      `reason` says why.
+    * `{:no_image, module, detail}` — the image of a ruleset module did not compile.
+      `detail` is the cause that the compile gave.
     * `{:no_beam, image}` — the session runs an image that this node never compiled or
       loaded, such as a session that arrived by distribution.
 

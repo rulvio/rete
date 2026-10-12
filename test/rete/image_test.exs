@@ -61,8 +61,8 @@ defmodule Rete.ImageTest do
 
     try do
       [{module, _beam}] = Code.compile_string(source)
-      assert {:unavailable, reason} = module.__rete_image__()
-      assert reason =~ "did not compile in 0 ms"
+      assert {:no_image, detail} = module.__rete_image__()
+      assert detail =~ "did not compile in 0 ms"
 
       error = assert_raise ArgumentError, fn -> Rete.Session.new([module]) end
       assert error.message =~ "did not compile in 0 ms"
