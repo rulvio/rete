@@ -332,6 +332,55 @@ defmodule Rete.SnapshotTest do
       assert [] == Session.query(retracted, {module, :flagged}, cid: 1)
     end
 
+    # The live session keeps running v1 after the redeploy, so it is the oracle. Each step
+    # takes back support for conclusions made before the dump, over every rule shape.
+    test "a loaded session withdraws conclusions it made before the dump" do
+      main = compile(Rete.SnapshotTest.TmsMain, :v1)
+      shapes = Rete.SnapshotTest.TmsShapes
+      Code.compile_string(shapes_source(shapes, :v1))
+
+      live =
+        [main, shapes]
+        |> Session.new()
+        |> Session.insert([{:customer, 1}, {:order, 1, 600}, {:cap, 1, 300}, {:premium, 2}])
+        |> Session.fire_rules()
+
+      snapshot = Session.dump!(live, @key)
+      redeploy(main, :v2)
+      purge(shapes)
+      Code.compile_string(shapes_source(shapes, :v2))
+      {:ok, loaded} = Session.load(snapshot, @key)
+
+      facts = fn session -> session |> Session.facts() |> Enum.sort() end
+      assert {:spender, 1, :v1} in facts.(loaded)
+      assert {:quiet, 1, :v1} in facts.(loaded)
+
+      steps = [
+        &Session.insert(&1, [{:refund, 1}, {:refund, 1, 200}]),
+        &Session.retract(&1, {:order, 1, 600}),
+        &Session.retract(&1, {:premium, 2})
+      ]
+
+      {live, loaded} =
+        Enum.reduce(steps, {live, loaded}, fn step, {live, loaded} ->
+          live = live |> step.() |> Session.fire_rules()
+          loaded = loaded |> step.() |> Session.fire_rules()
+
+          assert facts.(live) == facts.(loaded)
+
+          for cid <- [1, 2] do
+            assert Session.query(live, {main, :flagged}, cid: cid) ==
+                     Session.query(loaded, {main, :flagged}, cid: cid)
+          end
+
+          {live, loaded}
+        end)
+
+      refute {:spender, 1, :v1} in facts.(loaded)
+      refute {:quiet, 1, :v1} in facts.(loaded)
+      refute Enum.any?(facts.(live) ++ facts.(loaded), &(:v2 in Tuple.to_list(&1)))
+    end
+
     # The record travels in the snapshot, so a load on a node of the same version is the
     # latest.
     test "a loaded session on a node of the same version is the latest" do

@@ -1016,15 +1016,12 @@ the next body runs. Above `1`, it awaits up to that many tasks of one activation
 together. A body that blocks without a task never overlaps another. `:timeout` limits how
 long the engine waits for one task.
 
-Start the task in the body itself, because only its owner can await it. Prefer
-`Task.Supervisor.async_nolink/2` over `Task.async/1`. A linked task that crashes stops the
-process that called `fire_rules/2`. An unlinked one raises an error that names the rule.
+Start the task in the body itself, because only its owner can await it. The task is an
+ordinary `Task`, and the usual process rules apply to it. When the engine sees it exit, it
+raises an error that names the rule. See `docs/design/engine.md` §11.
 
 Return one bare task. A task inside a list, or a task that returns a task, raises an
 error.
-
-The task is an ordinary process. It does not inherit `Logger.metadata`, and it copies what
-its function closes over. See `docs/design/engine.md` §11.
 
 ### The return value must follow from the bindings
 

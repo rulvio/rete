@@ -577,17 +577,13 @@ activation does not fire, and the session still drains to empty.
 
 ### What a task runs in
 
-A returned task is an ordinary `Task`, which the body starts. So the usual process rules
-apply to it, and the engine does not change them:
+A returned task is an ordinary `Task`, which the body starts. The engine changes nothing
+about it, so the usual process rules apply. The engine adds two things:
 
-* `Task.async/1` sets `$callers`. So `Ecto`'s SQL sandbox, and anything else that walks the
-  caller chain, keeps working.
-* `Logger.metadata` is **not** inherited. Read it in the body, and set it inside the task.
-* the task copies what its function closes over. Close over the values the task needs, and
-  not a whole collection binding.
-* a task from `Task.async/1` is linked to the caller. If it crashes, it stops the caller
-  before the engine can report anything. Start a task that can crash with
-  `Task.Supervisor.async_nolink/2`. Its crash then raises against the rule.
+* when it sees the task exit, it raises an error that names the rule and the bindings it
+  fired on.
+* it shuts the task down with `:brutal_kill` on a timeout, when its activation is
+  cancelled, and when an error leaves the group. The task gets no chance to clean up.
 
 ### A cycle is a group, not an activation
 

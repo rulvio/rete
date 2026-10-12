@@ -148,9 +148,9 @@ defmodule Rete.Session do
     * `:timeout` — milliseconds the engine waits for one returned task, or `:infinity`, the
       default. A task that takes longer is shut down, and the call raises.
 
-  Start a returned task in the body itself, because only its owner can await it. Use
-  `Task.Supervisor.async_nolink/2` when the task can crash. A crash is then raised against
-  the rule. A task from `Task.async/1` is linked, so its crash stops the calling process.
+  Start a returned task in the body itself, because only its owner can await it. It is an
+  ordinary `Task`. When the engine sees it exit, the call raises an error that names the
+  rule.
 
   **This is the only call that propagates.** `insert/2` and `retract/2` queue work. Firing
   drains that queue, matches everything waiting, runs the rules that match, and returns at

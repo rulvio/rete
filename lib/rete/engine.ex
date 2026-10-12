@@ -704,8 +704,7 @@ defmodule Rete.Engine do
             "Raise :timeout, or remove it to wait indefinitely."
   end
 
-  # Only a task that is not linked to the caller gets here. A linked task that crashes
-  # stops the caller before the engine can say anything.
+  # The caller outlived the exit of the task, so `Task.yield/2` reported it.
   defp unwrap!({:exited, reason}, node, token) do
     raise RuntimeError, """
     #{Network.ref_string({node.module, node.name})} returned a task that exited: \
