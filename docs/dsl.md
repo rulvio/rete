@@ -986,11 +986,12 @@ The engine truth-maintains the body's **return value**. It does not truth-mainta
 ways:
 
 * retracting and reinserting the facts behind a match runs the body again, for that match.
-* under `fire_rules(session, concurrency: n)`, the engine runs every body of one
-  activation group before it applies their conclusions. So a body may run for a match
-  that another activation *in the same group* then invalidates. That activation does not
-  fire, and the engine inserts nothing it computed — exactly as if the bodies had run one
-  at a time. But a request the body already sent still went out.
+* under `fire_rules(session, concurrency: n)`, a body can run while the tasks of earlier
+  bodies in its activation group are still in flight. So a body may run for a match that
+  an earlier activation then invalidates. That activation does not fire, and
+  the engine inserts nothing it computed — exactly as if the bodies had run one at a time.
+  But a request the body already sent still went out. With no task in flight, the engine
+  checks the match first, and skips a body whose match is gone.
 
 A body that only computes facts is safe to write however you like. One that writes to a
 database, or calls a service, should be idempotent, and it should expect at-least-once

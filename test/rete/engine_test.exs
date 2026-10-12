@@ -2506,15 +2506,28 @@ defmodule Rete.EngineTest do
       defrule act({:task, n}, {:not, [{:blocked, n}]}), do: Task.async(fn -> {:acted, n} end)
     end
 
+    # `lead` keeps a task in flight, so `act` runs its body before `veto` is applied.
     defmodule CancelHang do
       use Rete.Ruleset
 
+      defrule lead({:trigger, _test, n}), do: Task.async(fn -> {:led, n} end)
       defrule veto({:trigger, _test, n}), do: {:blocked, n}
 
       defrule act({:trigger, test, n}, {:not, [{:blocked, n}]}) do
         task = Task.async(fn -> Process.sleep(:infinity) end)
         send(test, {:started, n, task.pid})
         task
+      end
+    end
+
+    defmodule Vetoed do
+      use Rete.Ruleset
+
+      defrule veto({:trigger, _test, n}), do: {:blocked, n}
+
+      defrule act({:trigger, test, n}, {:not, [{:blocked, n}]}) do
+        send(test, {:ran, n})
+        {:acted, n}
       end
     end
 
@@ -2791,6 +2804,21 @@ defmodule Rete.EngineTest do
 
         assert [] == derived(session, :acted)
         assert [{:blocked, 1}] == derived(session, :blocked)
+      end
+    end
+
+    # No task is in flight when `act` comes up, so `veto` is applied already, and the
+    # engine sees the match is gone before the body runs.
+    test "a body cancelled within its group does not run" do
+      for concurrency <- [1, 8] do
+        session =
+          [Vetoed]
+          |> Session.new()
+          |> Session.insert({:trigger, self(), 1})
+          |> Session.fire_rules(concurrency: concurrency)
+
+        assert [] == derived(session, :acted)
+        refute_received {:ran, 1}
       end
     end
 

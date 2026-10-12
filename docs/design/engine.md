@@ -495,8 +495,9 @@ tasks may run at once.
 At `1`, the engine pops one activation and runs its body. It awaits a returned task before
 the next body runs. Above `1`, it takes a whole **activation group**: every agenda bucket
 sharing the leading `{salience, internal_salience}`. It runs those bodies in group order,
-and awaits up to `:concurrency` of their tasks together. Then it applies their conclusions
-in group order. Clara's `fire-rules-async` with `:parallel-batch-size` works the same way.
+and awaits up to `:concurrency` of their tasks together. It applies their conclusions in
+group order, and a conclusion can be applied before a later body runs. The window below
+gives the order. Clara's `fire-rules-async` with `:parallel-batch-size` works the same way.
 
 ### Only a returned task moves
 
@@ -525,9 +526,17 @@ of a window. An outcome that is not a task leaves the window as soon as it reach
 head. A task at the head stays until `:concurrency` tasks are in flight. Then the engine
 awaits the head, applies it, and goes on. At the end of the group, it empties the window.
 
-So the engine applies each result in group order, as soon as it lands. One slow task holds
-back only the results behind it. The window holds at most `:concurrency` tasks, so it also
-bounds how many processes the bodies of one group start at once.
+So the engine applies each result in group order. A result that is not a task is applied
+before the next body runs. A task is applied once `:concurrency` tasks are in flight, or at
+the end of the group. One slow task holds back only the results behind it. The window holds
+at most `:concurrency` tasks, so it also bounds how many processes the bodies of one group
+start at once.
+
+With no task in flight, the window is empty, and every activation ahead is applied. So
+the engine checks with `Rete.Agenda.pending/2` that an activation is still pending before
+it runs the body. A cancelled activation skips its body, as it would at `concurrency: 1`.
+Behind a task, the engine does not check. A conclusion still in the window can retract the
+match, or add it back, so the answer is not final yet.
 
 ### Why the default is 1
 
@@ -553,12 +562,12 @@ sequential   a → b → c    b, activated by a, overtakes the already pending c
 concurrent   a → c → b    the group {a, c} was frozen before a ran
 ```
 
-It also **does not guarantee a body runs only for matches that survive**. A body may run
-for an activation that another activation, in the same group, then invalidates. The engine
-discards what it computed: that activation does not fire, and `Rete.Agenda.remove/2`
-returning `:missing` is what detects the case. But a side effect the body or its task
-performed is not undone. Clara documents the same behavior for `fire-rules-async`.
-`docs/dsl.md` states the at-least-once contract this implies.
+It also **does not guarantee a body runs only for matches that survive**. While a task is
+in flight, a body may run for an activation that an earlier result in the window then
+invalidates. The engine discards what it computed: that activation does not fire, and
+`Rete.Agenda.remove/2` returning `:missing` is what detects the case. But a side effect the
+body or its task performed is not undone. Clara documents the same behavior for
+`fire-rules-async`. `docs/dsl.md` states the at-least-once contract this implies.
 
 Discarding rather than applying is the whole reason the group is peeked, instead of
 popped. Taking the group off the agenda up front would leave a later retraction nothing to

@@ -127,6 +127,36 @@ defmodule Rete.Agenda do
   end
 
   @doc """
+  Whether an activation is still pending, by value, as `remove/2` would find it.
+
+  Returns `{agenda, :pending}` or `{agenda, :missing}`, and removes nothing. The agenda
+  comes back because the check can build the index of a bucket.
+
+      iex> alias Rete.{Activation, Agenda}
+      iex> pending = %Activation{node_id: :n1}
+      iex> {_agenda, verdict} = Agenda.new() |> Agenda.add(pending) |> Agenda.pending(pending)
+      iex> verdict
+      :pending
+      iex> {_agenda, verdict} = Agenda.pending(Agenda.new(), pending)
+      iex> verdict
+      :missing
+  """
+  @spec pending(t(), Activation.t()) :: {t(), :pending | :missing}
+  def pending(%__MODULE__{} = agenda, %Activation{} = activation) do
+    key = Activation.key(activation)
+
+    case :gb_trees.lookup(key, agenda.buckets) do
+      :none ->
+        {agenda, :missing}
+
+      {:value, bucket} ->
+        {found?, bucket} = Bucket.member(bucket, activation)
+        agenda = %__MODULE__{agenda | buckets: :gb_trees.update(key, bucket, agenda.buckets)}
+        {agenda, if(found?, do: :pending, else: :missing)}
+    end
+  end
+
+  @doc """
   Takes the most salient activation, or `:empty`.
 
       iex> Rete.Agenda.pop(Rete.Agenda.new())

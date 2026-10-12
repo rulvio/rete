@@ -559,18 +559,36 @@ defmodule Rete.Engine do
   # The window holds outcomes not yet applied, in group order. A result that is not a task
   # leaves it as soon as it reaches the head. A task at the head waits until `:concurrency`
   # tasks are in flight. So one slow task holds back only what is behind it.
+  #
+  # With no task in flight, everything ahead of an activation is applied. Whether it is
+  # still pending is then final, so a cancelled one skips its body, as it would at
+  # `concurrency: 1`. Behind a task, a conclusion not yet applied can still add it back.
   defp fire_cycle(%State{} = state, activations, cfg, :peeked) do
     {state, window, in_flight} =
-      Enum.reduce(activations, {state, :queue.new(), 0}, fn activation, {state, window, n} ->
-        node = Network.node(state.network, activation.node_id)
-        outcome = compute(node, activation)
-        n = if match?({:task, _}, outcome), do: n + 1, else: n
+      Enum.reduce(activations, {state, :queue.new(), 0}, fn
+        activation, {%State{} = state, window, 0} ->
+          case Agenda.pending(state.agenda, activation) do
+            {agenda, :pending} ->
+              run_body(%State{state | agenda: agenda}, activation, window, 0, cfg)
 
-        shrink(state, :queue.in({activation, node, outcome}, window), n, cfg, cfg.concurrency)
+            {agenda, :missing} ->
+              {%State{state | agenda: agenda}, window, 0}
+          end
+
+        activation, {state, window, n} ->
+          run_body(state, activation, window, n, cfg)
       end)
 
     {state, _window, 0} = shrink(state, window, in_flight, cfg, 0)
     state
+  end
+
+  defp run_body(state, activation, window, in_flight, cfg) do
+    node = Network.node(state.network, activation.node_id)
+    outcome = compute(node, activation)
+    in_flight = if match?({:task, _}, outcome), do: in_flight + 1, else: in_flight
+
+    shrink(state, :queue.in({activation, node, outcome}, window), in_flight, cfg, cfg.concurrency)
   end
 
   # A limit of 0 empties the window.
@@ -602,9 +620,9 @@ defmodule Rete.Engine do
 
   # Each activation leaves the agenda as its own conclusions are applied. `:missing` means
   # a conclusion applied earlier in this cycle retracted the match behind it. So it must
-  # not fire — the same outcome firing one at a time would give. Its body already ran, and
-  # the engine discards the result. Its task is shut down rather than awaited, so a task
-  # that fails cannot raise for a match that no longer holds.
+  # not fire — the same outcome firing one at a time would give. Its body ran while a task
+  # ahead of it was in flight, and the engine discards the result. Its task is shut down
+  # rather than awaited, so a task that fails cannot raise for a match that no longer holds.
   defp apply_conclusions({activation, node, outcome}, %State{} = state, timeout) do
     case Agenda.remove(state.agenda, activation) do
       {agenda, :removed} ->
