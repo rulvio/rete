@@ -249,7 +249,7 @@ defmodule Rete.IR do
     @moduledoc """
     A rule or a query.
 
-    `t:t/0` types every field. Three are not obvious:
+    `t:t/0` types every field. Some are not obvious:
 
       * `:name` names the production, but the generated RHS function is `rhs_name/1` of
         it instead — a query owns its own name in its module.

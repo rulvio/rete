@@ -12,8 +12,9 @@ defmodule Rete.Image do
 
   The copy follows each call from a rule to a helper of the module, and runs that helper in
   the image. `Rete.Image.Builder` makes the copy at compile time. This module holds the
-  runtime half. `target/2` points the productions at the image when a network is built,
-  and the network at the image when a session is dumped. See `docs/design/snapshot.md` §2.
+  runtime half. `target/2` points the productions at the image when a network is built
+  with target images, and the network at the image when a session is dumped. See
+  `docs/design/snapshot.md` §2.
 
   An image stays loaded, with its beam in `:persistent_term`, for the life of the node.
   """

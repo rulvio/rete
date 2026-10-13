@@ -79,7 +79,7 @@ code, never by equality.
 | `Accumulate` | a collection binding | gather matching elements into a list under `:coll_binding` |
 | `AccumulateJoin` | collection with a cross-condition guard | as above; candidates cannot be reduced until a token exists |
 | `Test` | a rule level `when` | propagate the token when `:fun.(bindings)` is truthy |
-| `Production` | a rule terminal | call `:rhs.(hash, bindings)`, logically insert the result |
+| `Production` | a rule terminal | call `:rhs.(args, bindings)`, logically insert the result |
 | `Query` | a query terminal | hold the tokens that reached it, keyed for lookup |
 
 ### `:propagates_empty?` on the accumulate nodes

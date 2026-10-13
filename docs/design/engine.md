@@ -611,7 +611,7 @@ the rule and its bindings:
 
 * the task takes longer than `:timeout`. The engine shuts it down and raises a
   `RuntimeError`.
-* an unlinked task exits. The engine raises a `RuntimeError` with the exit reason.
+* the task exits. The engine raises a `RuntimeError` with the exit reason.
 * another process started the task. The engine cannot await it, and raises an
   `ArgumentError`.
 * a `%Task{}` arrives inside a list of facts, or as the result of a task. The engine awaits
