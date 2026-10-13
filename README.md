@@ -424,9 +424,9 @@ docs under `docs/design/` record why.
   `Rete.Session.retract/2` exists. Truth maintenance cascades from it.
 * **Firing is a blocking call.** `fire_rules/2` runs to quiescence in the calling process,
   and it returns the settled session. There is no async variant that hands back a `Task`.
-  Every rule body runs in the calling process too. A body *can* return a `Task`, and pass
-  `:concurrency` (and optionally `:timeout`) to await the tasks of one salience group
-  together. A body that blocks without a task never overlaps another — see
+  Every rule body runs in the calling process too. A body *can* return a `Task`. Pass
+  `:concurrency`, and optionally `:timeout`, to `fire_rules/2` to await the tasks of one
+  activation group together. A body that blocks without a task never overlaps another — see
   [docs/design/engine.md](docs/design/engine.md) §11.
 * **Snapshots carry rules, not data migrations.** `Rete.Session.dump/2` and `load/2` move
   a session to a node that runs other code, and the session keeps its own rules. There is no

@@ -10,10 +10,11 @@ defmodule Rete.Snapshot do
   alias Rete.Image
   alias Rete.Network
 
-  # Increase this when an engine struct changes. Increase it also when the contract of
-  # `Negation.marker/2`, `marker_alpha/1` or `Taxonomy.default_fact_type/1` changes. The
-  # struct-shape test in `snapshot_test.exs` fails until it does. The envelope and the MAC
-  # input never change, so an older release can still report `{:format, n}`.
+  # Increase this when an engine struct changes. The struct-shape test in `snapshot_test.exs`
+  # fails until it does. Increase it also when the contract of `Negation.marker/2`,
+  # `marker_alpha/1` or `Taxonomy.default_fact_type/1` changes. No test catches that. The
+  # envelope and the MAC input never change, so an older release can still report
+  # `{:format, n}`.
   @format 1
 
   # The first two bytes of a compressed term in the external term format.
@@ -144,8 +145,8 @@ defmodule Rete.Snapshot do
   # call to another module does.
   defp rules(%Network{} = network), do: %Network{network | taxonomy: nil}
 
-  # A network built with images calls them already, so there is nothing to target, and the
-  # walk would only copy the network.
+  # A network built with target images, or a loaded one, calls the images already. So there
+  # is nothing to target, and the walk would only copy the network.
   defp target_rules(network, images) when map_size(images) == 0, do: network
 
   # The rules now run the images, so `built_images` records them. Without the record, a

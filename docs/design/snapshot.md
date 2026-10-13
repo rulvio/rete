@@ -62,7 +62,8 @@ A later hook can define `fun/1` beside a `fun/0` that is defined. The copy keeps
 `&MyRules.fun/1` as it is, and does not take it for a call of `fun/0`.
 
 The image holds the `@rete_image` attribute in its beam. It marks the module as an image.
-So rete does not take a user module with a name of the same form for an image. It also
+So rete does not take a loaded user module with a name of the same form for an image. A
+module that is not loaded, or a beam in a snapshot, is taken by its name. It also
 records the OTP release that compiled the image. `load/2` reads that release from the beam
 without a load, and names it in the error when the release differs from the node.
 
@@ -188,7 +189,9 @@ By default, a live session keeps its captures of `MyRules` (§2). With
 2. With target images, the network captures images already, and this step changes
    nothing. Otherwise, `Rete.Image.target/2` replaces each capture of a ruleset module with
    the same capture of the image the module offers now. After a hot upgrade, that image
-   does not fit the old network. So dump such a session before an upgrade. This covers the
+   does not fit the old network. So dump such a session before an upgrade. The network
+   records those images in `:built_images`, so `latest?/1` checks the loaded session. This
+   covers the
    network only. A capture inside a fact stays as it is, because a fact is matched by
    equality. Changing it would make a retract of the same fact miss after the load.
 3. `Rete.Image.captures/1` finds any function that is not a remote capture, and `dump/2`

@@ -2749,7 +2749,7 @@ defmodule Rete.EngineTest do
       end
     end
 
-    test "a body that outruns :timeout names its rule" do
+    test "a task that outruns :timeout names its rule" do
       error =
         assert_raise RuntimeError, fn ->
           [Slow]

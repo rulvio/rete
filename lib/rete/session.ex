@@ -301,8 +301,9 @@ defmodule Rete.Session do
   @doc """
   Whether the session runs the rules that its ruleset modules hold now.
 
-  It is `false` after a hot upgrade changes the code that the rules reach. A session built
-  with `target_images: true` keeps running its own rules, consistently. Build a new session
+  For a session built with `target_images: true`, or a loaded session, it is `false` after a
+  hot upgrade changes the code that the rules reach. A session built with
+  `target_images: true` keeps running its own rules, consistently. Build a new session
   with `new/2` to run the new rules. The facts do not move to it, so insert them again.
 
   **With hot code upgrades, build with `target_images: true`, and call this after each
@@ -339,8 +340,9 @@ defmodule Rete.Session do
 
   **A snapshot is signed, not encrypted.** Anyone who has the binary can read every fact in
   it. That can include a fact that was retracted, because the session keeps it internally
-  for a time. A loaded session is in exactly the state that was dumped. So work that
-  `fire_rules/2` has not done yet travels too, such as a pending retract.
+  for a time. A loaded session is in exactly the state that was dumped, apart from the
+  network. A dump points the rules of a session built without target images at the images.
+  Work that `fire_rules/2` has not done yet travels too, such as a pending retract.
 
   Listeners do not travel. Attach them again with `with_listener/3` after `load/2`.
 

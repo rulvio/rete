@@ -1050,8 +1050,8 @@ Bench.compare(
 # expansion that defines the rules.
 width_modules = for r <- [128, 256, 512, 1024], into: %{}, do: {r, Bench.Width.module(r)}
 
-# Without an image, `target_images: true` does nothing, and the two scenarios below would
-# match.
+# Without an image, a build with `target_images: true` raises. So each width module must
+# have one before the scenarios run.
 for {_r, module} <- width_modules, do: {:ok, _image} = module.__rete_image__()
 
 Bench.scenario(
@@ -1557,7 +1557,7 @@ Bench.scenario(
   snapshot_sizes,
   fn n -> n |> Bench.Snapshot.get() |> elem(2) |> Rete.Session.dump!("bench") end,
   isolate: true,
-  note: "the dump compacts the tombstones that the retractions left"
+  note: "the dump carries the tombstones that the retractions left"
 )
 
 # Last, because it sets the exit status of the run.

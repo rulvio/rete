@@ -409,7 +409,7 @@ defmodule Rete.PropertyTest do
     # activation, so a rule activated by the conclusion of another can overtake a rule that
     # was already pending. Batching freezes the group, so the new activation waits for the
     # next one. See the pinned example in `Rete.EngineTest`.
-    property "firing rule bodies concurrently reaches the same session" do
+    property "firing whole activation groups reaches the same session" do
       check all(facts <- multiset(), concurrency <- integer(2..8), max_runs: 40) do
         assert canon(build(facts)) == canon(build(facts, concurrency))
       end

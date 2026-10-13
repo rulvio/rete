@@ -6,7 +6,8 @@ end
 
 defmodule Rete.ImageTest do
   @moduledoc """
-  The failures of an image compile, and of an image load, that no ruleset causes.
+  Image compile and load failures that no ruleset causes, and the application environment
+  that controls images.
 
   Not async, because two tests change the application environment. Every ruleset that
   compiles meanwhile reads `:compile_timeout`, and every build reads `:target_images`.

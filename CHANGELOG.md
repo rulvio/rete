@@ -17,8 +17,9 @@ All notable changes to `rete` are recorded here. The format follows
   signature before it decodes the body. Listeners do not travel, so attach them again after
   `load/2`. A snapshot is signed, not encrypted, so anyone who has it can read its facts.
   That can include a fact that was retracted. A loaded session is in exactly the state that
-  was dumped, pending work included.
-  A session dumps the rules it was built with, even after its modules change. See
+  was dumped, pending work included, apart from the network. A dump points the rules of a
+  session built without target images at the images. A session built with
+  `target_images: true`, or a loaded session, dumps the rules it was built with. See
   `docs/design/snapshot.md`.
 * `use Rete.Ruleset` compiles an image module beside each ruleset module. For `MyRules`,
   it is `MyRules.Image.M<hash>`, and the hash is taken over the code of the rules. An
@@ -33,7 +34,8 @@ All notable changes to `rete` are recorded here. The format follows
   the session calls the ruleset modules. `config :rete, target_images: true` changes the
   default. **If you deploy with hot code upgrades, use `target_images: true`, and call
   `latest?/1` after each upgrade.** A session built without target images records no
-  images, so it is the latest until a dump records them. With target images, a build raises
+  images, so it is the latest. A session that `load/2` returns records the images that the
+  dump carried. With target images, a build raises
   `ArgumentError` if an image did not compile or does not load, and a stack trace names the
   image module.
 * A rule body may return a `Task` instead of its facts. The result of the task is the

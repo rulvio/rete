@@ -526,8 +526,8 @@ of a window. An outcome that is not a task leaves the window as soon as it reach
 head. A task at the head stays until `:concurrency` tasks are in flight. Then the engine
 awaits the head, applies it, and goes on. At the end of the group, it empties the window.
 
-So the engine applies each result in group order. A result that is not a task is applied
-before the next body runs. A task is applied once `:concurrency` tasks are in flight, or at
+So the engine applies each result in group order. A result that is not a task, with no task
+ahead of it, is applied before the next body runs. A task is applied once `:concurrency` tasks are in flight, or at
 the end of the group. One slow task holds back only the results behind it. The window holds
 at most `:concurrency` tasks, so it also bounds how many processes the bodies of one group
 start at once.
@@ -886,7 +886,8 @@ re-concludes. Making `Rete.Agenda.remove/2` O(1) cost about another 13% of one t
 cancels. Both were measured by disabling the maintenance and re-running, not inferred.
 
 Both are built on first use now. A session that only inserts never takes from a beta memory
-and never cancels an activation, so no `Rete.Bucket` builds its `:counts`. A session nobody
+and never cancels an activation, so no `Rete.Bucket` builds its `:counts`. Above
+`concurrency: 1`, the pending check, `Rete.Bucket.member/2`, builds it too. A session nobody
 explains never reaches `Rete.Inspect`, so `inserters` stays `nil`. Neither is
 asymptotically worse for a session that does retract.
 

@@ -21,7 +21,8 @@ defmodule Rete.Bucket do
 
   `:counts` is what makes `take/2` and `member/2` O(1), and only they read it. So it is not
   maintained until the first of them builds it from the queue in one pass. A session that
-  only inserts never takes from a bucket, and pays nothing for an index it never uses.
+  only inserts never takes from a bucket, and pays nothing for an index it never uses. Above
+  `concurrency: 1`, the pending check of the engine calls `member/2`, so it builds the index.
 
   That build is safe because `take/2` is also the only writer of `:dead`. While `:indexed?`
   is false there are no tombstones, so the queue holds exactly the live items.

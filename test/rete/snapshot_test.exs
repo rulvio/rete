@@ -833,7 +833,7 @@ defmodule Rete.SnapshotTest do
 
     # A fact is matched by equality, so the dump leaves a capture inside one alone. After the
     # load, the caller can still retract the fact that it inserted, and a fact inserted again
-    # stays one fact through a second dump.
+    # stays equal to the first copy through a second dump.
     test "a fact that holds a capture keeps its identity across a load" do
       source = """
       defmodule Rete.SnapshotTest.CaptureFact2 do

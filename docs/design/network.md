@@ -33,10 +33,10 @@ node depends on what every other rule already put in the graph.
   alphas:         %{code => %Node.Alpha{}},   # one per distinct expression code
   taxonomy:       %Rete.Taxonomy{},           # indexed: fact type => alpha codes
   graph:          %Rete.Compiler.BetaGraph{}, # beta nodes and their edges
-  queries:        %{name => beta_id},
+  queries:        %{{module, name} => beta_id},
   productions:    [%Rete.IR.Production{}],    # including generated helpers
   reserved_types: MapSet.t(atom),             # the types of compound negation markers
-  built_images:   %{module => image}          # the image each module ran at build
+  built_images:   %{module => image}          # none until target images or a dump
 }
 ```
 
