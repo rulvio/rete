@@ -38,6 +38,8 @@ defmodule Rete.ImageTest do
     end
   end
 
+  # The code server logs the corrupt beam. The test is about the raise.
+  @tag :capture_log
   test "a build with target images raises when an image does not load" do
     productions =
       [Rete.Doc.Orders]
