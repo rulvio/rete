@@ -176,11 +176,11 @@ defmodule Rete.FactShapesTest do
       session = run(Maps, [order])
 
       assert %{
-               activations: [%{matches: [%{fact: ^order, origin: :asserted}], inserted: inserted}]
+               activations: [%{matches: [%{fact: ^order, origin: :assert}], asserts: asserts}]
              } =
                Inspect.explain(session, {Maps, :large})
 
-      assert [%{__type__: :large, id: 1}] == inserted
+      assert [%{__type__: :large, id: 1}] == asserts
     end
 
     # The tuple original is test/rete/behavior_test.exs:180. Facts are a multiset whatever
@@ -332,11 +332,11 @@ defmodule Rete.FactShapesTest do
       session = run(Structs, [order])
 
       assert %{
-               activations: [%{matches: [%{fact: ^order, origin: :asserted}], inserted: inserted}]
+               activations: [%{matches: [%{fact: ^order, origin: :assert}], asserts: asserts}]
              } =
                Inspect.explain(session, {Structs, :rebate})
 
-      assert [%Refund{id: 1, amount: 25}] == inserted
+      assert [%Refund{id: 1, amount: 25}] == asserts
     end
 
     test "an equal struct inserted twice needs two retractions" do

@@ -28,7 +28,7 @@ becomes dormant again. You do no bookkeeping yourself.
 ```elixir
 def deps do
   [
-    {:rete, "~> 1.0"}
+    {:rete, "~> 1.2"}
   ]
 end
 ```
@@ -290,28 +290,38 @@ Rete.Inspect.explain(session, {Retail, :dormant})
 #       %{
 #         bindings: %{cid: 1, name: "Ada"},
 #         matches: [
-#           %{fact: {:customer, 1, "Ada"}, origin: :asserted, from: [], members: nil}
+#           %{
+#             fact: {:customer, 1, "Ada"},
+#             origin: :assert,
+#             sources: [{Rete.Session, :insert}],
+#             members: nil
+#           }
 #         ],
-#         inserted: [{:dormant, "Ada"}]
+#         asserts: [{:dormant, "Ada"}]
 #       },
 #       %{
 #         bindings: %{cid: 2, name: "Bo"},
 #         matches: [
-#           %{fact: {:customer, 2, "Bo"}, origin: :asserted, from: [], members: nil}
+#           %{
+#             fact: {:customer, 2, "Bo"},
+#             origin: :assert,
+#             sources: [{Rete.Session, :insert}],
+#             members: nil
+#           }
 #         ],
-#         inserted: [{:dormant, "Bo"}]
+#         asserts: [{:dormant, "Bo"}]
 #       }
 #     ]
 #   }
 ```
 
 One activation is one match the rule fired on, so two dormant customers give two. Each
-entry of `:matches` says where its fact came from. `:from` names the rules that concluded
-it, so you read a chain by following that pair to its own entry. It is a list, because a
-fact concluded twice has two independent supports, and both must go before the fact itself
-goes.
+entry of `:matches` says where its fact came from. `:sources` names the rules that
+concluded it, so you read a chain by following that pair to its own entry.
+`{Rete.Session, :insert}` means you inserted the fact. It is a list, because a fact can
+have more than one independent support. All of them must go before the fact itself goes.
 
-A collection reports the gathered list under `origin: :gathered`, with each member described
+A collection reports the gathered list under `origin: :gather`, with each member described
 in `:members`. That is what the rule received.
 
 `Rete.Inspect` has one other function:

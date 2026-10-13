@@ -1261,7 +1261,7 @@ defmodule Rete.EngineTest do
       assert [{:started, :once}] == derived(emptied, :started)
 
       # Its one activation rests on the root token, which contributes no matched fact.
-      assert %{activations: [%{bindings: %{}, matches: [], inserted: [{:started, :once}]}]} =
+      assert %{activations: [%{bindings: %{}, matches: [], asserts: [{:started, :once}]}]} =
                Rete.Inspect.explain(emptied, {NoLhs, :startup})
     end
 

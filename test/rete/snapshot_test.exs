@@ -414,10 +414,10 @@ defmodule Rete.SnapshotTest do
       assert %{module: ^module, rule: :flag, activations: [activation]} =
                Rete.Inspect.explain(loaded, {module, :flag})
 
-      assert [{:flagged, 1, :v1}] == activation.inserted
+      assert [{:flagged, 1, :v1}] == activation.asserts
 
       %{activations: [%{matches: [match]}]} = Rete.Inspect.explain(loaded, {module, :flagged})
-      assert [{module, :flag}] == match.from
+      assert [{module, :flag}] == match.sources
 
       refs = loaded |> Rete.Inspect.why_not() |> Enum.map(&{&1.module, &1.rule})
       assert Enum.all?(refs, fn {ref_module, _rule} -> ref_module == module end)
@@ -1469,8 +1469,8 @@ defmodule Rete.SnapshotTest do
         |> Session.insert({:customer, 2})
 
       assert [
-               {:fact_inserted, {:customer, 1}, :asserted},
-               {:fact_inserted, {:customer, 2}, :asserted}
+               {:fact_inserted, {:customer, 1}, {Session, :insert}},
+               {:fact_inserted, {:customer, 2}, {Session, :insert}}
              ] ==
                Collect.by_tag(resumed, :fact_inserted)
     end

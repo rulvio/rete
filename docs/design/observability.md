@@ -68,9 +68,10 @@ to resolve it. `{module, name}` is already the identity that `Rete.Session.query
 shape every listener matches on. `{:propagated, ...}` is the exception, and it keeps the
 bare id: it fires for every node, and a join has no name.
 
-`origin` is `:asserted` or `{:derived, source}`, using the same map. So a concluded fact
-can be attributed to the rule that concluded it. This one distinction lets a listener
-reconstruct provenance from events alone, without reading memory.
+`origin` is a `{module, name}` pair. `{Rete.Session, :insert}` and
+`{Rete.Session, :retract}` mean your own call. Any other pair names the rule whose match
+added or lost the fact. So a listener can reconstruct provenance from events alone, without
+reading memory. The origin is the same pair that `Rete.Inspect` reports in `:sources`.
 
 A listener **must** have a catch-all clause. The engine adds new events as it grows. A
 listener that crashed on an unfamiliar event would turn every upgrade into a breaking
@@ -119,15 +120,21 @@ plausible numbers.
 
 ### Provenance is one level deep
 
-Each entry of an activation's `:matches` says where its fact came from. `:from` is the list
-of rules that concluded it, and you follow one of those pairs to its own entry in the same
-result. A tree instead would repeat the same subtree under everything resting on it. It
+Each entry of an activation's `:matches` says where its fact came from. `:sources` is the
+list of rules that concluded it, and you follow one of those pairs to its own entry in the
+same result. A tree instead would repeat the same subtree under everything resting on it. It
 would then grow with the depth of a derivation chain, and not with the number of matches.
 
-`:from` is a **list**, and that is not incidental. A fact concluded by two rules, or by one
-rule through two matches, has two independent supports, and it needs both to go before the
-fact itself goes. Reporting only the first would be exactly the kind of lie that makes
+`:sources` is a **list**, and that is not incidental. A fact concluded by two rules, or by
+one rule through two matches, has two independent supports, and it needs both to go before
+the fact itself goes. Reporting only the first would be exactly the kind of lie that makes
 retraction look broken.
+
+A fact you inserted reports `{Rete.Session, :insert}` in `:sources`. It is a
+`{module, name}` pair like a rule, so one pattern reads every entry. A fact you inserted and
+a rule also concluded names both. Memory keeps no separate count of your inserts.
+`Rete.Memory.inserted_count/2` derives it: every occurrence, minus the occurrences that
+truth maintenance records against a match.
 
 ### There is no separate reader for collections
 
@@ -135,7 +142,7 @@ A collection propagates only its result, so its members would be invisible once 
 moved on. They are not, because `Rete.Engine.Nodes` extends the token with the gathered list
 itself, and for a filtered collection that list is already what the filter kept. So an
 activation carries the collection the rule received, and `explain/2` reports it under
-`origin: :gathered` with each member described in `:members`.
+`origin: :gather` with each member described in `:members`.
 
 This used to be `collection/3`, which took a node id and a **join key**. The join key is
 whatever `Rete.DSL.Bindings` classified as `join_bind` for that node, and nothing public
@@ -154,7 +161,7 @@ nothing" also answers. Keyed by the activation, there is nothing left to guess.
 * **Generated helpers.** The arity-1 forms leave them out, and `why_not/2` never suggests
   them in its "no such rule" error. Name one explicitly and either function answers.
 * **Collections.** A token records the gathered *list*, and that list is reported whole
-  under `origin: :gathered`, because it is what the rule received. `:members` describes
+  under `origin: :gather`, because it is what the rule received. `:members` describes
   each fact in it, so a gathered fact a rule concluded still names that rule.
 
 ### Reading `why_not/1,2`

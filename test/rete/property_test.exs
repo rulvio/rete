@@ -621,6 +621,11 @@ defmodule Rete.PropertyTest do
           assert Enum.sort(Rete.Memory.inserters(unbuilt, fact)) ==
                    Enum.sort(Rete.Memory.inserters(built, fact)),
                  "the scan and the index disagree about who inserted #{inspect(fact)}"
+
+          assert Rete.Memory.inserted_count(unbuilt, fact) ==
+                   Rete.Memory.inserted_count(built, fact),
+                 "the scan and the index disagree about how often you inserted " <>
+                   inspect(fact)
         end
       end
     end
