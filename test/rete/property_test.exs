@@ -201,11 +201,11 @@ defmodule Rete.PropertyTest do
   defp counts(session), do: session.state.memory.facts
 
   defp unmarked(session) do
+    reserved = session.state.network.reserved_types
+
     session
     |> counts()
-    |> Map.reject(fn {fact, _n} ->
-      is_tuple(fact) and elem(fact, 0) |> to_string() =~ "__neg_"
-    end)
+    |> Map.reject(fn {fact, _n} -> is_tuple(fact) and MapSet.member?(reserved, elem(fact, 0)) end)
   end
 
   # Deep-sorts every leaf list of the memory, and every collection a token

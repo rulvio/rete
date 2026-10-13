@@ -47,9 +47,9 @@ All notable changes to `rete` are recorded here. The format follows
   See `docs/design/engine.md` §11.
 * Five `bench/run.exs` scenarios. One flips a compound negation on and off. One dumps a
   session of n customers, and one loads it. One dumps that session after half the customers
-  are retracted. One compiles r rules with `target_images: true`, so its gap to the compile
-  scenario is the cost of target images. "match one condition written in k modules" now runs on a
-  fresh process.
+  are retracted. One compiles r rules with `target_images: true`, so it shows that a build
+  with target images scales the same way. "match one condition written in k modules" now
+  runs on a fresh process.
 
 ### Changed
 

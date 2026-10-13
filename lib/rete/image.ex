@@ -14,6 +14,8 @@ defmodule Rete.Image do
   the image. `Rete.Image.Builder` makes the copy at compile time. This module holds the
   runtime half. `target/2` points the productions at the image when a network is built,
   and the network at the image when a session is dumped. See `docs/design/snapshot.md` §2.
+
+  An image stays loaded, with its beam in `:persistent_term`, for the life of the node.
   """
 
   @typedoc "An image module and its `.beam` binary."

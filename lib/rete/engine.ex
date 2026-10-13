@@ -661,7 +661,7 @@ defmodule Rete.Engine do
       {:ok, %Task{} = inner} -> raise ArgumentError, task_in_facts(node, token, inner)
       {:ok, value} -> {:ok, normalize_facts(value)}
       {:exit, reason} -> {:exited, reason}
-      nil -> {:exited, :timeout}
+      nil -> :timed_out
     end
   end
 
@@ -697,7 +697,7 @@ defmodule Rete.Engine do
     do: :erlang.raise(kind, value, stacktrace)
 
   # The engine shut the task down, so there is no original error to reraise.
-  defp unwrap!({:exited, :timeout}, node, token) do
+  defp unwrap!(:timed_out, node, token) do
     raise RuntimeError,
           "#{Network.ref_string({node.module, node.name})} did not finish: " <>
             ":timeout. It fired on #{inspect(token.bindings)}. " <>
@@ -792,7 +792,7 @@ defmodule Rete.Engine do
         type = Taxonomy.fact_type(network.taxonomy, fact)
 
         raise ArgumentError, """
-        Cannot #{action} #{inspect(fact)}. \
+        cannot #{action} #{inspect(fact)}. \
         #{Negation.reserved_message(type)}
 
         Give the fact another type. If a :fact_type_fn gave it this type, change the \

@@ -49,7 +49,7 @@ defmodule Rete.ImageTest do
         Rete.Compiler.build_productions(productions, [], target_images: true)
       end
 
-    assert error.message =~ "Cannot build the network."
+    assert error.message =~ "cannot build the network."
     assert error.message =~ "did not load"
   end
 

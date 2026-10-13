@@ -162,10 +162,18 @@ defmodule Rete.SnapshotTest do
 
   # A new deploy of the module: the old version leaves, and its image stays loaded, as it
   # would on a node where a v1 session is still alive.
-  defp redeploy(module, version) do
+  defp redeploy(module, version), do: replace(module, source(module, version))
+
+  defp replace(module, source) do
     :code.purge(module)
     :code.delete(module)
-    compile(module, version)
+    Code.compile_string(source)
+    module
+  end
+
+  defp round_trip(session) do
+    {:ok, loaded} = session |> Session.dump!(@key) |> Session.load(@key)
+    loaded
   end
 
   defp v1_session(module, opts \\ []) do
@@ -387,7 +395,7 @@ defmodule Rete.SnapshotTest do
     # latest.
     test "a loaded session on a node of the same version is the latest" do
       module = compile(Rete.SnapshotTest.SameVersion, :v1)
-      {:ok, loaded} = module |> v1_session() |> Session.dump!(@key) |> Session.load(@key)
+      loaded = round_trip(module |> v1_session())
 
       assert Session.latest?(loaded)
     end
@@ -540,7 +548,7 @@ defmodule Rete.SnapshotTest do
 
       module = compile_source(source, Rete.SnapshotTest.CaptureLate)
 
-      {:ok, loaded} = [module] |> Session.new() |> Session.dump!(@key) |> Session.load(@key)
+      loaded = round_trip([module] |> Session.new())
       facts = loaded |> Session.insert({:order, 1, 21}) |> Session.fire_rules() |> Session.facts()
 
       assert {:flagged, 1, 42} in facts
@@ -563,7 +571,7 @@ defmodule Rete.SnapshotTest do
           )
         end)
 
-      {:ok, loaded} = [module] |> Session.new() |> Session.dump!(@key) |> Session.load(@key)
+      loaded = round_trip([module] |> Session.new())
       facts = loaded |> Session.insert({:a, 1}) |> Session.fire_rules() |> Session.facts()
       assert {:b, {:mine, 1}} in facts
     end
@@ -645,7 +653,7 @@ defmodule Rete.SnapshotTest do
 
       module = compile_source(source, Rete.SnapshotTest.Versioned)
 
-      {:ok, loaded} = [module] |> Session.new() |> Session.dump!(@key) |> Session.load(@key)
+      loaded = round_trip([module] |> Session.new())
       facts = loaded |> Session.insert({:a, 1}) |> Session.fire_rules() |> Session.facts()
       assert {:b, 1, true} in facts
     end
@@ -669,7 +677,7 @@ defmodule Rete.SnapshotTest do
       module = compile_source(source, Rete.SnapshotTest.UsesOther)
 
       live = [module] |> Session.new() |> Session.insert({:a, 5}) |> Session.fire_rules()
-      {:ok, loaded} = [module] |> Session.new() |> Session.dump!(@key) |> Session.load(@key)
+      loaded = round_trip([module] |> Session.new())
       moved = loaded |> Session.insert({:a, 5}) |> Session.fire_rules()
 
       assert Enum.sort(Session.facts(live)) == Enum.sort(Session.facts(moved))
@@ -680,9 +688,9 @@ defmodule Rete.SnapshotTest do
     # processes of the compiler, and not to others. The image compiles in a process of its
     # own, so the ruleset must load the struct for it first. A direct call of the parallel
     # compiler loads each module at once, and does not show this.
-    # Tagged, so that a run can exclude it. It starts two `mix` processes. A barrier in place
-    # of the sleep would deadlock, because `load_structs/2` makes the ruleset wait for the
-    # struct.
+    # Excluded by default, because it starts two `mix` processes. CI runs it on one leg. A
+    # barrier in place of the sleep would deadlock, because `load_structs/2` makes the
+    # ruleset wait for the struct.
     @tag :tmp_dir
     @tag :mix_subprocess
     test "a struct module that Mix compiles after the ruleset", %{tmp_dir: dir} do
@@ -700,7 +708,7 @@ defmodule Rete.SnapshotTest do
             version: "0.1.0",
             deps: [
               {:rete, path: #{inspect(root)}},
-              {:taxo, path: #{inspect(Path.join(root, "deps/taxo"))}, override: true}
+              {:taxo, path: #{inspect(Mix.Project.deps_paths()[:taxo])}, override: true}
             ]
           ]
         end
@@ -762,7 +770,7 @@ defmodule Rete.SnapshotTest do
 
       module = compile_source(source, Rete.SnapshotTest.OwnUpdate)
 
-      {:ok, loaded} = [module] |> Session.new() |> Session.dump!(@key) |> Session.load(@key)
+      loaded = round_trip([module] |> Session.new())
       facts = loaded |> Session.insert({:a, 5}) |> Session.fire_rules() |> Session.facts()
       assert {:b, struct(module, b: 6)} in facts
     end
@@ -790,7 +798,7 @@ defmodule Rete.SnapshotTest do
       module = compile_source(source, Rete.SnapshotTest.Quoted)
 
       live = [module] |> Session.new() |> Session.insert({:a, 1}) |> Session.fire_rules()
-      {:ok, loaded} = [module] |> Session.new() |> Session.dump!(@key) |> Session.load(@key)
+      loaded = round_trip([module] |> Session.new())
       moved = loaded |> Session.insert({:a, 1}) |> Session.fire_rules()
 
       assert Session.facts(live) |> Enum.sort() == Session.facts(moved) |> Enum.sort()
@@ -809,7 +817,7 @@ defmodule Rete.SnapshotTest do
 
       module = compile_source(source, Rete.SnapshotTest.OwnStruct)
 
-      {:ok, loaded} = [module] |> Session.new() |> Session.dump!(@key) |> Session.load(@key)
+      loaded = round_trip([module] |> Session.new())
       facts = loaded |> Session.insert({:a, 1}) |> Session.fire_rules() |> Session.facts()
       assert {:b, 1, struct(module, v: 1)} in facts
     end
@@ -826,7 +834,7 @@ defmodule Rete.SnapshotTest do
       module = compile_source(source, Rete.SnapshotTest.OwnType)
       session = Session.new([module], fact_type_fn: Function.capture(module, :type, 1))
 
-      {:ok, loaded} = session |> Session.dump!(@key) |> Session.load(@key)
+      loaded = round_trip(session)
       facts = loaded |> Session.insert({:a, 1}) |> Session.fire_rules() |> Session.facts()
       assert {:b, 1} in facts
     end
@@ -847,12 +855,12 @@ defmodule Rete.SnapshotTest do
       fact = {:h, Function.capture(module, :f, 1)}
       fired = [module] |> Session.new() |> Session.insert(fact) |> Session.fire_rules()
 
-      {:ok, loaded} = fired |> Session.dump!(@key) |> Session.load(@key)
+      loaded = round_trip(fired)
       assert fact in Session.facts(loaded)
       assert [] == loaded |> Session.retract(fact) |> Session.fire_rules() |> Session.facts()
 
       again = loaded |> Session.insert(fact) |> Session.fire_rules()
-      {:ok, twice} = again |> Session.dump!(@key) |> Session.load(@key)
+      twice = round_trip(again)
       assert 2 == twice |> Session.facts() |> Enum.count(&(&1 == fact))
     end
 
@@ -868,7 +876,7 @@ defmodule Rete.SnapshotTest do
       module = compile_source(source, Rete.SnapshotTest.CaptureFact)
 
       {:ok, {image, _beam}} = module.__rete_image__()
-      {:ok, loaded} = [module] |> Session.new() |> Session.dump!(@key) |> Session.load(@key)
+      loaded = round_trip([module] |> Session.new())
       grown = loaded |> Session.insert({:a, 1}) |> Session.fire_rules()
 
       assert [{:b, 1, fun}] = Enum.filter(Session.facts(grown), &match?({:b, _, _}, &1))
@@ -959,9 +967,7 @@ defmodule Rete.SnapshotTest do
       Code.compile_string(helper_source(module, 100, guard, extra))
       snapshot = [module] |> Session.new() |> Session.dump!(@key)
 
-      :code.purge(module)
-      :code.delete(module)
-      Code.compile_string(helper_source(module, 1000, guard, extra))
+      replace(module, helper_source(module, 1000, guard, extra))
 
       {:ok, loaded} = Session.load(snapshot, @key)
 
@@ -1018,9 +1024,7 @@ defmodule Rete.SnapshotTest do
       Code.compile_string(helper_source(module, 100, "big?(amt)", ""))
       session = Session.new([module], target_images: true)
 
-      :code.purge(module)
-      :code.delete(module)
-      Code.compile_string(helper_source(module, 1000, "big?(amt)", ""))
+      replace(module, helper_source(module, 1000, "big?(amt)", ""))
 
       refute Session.latest?(session)
     end
@@ -1071,7 +1075,7 @@ defmodule Rete.SnapshotTest do
     # image. A snapshot without that code would only fail later, where it loads.
     test "a session that captures an image this node lacks does not dump", %{peer: peer} do
       module = compile(Rete.SnapshotTest.Handoff, :v1)
-      {:ok, loaded} = module |> v1_session() |> Session.dump!(@key) |> Session.load(@key)
+      loaded = round_trip(module |> v1_session())
 
       assert {:error, {:no_beam, image}} = :peer.call(peer, Session, :dump, [loaded, @key])
       assert Rete.Image.image?(image)
@@ -1274,7 +1278,7 @@ defmodule Rete.SnapshotTest do
             {"not a snapshot", "k1", "not a snapshot"}
           ] do
         error = assert_raise ArgumentError, fn -> Session.load!(binary, key) end
-        assert error.message =~ "Cannot load the snapshot"
+        assert error.message =~ "cannot load the snapshot"
         assert error.message =~ text
       end
     end
@@ -1453,7 +1457,7 @@ defmodule Rete.SnapshotTest do
         |> Session.insert({:customer, 1})
 
       collected = Session.listener_state(session, Collect)
-      {:ok, loaded} = session |> Session.dump!(@key) |> Session.load(@key)
+      loaded = round_trip(session)
 
       assert nil == Session.listener_state(loaded, Collect)
 

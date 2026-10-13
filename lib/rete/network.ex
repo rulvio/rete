@@ -29,7 +29,7 @@ defmodule Rete.Network do
   alias Rete.Taxonomy
 
   @type t :: %__MODULE__{
-          alphas: %{term() => Node.Alpha.t()},
+          alphas: %{atom() => Node.Alpha.t()},
           taxonomy: Taxonomy.t(),
           graph: BetaGraph.t(),
           queries: %{{module(), atom()} => BetaGraph.id()},
@@ -51,7 +51,7 @@ defmodule Rete.Network do
   negations.
 
   Most callers want `Rete.Compiler.build/2`, which runs the phases that get a production
-  into that state.
+  into that state. It passes `:built_images`, the image that each module runs.
   """
   @spec new([IR.Production.t()], [Taxonomy.declaration()], keyword()) :: t()
   def new(productions, taxo_data \\ [], opts \\ []) do
@@ -72,7 +72,8 @@ defmodule Rete.Network do
       graph: graph,
       queries: query_index(graph),
       productions: productions,
-      reserved_types: reserved
+      reserved_types: reserved,
+      built_images: Keyword.get(opts, :built_images, %{})
     }
   end
 
@@ -124,16 +125,13 @@ defmodule Rete.Network do
   def query_refs(%__MODULE__{queries: queries}), do: queries |> Map.keys() |> Enum.sort()
 
   @doc """
-  The modules that contributed a production to the network, or to a list of productions,
-  sorted.
+  The modules that contributed a production to the network, sorted.
 
   This is what a session was *built from*. It is what tells apart a typo in a query name
   from a ruleset never passed to `Rete.Session.new/2`.
   """
-  @spec modules(t() | [IR.Production.t()]) :: [module()]
-  def modules(%__MODULE__{productions: productions}), do: modules(productions)
-
-  def modules(productions) when is_list(productions),
+  @spec modules(t()) :: [module()]
+  def modules(%__MODULE__{productions: productions}),
     do: productions |> Enum.map(& &1.module) |> Enum.uniq() |> Enum.sort()
 
   @doc """

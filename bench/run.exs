@@ -1073,7 +1073,7 @@ Bench.scenario(
   [128, 256, 512, 1024],
   fn r -> Rete.Compiler.build([width_modules[r]], target_images: true) end,
   isolate: true,
-  note: "the same build with target images. The gap to the scenario above is their cost."
+  note: "the same build with target images. It scales as the default build does."
 )
 
 # Compiled up front, for the reason the width scenario gives: the scenario times firing,

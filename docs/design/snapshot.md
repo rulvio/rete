@@ -289,6 +289,9 @@ module declares the query with the same head. On a node with no `MyRules`, use
   happen inside one `fire_rules/2`. `Rete.Session.latest?/1` cannot see it, and a dump
   takes the image the module offers then. With hot code upgrades, build with
   `target_images: true`, and call `latest?/1` after each upgrade.
+* **Images stay.** An image that a node compiles or loads stays loaded, and its beam stays
+  in `:persistent_term`, for the life of the node. rete never purges one. A node that loads
+  snapshots of many versions keeps every one of them.
 * **OTP.** A beam from a newer OTP may not load on an older one. The error names the
   release that compiled the image, if it differs from the release of the node.
 * **A struct update in a helper checks less before Elixir 1.20.** The copy turns

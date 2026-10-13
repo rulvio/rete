@@ -86,7 +86,7 @@ defmodule Rete.Compiler do
     {productions, built} =
       if target_images?(opts), do: run_images(productions), else: {productions, %{}}
 
-    %Network{Network.new(productions, taxo_data, opts) | built_images: built}
+    Network.new(productions, taxo_data, Keyword.put(opts, :built_images, built))
   end
 
   defp target_images?(opts),
@@ -99,7 +99,8 @@ defmodule Rete.Compiler do
   # upgrade. A module that offers no image, such as one that is not a ruleset, keeps its
   # calls.
   defp run_images(productions) do
-    images = productions |> Network.modules() |> Enum.flat_map(&image!/1) |> Map.new()
+    modules = productions |> Enum.map(& &1.module) |> Enum.uniq()
+    images = modules |> Enum.flat_map(&image!/1) |> Map.new()
 
     case Image.load(Map.new(Map.values(images))) do
       :ok ->
@@ -107,7 +108,7 @@ defmodule Rete.Compiler do
         {Image.target(productions, images), built}
 
       {:error, reason} ->
-        raise ArgumentError, "Cannot build the network. " <> Image.message(reason)
+        raise ArgumentError, "cannot build the network. " <> Image.message(reason)
     end
   end
 
@@ -121,7 +122,7 @@ defmodule Rete.Compiler do
         []
 
       {:error, reason} ->
-        raise ArgumentError, "Cannot build the network. " <> Image.message(reason)
+        raise ArgumentError, "cannot build the network. " <> Image.message(reason)
     end
   end
 
@@ -152,7 +153,7 @@ defmodule Rete.Compiler do
           end)
 
         raise ArgumentError, """
-        A module declares the same production name more than once:
+        a module declares the same production name more than once:
 
         #{detail}
 

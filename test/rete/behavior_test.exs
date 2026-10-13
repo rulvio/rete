@@ -1903,9 +1903,11 @@ defmodule Rete.BehaviorTest do
     test "no conclusion has more support than the matches behind it" do
       session = everything()
 
+      reserved = session.state.network.reserved_types
+
       marker? = fn
         fact when is_tuple(fact) and tuple_size(fact) == 2 ->
-          fact |> elem(0) |> to_string() =~ "__neg_"
+          MapSet.member?(reserved, elem(fact, 0))
 
         _ ->
           false

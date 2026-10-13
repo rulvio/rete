@@ -33,7 +33,7 @@ defmodule Rete.Network.Node do
             type: atom(),
             code: atom(),
             fun: fun(),
-            children: [non_neg_integer()]
+            children: [Rete.Compiler.BetaGraph.id()]
           }
     defstruct [:id, :type, :code, :fun, children: []]
   end

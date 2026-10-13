@@ -449,7 +449,7 @@ defmodule Rete.Session do
 
   @spec failed!(String.t(), term()) :: no_return()
   defp failed!(what, reason),
-    do: raise(ArgumentError, "Cannot #{what}. " <> Snapshot.message(reason))
+    do: raise(ArgumentError, "cannot #{what}. " <> Snapshot.message(reason))
 
   defp update(%__MODULE__{state: state}, fun), do: %__MODULE__{state: fun.(state)}
 end

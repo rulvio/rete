@@ -678,8 +678,10 @@ defmodule Rete.EngineTest do
       assert [{:cust, 1}, {:order, 1}, {:refund, 1}] == Enum.sort(Session.facts(session))
 
       # It is still a fact internally, which is what makes the negation work.
+      reserved = session.state.network.reserved_types
+
       assert Enum.any?(session.state.memory.facts, fn {fact, _count} ->
-               is_tuple(fact) and to_string(elem(fact, 0)) =~ "__neg_"
+               is_tuple(fact) and MapSet.member?(reserved, elem(fact, 0))
              end)
     end
 
@@ -2460,6 +2462,9 @@ defmodule Rete.EngineTest do
 
       defrule crash({:crash, sup}), do: Task.Supervisor.async_nolink(sup, fn -> exit(:boom) end)
 
+      defrule exits({:exits, sup}),
+        do: Task.Supervisor.async_nolink(sup, fn -> exit(:timeout) end)
+
       defrule hang({:hang, test, n}) do
         task = Task.async(fn -> Process.sleep(:infinity) end)
         send(test, {:started, n, task.pid})
@@ -2618,6 +2623,26 @@ defmodule Rete.EngineTest do
             end
 
           assert error.message =~ "Rete.EngineTest.Tasks.crash returned a task that exited: :boom"
+        end
+      end)
+    end
+
+    # The exit reason of the task is `:timeout`, but the engine did not time out.
+    test "a task that exits with :timeout is not reported as a timeout" do
+      sup = start_supervised!(Task.Supervisor)
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        for concurrency <- [1, 4] do
+          error =
+            assert_raise RuntimeError, fn ->
+              [Tasks]
+              |> Session.new()
+              |> Session.insert({:exits, sup})
+              |> Session.fire_rules(concurrency: concurrency)
+            end
+
+          assert error.message =~ "Tasks.exits returned a task that exited: :timeout"
+          refute error.message =~ "Raise :timeout"
         end
       end)
     end
