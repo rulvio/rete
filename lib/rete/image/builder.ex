@@ -15,8 +15,8 @@ defmodule Rete.Image.Builder do
   @hash_version 1
 
   # A blocked image compile must leave the module without an image, and not hang the build.
-  # Two minutes gives a large ruleset room. `:image_compile_timeout` in the `:rete`
-  # application environment changes it.
+  # Two minutes gives a large ruleset room. `:compile_timeout` in the `:rete` application
+  # environment changes it.
   @compile_timeout :timer.minutes(2)
 
   @doc false
@@ -118,7 +118,7 @@ defmodule Rete.Image.Builder do
     body = body(defs)
     location = Macro.Env.location(env)
 
-    timeout = Application.get_env(:rete, :image_compile_timeout, @compile_timeout)
+    timeout = Application.get_env(:rete, :compile_timeout, @compile_timeout)
     task = Task.async(fn -> compile_alone(name, body, location) end)
 
     case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do

@@ -50,6 +50,9 @@ defmodule Rete.Compiler do
       With `true`, it runs the image of each ruleset module, so it keeps its rules after a
       hot upgrade of the module. `config :rete, target_images: true` changes the default.
 
+  `config :rete, compile_timeout: ms` limits each image compile. It acts when a ruleset
+  module compiles, so no build option can change it.
+
   **With hot code upgrades, build with `target_images: true`.** Call
   `Rete.Session.latest?/1` after each upgrade, and build a new network when it returns
   `false`. Without target images, a network built before an upgrade calls the new code.

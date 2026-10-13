@@ -23,9 +23,9 @@ All notable changes to `rete` are recorded here. The format follows
 * `use Rete.Ruleset` compiles an image module beside each ruleset module. For `MyRules`,
   it is `MyRules.Image.M<hash>`, and the hash is taken over the code of the rules. An
   image that does not compile never stops the ruleset module from compiling. A build with
-  target images raises for the module then. `:image_compile_timeout` in the `:rete` application
-  environment changes the two-minute limit on an image compile. See
-  `docs/design/snapshot.md` §2.
+  target images raises for the module then. `:compile_timeout` in the `:rete` application
+  environment changes the two-minute limit on an image compile. See `docs/design/snapshot.md`
+  §2.
 * `target_images: true` on `Rete.Session.new/2` or `Rete.Compiler.build/2` makes a session
   run the image of each ruleset module. So a session built before a hot upgrade keeps
   running its own rules, consistently, until you build it again. `Rete.Session.latest?/1`

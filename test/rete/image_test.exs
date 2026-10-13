@@ -9,7 +9,7 @@ defmodule Rete.ImageTest do
   The failures of an image compile, and of an image load, that no ruleset causes.
 
   Not async, because two tests change the application environment. Every ruleset that
-  compiles meanwhile reads `:image_compile_timeout`, and every build reads `:target_images`.
+  compiles meanwhile reads `:compile_timeout`, and every build reads `:target_images`.
   """
 
   use ExUnit.Case, async: false
@@ -53,8 +53,8 @@ defmodule Rete.ImageTest do
   end
 
   test "an image that does not compile in time stops a build with target images" do
-    previous = Application.fetch_env(:rete, :image_compile_timeout)
-    Application.put_env(:rete, :image_compile_timeout, 0)
+    previous = Application.fetch_env(:rete, :compile_timeout)
+    Application.put_env(:rete, :compile_timeout, 0)
 
     source = """
     defmodule Rete.ImageTest.Slow do
@@ -82,8 +82,8 @@ defmodule Rete.ImageTest do
       assert {:flagged, 1} in Rete.Session.facts(session)
     after
       case previous do
-        {:ok, value} -> Application.put_env(:rete, :image_compile_timeout, value)
-        :error -> Application.delete_env(:rete, :image_compile_timeout)
+        {:ok, value} -> Application.put_env(:rete, :compile_timeout, value)
+        :error -> Application.delete_env(:rete, :compile_timeout)
       end
     end
   end

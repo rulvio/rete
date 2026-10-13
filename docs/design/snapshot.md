@@ -120,8 +120,8 @@ hook that runs later. So the image cannot see that helper. The fix is to put
 `use Rete.Ruleset` after the `use` that defines the helper.
 
 An image compile that takes more than two minutes stops. The module then has no image, and
-its compile goes on. `:image_compile_timeout` in the `:rete` application environment sets
-another limit, in milliseconds.
+its compile goes on. `:compile_timeout` in the `:rete` application environment sets another
+limit, in milliseconds.
 
 ### The hash
 

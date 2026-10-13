@@ -26,8 +26,7 @@ defmodule Rete.Ruleset do
   built with `target_images: true` runs it, so it keeps its rules across a hot upgrade. See
   `Rete.Session.latest?/1` and `Rete.Session.dump/2`. Put `use Rete.Ruleset` after any
   `use` whose `@before_compile` hook defines a helper, or the image cannot see it.
-  `config :rete, image_compile_timeout: ms` changes the two-minute limit on an image
-  compile.
+  `config :rete, compile_timeout: ms` changes the two-minute limit on an image compile.
 
   Every `defrule` and `defquery` expands by running the front end pipeline:
 
