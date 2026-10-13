@@ -171,6 +171,22 @@ defmodule Rete.Image do
   end
 
   @doc """
+  The image that each of `modules` offers, by module, or the first error of `fetch/1`.
+
+  A module that `fetch/1` gives `:none` for is left out.
+  """
+  @spec collect([module()]) :: {:ok, by_module()} | {:error, {:no_image, module(), String.t()}}
+  def collect(modules) do
+    Enum.reduce_while(modules, {:ok, %{}}, fn module, {:ok, acc} ->
+      case fetch(module) do
+        {:ok, image} -> {:cont, {:ok, Map.put(acc, module, image)}}
+        :none -> {:cont, {:ok, acc}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  @doc """
   The name of the image that a ruleset module offers, or `nil` when `fetch/1` gives no
   image.
   """

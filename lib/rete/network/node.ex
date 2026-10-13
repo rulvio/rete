@@ -198,8 +198,8 @@ defmodule Rete.Network.Node do
 
   defmodule Production do
     @moduledoc """
-    A terminal node for a rule. Firing it calls `:rhs` with the token's bindings, and
-    logically inserts whatever comes back.
+    A terminal node for a rule. Firing it calls `:rhs` with `:args` and the token's
+    bindings, and logically inserts whatever comes back.
 
     `:salience` is the user's ordering. `:internal_salience` breaks ties in favour of
     machinery the user did not write. An extracted negation helper has to run before the
@@ -210,8 +210,9 @@ defmodule Rete.Network.Node do
             id: non_neg_integer() | nil,
             name: atom(),
             module: module(),
-            hash: Rete.IR.Production.hash(),
+            hash: integer(),
             rhs: fun(),
+            args: term(),
             bind: [atom()],
             salience: integer(),
             internal_salience: integer(),
@@ -223,6 +224,7 @@ defmodule Rete.Network.Node do
       :module,
       :hash,
       :rhs,
+      :args,
       :bind,
       salience: 0,
       internal_salience: 0,

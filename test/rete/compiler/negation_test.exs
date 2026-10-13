@@ -61,7 +61,7 @@ defmodule Rete.Compiler.NegationTest do
       assert [:cid] == marker.join_bind
       assert [:cid] == marker.bind
 
-      assert {helper.name, %{cid: 7}} == helper.rhs.(helper.hash, %{cid: 7})
+      assert {helper.name, %{cid: 7}} == helper.rhs.(helper.args, %{cid: 7})
       assert %{cid: 7} == marker.alpha.fun.({helper.name, %{cid: 7}})
       assert %{cid: 9} == marker.alpha.fun.({helper.name, %{cid: 9}})
     end
@@ -114,7 +114,7 @@ defmodule Rete.Compiler.NegationTest do
       assert [:limit] == marker.bind
 
       assert {helper.name, %{limit: 10}} ==
-               helper.rhs.(helper.hash, %{limit: 10, x: 1, amt: 50})
+               helper.rhs.(helper.args, %{limit: 10, x: 1, amt: 50})
     end
 
     test "an ancestor binding the conjunction never reads is still not carried" do
@@ -124,7 +124,7 @@ defmodule Rete.Compiler.NegationTest do
       assert [:limit] == marker.join_bind
 
       assert {helper.name, %{limit: 10}} ==
-               helper.rhs.(helper.hash, %{limit: 10, region: :eu, x: 1, amt: 50})
+               helper.rhs.(helper.args, %{limit: 10, region: :eu, x: 1, amt: 50})
     end
 
     test "a conjunction with no ancestor binding carries nothing" do
@@ -132,7 +132,7 @@ defmodule Rete.Compiler.NegationTest do
       marker = negation_of(rewritten)
 
       assert [] == marker.join_bind
-      assert {helper.name, %{}} == helper.rhs.(helper.hash, %{a: 1})
+      assert {helper.name, %{}} == helper.rhs.(helper.args, %{a: 1})
     end
 
     # A rule that negated the marker before the helper produced it would fire

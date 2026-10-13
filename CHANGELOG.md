@@ -64,9 +64,9 @@ All notable changes to `rete` are recorded here. The format follows
 * "a blocking rule body, by :concurrency" in `bench/run.exs` is now "a rule body that
   returns a task, by :concurrency".
 * A compound negation helper captures `Rete.Compiler.Negation.marker/2` and
-  `marker_alpha/1`, where it held closures. Its `:hash` is now `{name, carried}`. The marker
-  alpha no longer checks the tag of a marker. The alpha index already routes a marker by its
-  type, which is its name.
+  `marker_alpha/1`, where it held closures. Its new `:args` holds `{name, carried}`. The
+  marker alpha no longer checks the tag of a marker. The alpha index already routes a marker
+  by its type, which is its name.
 * The type of a marker is reserved for the engine. `Rete.Session.insert/2` and `retract/2`
   raise `ArgumentError` for a fact of that type. This includes a fact that a
   `:fact_type_fn` gives that type. A rule that returns such a fact raises when it fires. A

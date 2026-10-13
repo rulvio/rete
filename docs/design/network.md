@@ -221,7 +221,7 @@ concludes. `Rete.Network.new/3` refuses a `derive` that names it on either side.
 
 Extraction runs after macro expansion, so no module holds code generated for a helper. Its
 expressions are captures of `Rete.Compiler.Negation.marker/2` and `marker_alpha/1`. The
-helper's `:hash` is `{name, carried}`, and the engine passes it to `marker/2` as the first
+helper's `:args` is `{name, carried}`, and the engine passes it to `marker/2` as the first
 argument. That is the data a closure would hold. A remote capture works on another node,
 and a closure does not. See `snapshot.md`.
 

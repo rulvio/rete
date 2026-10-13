@@ -49,6 +49,7 @@ defmodule Rete.SnapshotTest do
     Rete.IR.Negation => [:condition],
     Rete.IR.Production => [
       :__ast__,
+      :args,
       :bind,
       :hash,
       :head,
@@ -114,6 +115,7 @@ defmodule Rete.SnapshotTest do
     Rete.Network.Node.Negation => [:alpha_code, :id, :join_bind, :type],
     Rete.Network.Node.NegationJoin => [:alpha_code, :filter, :filter_code, :id, :join_bind, :type],
     Rete.Network.Node.Production => [
+      :args,
       :bind,
       :generated?,
       :hash,

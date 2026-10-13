@@ -140,9 +140,15 @@ defmodule Rete.Agenda do
       :none ->
         {agenda, :missing}
 
-      {:value, bucket} ->
+      # The tree changes only when the check built the index of the bucket.
+      {:value, %Bucket{indexed?: indexed?} = bucket} ->
         {found?, bucket} = Bucket.member(bucket, activation)
-        agenda = %__MODULE__{agenda | buckets: :gb_trees.update(key, bucket, agenda.buckets)}
+
+        agenda =
+          if indexed?,
+            do: agenda,
+            else: %__MODULE__{agenda | buckets: :gb_trees.update(key, bucket, agenda.buckets)}
+
         {agenda, if(found?, do: :pending, else: :missing)}
     end
   end

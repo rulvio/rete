@@ -33,14 +33,16 @@ defmodule Rete.Snapshot do
     # Only the rules of the network are targeted at their images. A fact is matched by
     # equality, so a changed capture inside one would make a retract of that fact miss after
     # the load.
+    # Only a module that the rules still capture counts. A loaded session captures images,
+    # so the module of this node does not matter to it.
     network = state.network
-    offers = Map.new(Network.modules(network), &{&1, Image.fetch(&1)})
+    modules = Network.modules(network)
 
     with {:ok, rule_modules} <- Image.captures(rules(network)),
-         {:ok, ruleset_images} <- ruleset_images(offers, rule_modules),
+         {:ok, ruleset_images} <- Image.collect(Enum.filter(modules, &(&1 in rule_modules))),
          state = %State{state | network: target_rules(network, ruleset_images)},
          {:ok, captured} <- Image.captures(state),
-         {:ok, images} <- snapshot_images(offers, captured) do
+         {:ok, images} <- snapshot_images(modules, captured) do
       # `minor_version` is fixed, so a newer OTP default does not write a body that an
       # older node cannot read.
       body =
@@ -162,24 +164,16 @@ defmodule Rete.Snapshot do
     }
   end
 
-  # Only a module that the network still captures counts. A loaded session captures images,
-  # so the module of this node does not matter to it.
-  defp ruleset_images(offers, captured) do
-    offers
-    |> Enum.filter(fn {module, _offer} -> MapSet.member?(captured, module) end)
-    |> Enum.reduce_while({:ok, %{}}, fn
-      {module, {:ok, image}}, {:ok, acc} -> {:cont, {:ok, Map.put(acc, module, image)}}
-      {_module, :none}, acc -> {:cont, acc}
-      {_module, {:error, reason}}, _acc -> {:halt, {:error, reason}}
-    end)
-  end
-
   # The snapshot takes each image that the state captures. Its beam comes from a ruleset
   # module of the network, or from the registry. The registry is how a loaded session dumps
   # again. A captured image with no beam is an error, because the snapshot could not load
   # without it.
-  defp snapshot_images(offers, captured) do
-    offered = for {_module, {:ok, {name, beam}}} <- offers, into: %{}, do: {name, beam}
+  defp snapshot_images(modules, captured) do
+    offered =
+      for module <- modules,
+          {:ok, {name, beam}} <- [Image.fetch(module)],
+          into: %{},
+          do: {name, beam}
 
     captured
     |> Enum.filter(&Image.image?/1)

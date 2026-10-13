@@ -638,7 +638,7 @@ defmodule Rete.Engine do
   # It returns failure rather than raising it. Under concurrency the failure waits for its
   # turn in group order, so it is raised where the sequential path would raise it.
   defp compute(node, %Activation{token: token}) do
-    case node.rhs.(node.hash, token.bindings) do
+    case node.rhs.(node.args, token.bindings) do
       %Task{} = task -> {:task, task}
       result -> {:ok, normalize_facts(result)}
     end

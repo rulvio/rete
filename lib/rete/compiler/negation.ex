@@ -102,13 +102,11 @@ defmodule Rete.Compiler.Negation do
     name = helper_name(production, counter)
     carried = carried_bindings(conditions, prefix)
 
-    # The hash carries the RHS data, and it holds no hash of the parent rule. The name
-    # already fixes the module, the rule and the counter, and one module has one rule of a
-    # name. So the parent's hash would not separate any two helpers in a network.
     helper = %IR.Production{
       name: name,
       type: :rule,
-      hash: {name, carried},
+      hash: :erlang.phash2({production.module, production.name, production.hash, counter}),
+      args: {name, carried},
       opts: helper_opts(production, depth),
       bind: prefix_bindings(prefix),
       lhs: prefix ++ conditions,
@@ -236,10 +234,10 @@ defmodule Rete.Compiler.Negation do
   end
 
   @doc """
-  The RHS of every helper, `(hash, bindings) -> marker`.
+  The RHS of every helper, `(args, bindings) -> marker`.
 
-  The engine passes a production's `:hash` as the first argument. A helper sets its hash
-  to `{name, carried}`, which is the data a closure would otherwise hold. The marker's type
+  The engine passes a production's `:args` as the first argument. A helper sets it to
+  `{name, carried}`, which is the data a closure would otherwise hold. The marker's type
   is the generated name, so the alpha index routes it to exactly one place.
   """
   @spec marker({atom(), [atom()]}, map()) :: {atom(), map()}

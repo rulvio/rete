@@ -367,6 +367,7 @@ defmodule Rete.Compiler.BetaGraph do
       module: production.module,
       hash: production.hash,
       rhs: production.rhs,
+      args: production.args || production.hash,
       bind: production.bind || [],
       salience: Keyword.get(opts, :salience, 0),
       internal_salience: internal_salience!(production, opts, generated?),

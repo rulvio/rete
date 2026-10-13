@@ -100,27 +100,12 @@ defmodule Rete.Compiler do
   # calls.
   defp run_images(productions) do
     modules = productions |> Enum.map(& &1.module) |> Enum.uniq()
-    images = modules |> Enum.flat_map(&image!/1) |> Map.new()
 
-    case Image.load(Map.new(Map.values(images))) do
-      :ok ->
-        built = Map.new(images, fn {module, {name, _beam}} -> {module, name} end)
-        {Image.target(productions, images), built}
-
-      {:error, reason} ->
-        raise ArgumentError, "cannot build the network. " <> Image.message(reason)
-    end
-  end
-
-  # `:none` is a module that is not a ruleset, such as one that built productions by hand.
-  defp image!(module) do
-    case Image.fetch(module) do
-      {:ok, image} ->
-        [{module, image}]
-
-      :none ->
-        []
-
+    with {:ok, images} <- Image.collect(modules),
+         :ok <- Image.load(Map.new(Map.values(images))) do
+      built = Map.new(images, fn {module, {name, _beam}} -> {module, name} end)
+      {Image.target(productions, images), built}
+    else
       {:error, reason} ->
         raise ArgumentError, "cannot build the network. " <> Image.message(reason)
     end

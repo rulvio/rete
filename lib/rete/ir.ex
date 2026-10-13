@@ -267,24 +267,22 @@ defmodule Rete.IR do
         network.
       * `:rhs` is `nil` until the production is escaped. The engine logically inserts
         and truth-maintains its return value. `nil` or `[]` inserts nothing.
+      * `:args` is the first argument of the RHS when it is not `:hash`. Only a compound
+        negation helper sets it, to `{name, carried}`, which
+        `Rete.Compiler.Negation.marker/2` reads.
     """
-
-    @typedoc """
-    The first argument of the RHS. A compound negation helper holds `{name, carried}`
-    there, which `Rete.Compiler.Negation.marker/2` reads.
-    """
-    @type hash :: integer() | {atom(), [atom()]}
 
     @type t :: %__MODULE__{
             name: atom(),
             type: :rule | :query,
-            hash: hash(),
+            hash: integer(),
             opts: keyword(),
             bind: [atom()],
             params: [atom()],
             head: [String.t()],
             lhs: Rete.IR.lhs(),
-            rhs: (hash(), map() -> any()) | nil,
+            rhs: (term(), map() -> any()) | nil,
+            args: term() | nil,
             module: module(),
             __ast__: map() | nil
           }
@@ -297,6 +295,7 @@ defmodule Rete.IR do
       :bind,
       :lhs,
       :rhs,
+      :args,
       :module,
       :__ast__,
       params: [],
