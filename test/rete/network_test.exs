@@ -222,14 +222,11 @@ defmodule Rete.NetworkTest do
       # {:order, cid, _amt} in the collection and {:order, cid, _} in the
       # negation are byte identical once discarded names are canonicalized, so
       # they share an alpha that feeds two different beta nodes.
-      shared =
-        net.alphas
-        |> Map.keys()
-        |> Enum.filter(&(length(Network.beta_children(net, &1)) > 1))
+      shared = net.alphas |> Map.values() |> Enum.filter(&(length(&1.children) > 1))
 
-      assert [code] = shared
-      assert :order == net.alphas[code].type
-      assert 2 == length(Network.beta_children(net, code))
+      assert [alpha] = shared
+      assert :order == alpha.type
+      assert 2 == length(alpha.children)
     end
 
     test "conditions that bind differently do not share", %{net: net} do

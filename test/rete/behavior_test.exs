@@ -1903,9 +1903,11 @@ defmodule Rete.BehaviorTest do
     test "no conclusion has more support than the matches behind it" do
       session = everything()
 
+      reserved = session.state.network.reserved_types
+
       marker? = fn
         fact when is_tuple(fact) and tuple_size(fact) == 2 ->
-          fact |> elem(0) |> to_string() =~ "__neg_"
+          MapSet.member?(reserved, elem(fact, 0))
 
         _ ->
           false
@@ -1917,71 +1919,6 @@ defmodule Rete.BehaviorTest do
       assert [{marker, 2}] = duplicated
       assert marker?.(marker), "#{inspect(marker)} is held twice and is not a negation marker"
       assert %{cid: 1} == elem(marker, 1)
-    end
-
-    # The README says a session round-trips through `:erlang.term_to_binary/1` as it
-    # stands, compiled network and all, and that the receiving side only needs the same
-    # modules loaded. Nothing executed that claim. A session holds function references, so
-    # it is exactly the kind of value where "plain data" can quietly stop being true.
-    #
-    # Run over `Everything`, because the shapes that would hold a closure are a collection,
-    # a negation, a join filter and a query terminal, and this ruleset has all of them.
-    test "a session round-trips through term_to_binary and keeps working" do
-      session = everything()
-      restored = session |> :erlang.term_to_binary() |> :erlang.binary_to_term()
-
-      assert restored == session
-      assert Session.facts(restored) == Session.facts(session)
-      assert Session.settled?(restored)
-
-      # Still live: it fires, and truth maintenance still withdraws a conclusion.
-      grown = restored |> Session.insert({:order, 2, 900}) |> Session.fire_rules()
-      assert {:flagged, 2, 900} in Session.facts(grown)
-
-      shrunk = grown |> Session.retract({:order, 2, 900}) |> Session.fire_rules()
-      refute {:flagged, 2, 900} in Session.facts(shrunk)
-    end
-
-    # The caveat the README puts on that round trip: the receiving side needs the same
-    # compiled ruleset loaded. Checkpointing a session and reading it back after a redeploy
-    # is the case that tests, and it is not free. Most of the network holds external
-    # captures, which resolve by name, but a compound negation compiles to a generated
-    # helper whose marker alpha and RHS are local funs. A local fun resolves by a hash of
-    # the module's compiled form, so it survives a rebuild of the same source and nothing
-    # else. `Everything` has a compound negation, so this covers the harder half.
-    test "a checkpointed session survives the ruleset being recompiled" do
-      source = """
-      defmodule Rete.BehaviorTest.Redeployed do
-        use Rete.Ruleset
-
-        defrule clean({:cust, cid}, {:nand, [{:order, cid, _a}, {:refund, cid}]}),
-          do: {:clean, cid}
-      end
-      """
-
-      Code.compile_string(source)
-      module = Rete.BehaviorTest.Redeployed
-
-      checkpoint =
-        [module]
-        |> Session.new()
-        |> Session.insert([{:cust, 1}, {:order, 1, 5}, {:refund, 1}, {:cust, 2}])
-        |> Session.fire_rules()
-        |> :erlang.term_to_binary()
-
-      # The redeploy: the same source compiled again, replacing the loaded version.
-      :code.purge(module)
-      :code.delete(module)
-      Code.compile_string(source)
-
-      restored = :erlang.binary_to_term(checkpoint)
-
-      # Customer 1 has both an order and a refund, so the conjunction suppresses it.
-      assert [{:clean, 2}] == tagged(restored, :clean)
-
-      # And the generated helper still runs, so a new group is still judged.
-      grown = restored |> Session.insert({:cust, 3}) |> Session.fire_rules()
-      assert [{:clean, 2}, {:clean, 3}] == grown |> tagged(:clean) |> Enum.sort()
     end
   end
 end

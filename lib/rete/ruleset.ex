@@ -22,6 +22,12 @@ defmodule Rete.Ruleset do
   defines `<query_name>/(N+1)` for each query, which is the public face of a query, plus the
   `__rhs_<name>__/2` and `__<expr_code>__/1,2` machinery the engine calls.
 
+  `use Rete.Ruleset` also compiles an image of the rules. A snapshot carries it. A session
+  built with `target_images: true` runs it, so it keeps its rules across a hot upgrade. See
+  `Rete.Session.latest?/1` and `Rete.Session.dump/2`. Put `use Rete.Ruleset` after any
+  `use` whose `@before_compile` hook defines a helper, or the image cannot see it.
+  `config :rete, compile_timeout: ms` changes the two-minute limit on an image compile.
+
   Every `defrule` and `defquery` expands by running the front end pipeline:
 
       Rete.DSL.Parser      parse the quoted declaration into Rete.IR
@@ -60,6 +66,7 @@ defmodule Rete.Ruleset do
       @rete_expr_attrs %{}
 
       @before_compile Rete.Ruleset
+      @before_compile Rete.Image.Builder
     end
   end
 

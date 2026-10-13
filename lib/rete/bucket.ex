@@ -19,9 +19,10 @@ defmodule Rete.Bucket do
   that went. Tombstones are compacted once they outnumber the living occurrences. See
   `docs/design/engine.md` §7.
 
-  `:counts` is what makes `take/2` O(1), and `take/2` is the only thing that reads it. So it
-  is not maintained until the first `take/2` builds it from the queue in one pass. A session
-  that only inserts never takes from a bucket, and pays nothing for an index it never uses.
+  `:counts` is what makes `take/2` and `member/2` O(1), and only they read it. So it is not
+  maintained until the first of them builds it from the queue in one pass. A session that
+  only inserts never takes from a bucket, and pays nothing for an index it never uses. Above
+  `concurrency: 1`, the pending check of the engine calls `member/2`, so it builds the index.
 
   That build is safe because `take/2` is also the only writer of `:dead`. While `:indexed?`
   is false there are no tombstones, so the queue holds exactly the live items.
@@ -149,6 +150,19 @@ defmodule Rete.Bucket do
     queue |> :queue.to_list() |> skip_dead(dead, [])
   end
 
+  @doc """
+  Whether `target` has a live occurrence.
+
+  The bucket comes back too, for the reason `take/2` gives: the check builds the index.
+
+      iex> {true, _bucket} = Rete.Bucket.member(Rete.Bucket.new([:a]), :a)
+  """
+  @spec member(t(), term()) :: {boolean(), t()}
+  def member(%__MODULE__{} = bucket, target) do
+    %__MODULE__{counts: counts} = bucket = index(bucket)
+    {Map.has_key?(counts, target), bucket}
+  end
+
   @doc "Whether anything live is left."
   @spec empty?(t()) :: boolean()
   def empty?(%__MODULE__{live: live}), do: live == 0
@@ -158,8 +172,8 @@ defmodule Rete.Bucket do
   def size(%__MODULE__{live: live}), do: live
 
   # Builds `:counts` from the queue, once. Nothing has been taken yet — `take/2` is the
-  # only writer of `:dead` and the only caller of this — so there are no tombstones and
-  # the queue holds exactly the live items.
+  # only writer of `:dead`, and it indexes first — so there are no tombstones and the
+  # queue holds exactly the live items.
   defp index(%__MODULE__{indexed?: true} = bucket), do: bucket
 
   defp index(%__MODULE__{queue: queue} = bucket) do

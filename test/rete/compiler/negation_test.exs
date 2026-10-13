@@ -61,18 +61,24 @@ defmodule Rete.Compiler.NegationTest do
       assert [:cid] == marker.join_bind
       assert [:cid] == marker.bind
 
-      assert {helper.name, %{cid: 7}} == helper.rhs.(helper.hash, %{cid: 7})
+      assert {helper.name, %{cid: 7}} == helper.rhs.(helper.args, %{cid: 7})
       assert %{cid: 7} == marker.alpha.fun.({helper.name, %{cid: 7}})
       assert %{cid: 9} == marker.alpha.fun.({helper.name, %{cid: 9}})
     end
 
-    test "the marker alpha ignores anything that is not its own marker" do
-      {rewritten, _} = Negation.extract(rule(Rules, :clean))
+    # A remote capture holds no name to compare, so the alpha index does the check. The type
+    # of a marker is its name.
+    test "a marker reaches only its own marker alpha through the index" do
+      {rewritten, [helper]} = Negation.extract(rule(Rules, :clean))
       marker = negation_of(rewritten)
+      network = Rete.Compiler.build([Rules])
 
       assert nil == marker.alpha.fun.({:order, 1})
-      assert nil == marker.alpha.fun.({:some_other_marker, %{cid: 1}})
+      assert [marker.alpha.code] == alpha_codes(network, {helper.name, %{cid: 1}})
     end
+
+    defp alpha_codes(network, fact),
+      do: network |> Rete.Network.alphas_for(fact) |> Enum.map(& &1.code)
 
     defmodule Guarded do
       use Rete.Ruleset
@@ -108,7 +114,7 @@ defmodule Rete.Compiler.NegationTest do
       assert [:limit] == marker.bind
 
       assert {helper.name, %{limit: 10}} ==
-               helper.rhs.(helper.hash, %{limit: 10, x: 1, amt: 50})
+               helper.rhs.(helper.args, %{limit: 10, x: 1, amt: 50})
     end
 
     test "an ancestor binding the conjunction never reads is still not carried" do
@@ -118,7 +124,7 @@ defmodule Rete.Compiler.NegationTest do
       assert [:limit] == marker.join_bind
 
       assert {helper.name, %{limit: 10}} ==
-               helper.rhs.(helper.hash, %{limit: 10, region: :eu, x: 1, amt: 50})
+               helper.rhs.(helper.args, %{limit: 10, region: :eu, x: 1, amt: 50})
     end
 
     test "a conjunction with no ancestor binding carries nothing" do
@@ -126,7 +132,7 @@ defmodule Rete.Compiler.NegationTest do
       marker = negation_of(rewritten)
 
       assert [] == marker.join_bind
-      assert {helper.name, %{}} == helper.rhs.(helper.hash, %{a: 1})
+      assert {helper.name, %{}} == helper.rhs.(helper.args, %{a: 1})
     end
 
     # A rule that negated the marker before the helper produced it would fire
@@ -221,6 +227,77 @@ defmodule Rete.Compiler.NegationTest do
       {_, [b]} = Negation.extract(rule(ModB, :same))
 
       refute a.name == b.name
+    end
+  end
+
+  # `marker_alpha/1` does not check the marker's name, so the engine must keep every other
+  # fact away from the marker type. Each test here is one route a fact could take.
+  describe "the marker boundary" do
+    alias Rete.Session
+
+    @marker :"Rete.Compiler.NegationTest.Rules.clean__neg_1"
+
+    defmodule Forger do
+      use Rete.Ruleset
+
+      defrule forge({:forge, cid}) do
+        {:"Rete.Compiler.NegationTest.Rules.clean__neg_1", %{cid: cid}}
+      end
+    end
+
+    defmodule Deriving do
+      use Rete.Ruleset
+
+      derive(:fake, :"Rete.Compiler.NegationTest.Rules.clean__neg_1")
+    end
+
+    defmodule DerivingFrom do
+      use Rete.Ruleset
+
+      derive(:"Rete.Compiler.NegationTest.Rules.clean__neg_1", :fake)
+    end
+
+    test "a user insert of a marker raises" do
+      session = Session.new([Rules])
+
+      error = assert_raise ArgumentError, fn -> Session.insert(session, {@marker, %{cid: 1}}) end
+      assert error.message =~ "type of a compound negation marker"
+    end
+
+    test "a user retract of a marker raises" do
+      session = Session.new([Rules])
+
+      assert_raise ArgumentError, fn -> Session.retract(session, {@marker, %{cid: 1}}) end
+    end
+
+    test "a rule that concludes a marker raises, and the error names the rule" do
+      session = [Rules, Forger] |> Session.new() |> Session.insert({:forge, 1})
+
+      error = assert_raise ArgumentError, fn -> Session.fire_rules(session) end
+      assert error.message =~ "Rete.Compiler.NegationTest.Forger.forge"
+    end
+
+    test "a derive that names a marker type raises when the network is built" do
+      for deriving <- [Deriving, DerivingFrom] do
+        error = assert_raise ArgumentError, fn -> Session.new([Rules, deriving]) end
+        assert error.message =~ inspect(@marker)
+      end
+    end
+
+    test "a retract of a value with no type is still a no-op" do
+      session = Session.new([Rules])
+      assert Session.facts(Session.retract(session, 42)) == []
+    end
+
+    test "a :fact_type_fn that gives a user fact a marker type raises on insert" do
+      type = fn
+        {:forged, _} -> @marker
+        fact -> elem(fact, 0)
+      end
+
+      session = Session.new([Rules], fact_type_fn: type)
+
+      assert_raise ArgumentError, fn -> Session.insert(session, {:forged, %{cid: 1}}) end
     end
   end
 end

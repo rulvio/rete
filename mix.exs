@@ -1,7 +1,7 @@
 defmodule Rete.MixProject do
   use Mix.Project
 
-  @version "1.0.0"
+  @version "1.1.0"
   @source_url "https://github.com/rulvio/rete"
 
   def project do
@@ -26,10 +26,10 @@ defmodule Rete.MixProject do
     [preferred_envs: [dialyzer: :dev, docs: :dev]]
   end
 
-  # No :extra_applications. The engine has no supervision tree and no
-  # Logger calls. Tracing goes through Rete.Listener.Trace, which writes to a device the
-  # caller chooses.
-  def application, do: []
+  # Only :crypto, which hashes an image and signs a snapshot. The engine has no supervision
+  # tree and no Logger calls. Tracing goes through Rete.Listener.Trace, which writes to a
+  # device the caller chooses.
+  def application, do: [extra_applications: [:crypto]]
 
   # test/support holds the ruleset the doctests in lib/ run against. It is not shipped.
   defp elixirc_paths(:test), do: ["lib", "test/support"]
@@ -82,6 +82,7 @@ defmodule Rete.MixProject do
         "docs/design/network.md": [title: "The compiled network"],
         "docs/design/engine.md": [title: "The engine"],
         "docs/design/observability.md": [title: "Observability"],
+        "docs/design/snapshot.md": [title: "Snapshots"],
         LICENSE: [title: "License"]
       ],
       # Names with no page to link to. The first three are private, and the fourth is hidden
@@ -137,7 +138,10 @@ defmodule Rete.MixProject do
           Rete.Compiler.Sort,
           Rete.Compiler.Negation,
           Rete.Compiler.BetaGraph,
-          Rete.Network
+          Rete.Network,
+          Rete.Image,
+          Rete.Image.Builder,
+          Rete.Snapshot
         ],
         "Internals: network nodes": [Rete.Network.Node, ~r/^Rete\.Network\.Node\./],
         "Internals: the engine": [

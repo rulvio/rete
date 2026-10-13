@@ -30,12 +30,13 @@ node depends on what every other rule already put in the graph.
 
 ```elixir
 %Rete.Network{
-  alphas:      %{code => %Node.Alpha{}},   # one per distinct expression code
-  alpha_beta:  %{code => [beta_id]},       # the beta nodes each alpha feeds
-  taxonomy:    %Rete.Taxonomy{},           # indexed: fact type => alpha codes
-  graph:       %Rete.Compiler.BetaGraph{}, # beta nodes and their edges
-  queries:     %{name => beta_id},
-  productions: [%Rete.IR.Production{}]     # including generated helpers
+  alphas:         %{code => %Node.Alpha{}},   # one per distinct expression code
+  taxonomy:       %Rete.Taxonomy{},           # indexed: fact type => alpha codes
+  graph:          %Rete.Compiler.BetaGraph{}, # beta nodes and their edges
+  queries:        %{{module, name} => beta_id},
+  productions:    [%Rete.IR.Production{}],    # including generated helpers
+  reserved_types: MapSet.t(atom),             # the types of compound negation markers
+  built_images:   %{module => image}          # none until target images or a dump
 }
 ```
 
@@ -49,8 +50,8 @@ to the network.
    taxonomy's only use.**
 2. Each alpha's arity-1 function turns the fact into a bindings map, or `nil`. It matches a
    fact of *any* type, on purpose — step 1 already decided the type.
-3. Matching elements go to the beta nodes in `alpha_beta`. The engine propagates them along
-   the graph's forward edges.
+3. Matching elements go to the beta nodes in the alpha's `:children`. The engine propagates
+   them along the graph's forward edges.
 
 Step 2 runs once per alpha, not once per rule. So the number of alphas a type routes to is
 the number of times a fact is matched. Conditions written in several rules collapse onto
@@ -61,9 +62,11 @@ flag decides, and only an unqualified call clears it. See `ir.md` §5.
 
 ## 3. Node kinds
 
-Nodes are **data**. Activation logic lives in `Rete.Engine.Nodes`. No node carries its own
-children — the graph's forward edges hold that instead. A node is shared precisely when it
-is *equal*, and equality must not depend on how many rules happen to hang children off it.
+Nodes are **data**. Activation logic lives in `Rete.Engine.Nodes`. No beta node carries
+its own children — the graph's forward edges hold that instead. A beta node is shared
+precisely when it is *equal*, and equality must not depend on how many rules happen to
+hang children off it. An alpha holds its `:children` itself, because it is found by its
+code, never by equality.
 
 | Node | Produced by | What the engine does with it |
 |---|---|---|
@@ -76,7 +79,7 @@ is *equal*, and equality must not depend on how many rules happen to hang childr
 | `Accumulate` | a collection binding | gather matching elements into a list under `:coll_binding` |
 | `AccumulateJoin` | collection with a cross-condition guard | as above; candidates cannot be reduced until a token exists |
 | `Test` | a rule level `when` | propagate the token when `:fun.(bindings)` is truthy |
-| `Production` | a rule terminal | call `:rhs.(hash, bindings)`, logically insert the result |
+| `Production` | a rule terminal | call `:rhs.(args, bindings)`, logically insert the result |
 | `Query` | a query terminal | hold the tokens that reached it, keyed for lookup |
 
 ### `:propagates_empty?` on the accumulate nodes
@@ -210,12 +213,17 @@ Three properties make this correct:
   by truth maintenance — a visible, spurious activation.
 
 The marker's *type* is the generated name, so the alpha index routes it to exactly one
-place. Its alpha is the one exception to "an alpha matches a fact of any type": it checks
-the tag instead. A marker is engine machinery, not a user fact, so a stray tuple of the
-same shape must never be mistaken for one.
+place. Every alpha matches a fact of any type, and the marker alpha does too. It does not
+check the tag. So the engine keeps every other fact away from the generated name. It
+refuses a user insert or retract of a fact of that type. This also covers a
+`:fact_type_fn` that returns the name. It refuses a fact of that type that a user rule
+concludes. `Rete.Network.new/3` refuses a `derive` that names it on either side.
 
-Extraction runs after macro expansion. So a helper's expressions are plain closures
-wrapped in `Rete.IR.Expr`, not functions generated into a module.
+Extraction runs after macro expansion, so no module holds code generated for a helper. Its
+expressions are captures of `Rete.Compiler.Negation.marker/2` and `marker_alpha/1`. The
+helper's `:args` is `{name, carried}`, and the engine passes it to `marker/2` as the first
+argument. That is the data a closure would hold. A remote capture works on another node,
+and a closure does not. See `snapshot.md`.
 
 ---
 

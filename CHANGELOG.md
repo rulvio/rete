@@ -4,6 +4,78 @@ All notable changes to `rete` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.1.0
+
+### Added
+
+* `Rete.Session.dump/2` and `Rete.Session.load/2`. Both return `{:ok, value}` or
+  `{:error, reason}`. `dump!/2` and `load!/2` return the plain value, and raise on an
+  error. A snapshot holds the compiled code of its rules. So a session loads on a node that
+  runs another version of the ruleset modules, or none of them, and it keeps running its
+  own rules. A query keeps its `{module, name}`. Both functions require a secret key.
+  `dump/2` signs every snapshot with an HMAC-SHA256 under it, and `load/2` checks the
+  signature before it decodes the body. Listeners do not travel, so attach them again after
+  `load/2`. A snapshot is signed, not encrypted, so anyone who has it can read its facts.
+  That can include a fact that was retracted. A loaded session is in exactly the state that
+  was dumped, pending work included, apart from the network. A dump points the rules of a
+  session built without target images at the images. A session built with
+  `target_images: true`, or a loaded session, dumps the rules it was built with. See
+  `docs/design/snapshot.md`.
+* `use Rete.Ruleset` compiles an image module beside each ruleset module. For `MyRules`,
+  it is `MyRules.Image.M<hash>`, and the hash is taken over the code of the rules. An
+  image that does not compile never stops the ruleset module from compiling. A build with
+  target images raises for the module then. `:compile_timeout` in the `:rete` application
+  environment changes the two-minute limit on an image compile. See `docs/design/snapshot.md`
+  §2.
+* `target_images: true` on `Rete.Session.new/2` or `Rete.Compiler.build/2` makes a session
+  run the image of each ruleset module. So a session built before a hot upgrade keeps
+  running its own rules, consistently, until you build it again. `Rete.Session.latest?/1`
+  returns `false` when a ruleset module now offers other code. The default is `false`, and
+  the session calls the ruleset modules. `config :rete, target_images: true` changes the
+  default. **If you deploy with hot code upgrades, use `target_images: true`, and call
+  `latest?/1` after each upgrade.** A session built without target images records no
+  images, so it is the latest. A session that `load/2` returns records the images that the
+  dump carried. With target images, a build raises
+  `ArgumentError` if an image did not compile or does not load, and a stack trace names the
+  image module.
+* A rule body may return a `Task` instead of its facts. The result of the task is the
+  facts. At `concurrency: 1` the engine awaits each task before the next body runs. Above
+  `1`, it awaits up to that many tasks of one activation group together, and applies the
+  conclusions in group order. A `%Task{}` in a list of facts, a task that returns a task,
+  and a task that another process started each raise an error that names the rule. When an
+  error leaves `fire_rules/2`, the engine shuts down the tasks that are still in flight.
+  See `docs/design/engine.md` §11.
+* Five `bench/run.exs` scenarios. One flips a compound negation on and off. One dumps a
+  session of n customers, and one loads it. One dumps that session after half the customers
+  are retracted. One compiles r rules with `target_images: true`, so it shows that a build
+  with target images scales the same way. "match one condition written in k modules" now
+  runs on a fresh process.
+
+### Changed
+
+* Every rule body runs in the process that calls `fire_rules/2`. Above `concurrency: 1`,
+  only the tasks that bodies return run in parallel, so a body that does I/O returns one.
+  A body no longer pays for a task of its own, and its bindings are no longer copied.
+  `:timeout` limits the wait for a returned task, at every `:concurrency`.
+* Above `concurrency: 1`, a body no longer runs for a match that an earlier activation in
+  its group cancelled, when no task is in flight. A body can still run for such a match
+  while a task is in flight. `Rete.Agenda.pending/2` and `Rete.Bucket.member/2` make the
+  check. See `docs/design/engine.md` §11.
+* "a blocking rule body, by :concurrency" in `bench/run.exs` is now "a rule body that
+  returns a task, by :concurrency".
+* A compound negation helper captures `Rete.Compiler.Negation.marker/2` and
+  `marker_alpha/1`, where it held closures. Its new `:args` holds `{name, carried}`. The
+  marker alpha no longer checks the tag of a marker. The alpha index already routes a marker
+  by its type, which is its name.
+* The type of a marker is reserved for the engine. `Rete.Session.insert/2` and `retract/2`
+  raise `ArgumentError` for a fact of that type. This includes a fact that a
+  `:fact_type_fn` gives that type. A rule that returns such a fact raises when it fires. A
+  `derive` that names the type raises when the network is built.
+* `rete` now lists `:crypto` in `:extra_applications`.
+* `Rete.Network.marker?/2` is now `reserved?/2`, and `:marker_types` is now
+  `:reserved_types`. `Network.beta_children/2` and `:alpha_beta` are gone. An alpha node
+  holds the beta nodes it feeds in `:children`.
+
 ## 1.0.0
 
 The public API is stable from here. Semantic versioning covers the seven modules the README

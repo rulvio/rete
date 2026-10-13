@@ -117,6 +117,14 @@ defmodule Rete.ReadmeTest do
 
       assert %{bindings: %{cid: 2, name: "Bo"}, inserted: [{:dormant, "Bo"}]} = bo
     end
+
+    test "a dumped session loads and answers the query by its pair" do
+      key = "readme"
+      binary = Session.dump!(fired(), key)
+
+      {:ok, session} = Session.load(binary, key)
+      assert [{1, 250}] == Session.query(session, {Retail, :large_orders}, cid: 1)
+    end
   end
 
   defp emptied do

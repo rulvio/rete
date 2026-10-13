@@ -92,13 +92,14 @@ alpha expressions, join filters, and tests alike, deduplicated by code.
 |---|---|---|---|
 | `:name` | `atom` | W1 | rule name; also the name of the generated RHS function |
 | `:type` | `:rule \| :query` | W1 | |
-| `:hash` | `integer` | W1 | `:erlang.phash2([decl_ast, body_ast])` after module-attribute qualification. `decl_ast` includes the head |
+| `:hash` | `integer` | W1 | `:erlang.phash2([decl_ast, body_ast])` after module-attribute qualification. `decl_ast` includes the head. |
 | `:opts` | `keyword` | W1 | from the leading options map, e.g. `[salience: 100]`; `[]` if absent |
 | `:bind` | `[atom]`, **sorted** | W2c | every variable the LHS can make visible to the RHS, including fact/collection bindings; see below |
 | `:params` | `[atom]`, **sorted** | W1, checked by W2c | what the head of a query binds: the keys of its matches. `[]` on a rule. See below |
 | `:head` | `[String.t]`, **declaration order** | W1 | the head of a query as it was written, one string per pattern. `[]` on a rule. The patterns are AST, so they stay in `:__ast__`. This is the rendering every message about the query uses, and what `escape/1` carries to the network for it |
 | `:lhs` | `t:Rete.IR.lhs/0` | W1, rewritten by W2 | ordered condition list |
 | `:rhs` | `(hash, bindings_map -> facts) \| nil` | `escape/1` | `nil` before escaping |
+| `:args` | `term \| nil` | `Negation.extract/1` | the first argument of `:rhs` when it is not `:hash`. Only a compound negation helper sets it, to `{name, carried}`, which `Rete.Compiler.Negation.marker/2` reads |
 | `:module` | `module` | W1 | defining module |
 | `:__ast__` | `%{bind: %{atom => quoted}, decl: quoted, body: quoted}` | W1, narrowed by W2c | compile-time only, dropped by `escape/1`. A query with a head adds `head` (the patterns) and `head_bind` (`%{atom => quoted}`). A head guard is not here — it is on the `Rete.IR.Test` it became |
 

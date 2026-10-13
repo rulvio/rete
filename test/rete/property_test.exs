@@ -99,6 +99,46 @@ defmodule Rete.PropertyTest do
     end
   end
 
+  # `Everything` with every body moved onto a task it returns.
+  defmodule EverythingAsync do
+    use Rete.Ruleset
+
+    derive :premium, :customer
+    derive :customer, :party
+
+    defrule flagged({:threshold, t}, {:order, cid, amt} when amt > t) do
+      Task.async(fn -> {:flagged, cid, amt} end)
+    end
+
+    defrule escalate({:flagged, cid, _amt}), do: Task.async(fn -> {:escalated, cid} end)
+
+    defrule loyalty({:customer, cid}, orders = [{:order, cid, _amt}]) do
+      Task.async(fn -> {:loyalty, cid, length(orders)} end)
+    end
+
+    defrule dormant({:customer, cid}, {:not, [{:order, cid, _amt}]}) do
+      Task.async(fn -> {:dormant, cid} end)
+    end
+
+    defrule clean({:party, pid}, {:nand, [{:order, pid, _amt}, {:refund, pid}]}) do
+      Task.async(fn -> {:clean, pid} end)
+    end
+
+    defrule tagged({:or, [{:gold, cid}, {:silver, cid}]}, {:order, cid, amt}) do
+      Task.async(fn -> {:tagged, cid, amt} end)
+    end
+
+    defrule under({:cap, cid, lim}, {:not, [{:order, cid, amt} when amt > lim]}) do
+      Task.async(fn -> {:under, cid, lim} end)
+    end
+
+    defrule refunds(rs = [{:refund, _cid}]), do: Task.async(fn -> {:refund_count, length(rs)} end)
+
+    defrule stock({:depot, d}, items = [{:item, d, sku, _ref}], holds = [{:hold, d, sku}]) do
+      Task.async(fn -> {:stock, d, sku, length(items), length(holds)} end)
+    end
+  end
+
   # Small on purpose: a universe this size makes two facts collide on a join key,
   # a negation flip on the last element leaving, and a collection group empty and
   # refill, all within a handful of random draws.
@@ -159,6 +199,14 @@ defmodule Rete.PropertyTest do
   end
 
   defp counts(session), do: session.state.memory.facts
+
+  defp unmarked(session) do
+    reserved = session.state.network.reserved_types
+
+    session
+    |> counts()
+    |> Map.reject(fn {fact, _n} -> is_tuple(fact) and MapSet.member?(reserved, elem(fact, 0)) end)
+  end
 
   # Deep-sorts every leaf list of the memory, and every collection a token
   # carries. Order of arrival is not part of what a session means, but
@@ -350,8 +398,9 @@ defmodule Rete.PropertyTest do
       end
     end
 
-    # Raising :concurrency moves the rule bodies of an activation group onto tasks. What it
-    # must not change is the session that results, down to the truth-maintenance ledger.
+    # Raising :concurrency fires a whole activation group in each cycle, and applies its
+    # conclusions in group order. What it must not change is the session that results, down
+    # to the truth-maintenance ledger.
     # `Everything` spans every node kind, so negation, collections and disjunctions are
     # covered too.
     #
@@ -360,9 +409,24 @@ defmodule Rete.PropertyTest do
     # activation, so a rule activated by the conclusion of another can overtake a rule that
     # was already pending. Batching freezes the group, so the new activation waits for the
     # next one. See the pinned example in `Rete.EngineTest`.
-    property "firing rule bodies concurrently reaches the same session" do
+    property "firing whole activation groups reaches the same session" do
       check all(facts <- multiset(), concurrency <- integer(2..8), max_runs: 40) do
         assert canon(build(facts)) == canon(build(facts, concurrency))
+      end
+    end
+
+    # A body that returns a task moves only the task. The engine still applies conclusions
+    # in group order, so the facts must match the synchronous ruleset at every concurrency.
+    # The compound negation's marker type is named after its module, so it is left out.
+    property "rule bodies that return tasks reach the same facts" do
+      check all(facts <- multiset(), concurrency <- integer(1..8), max_runs: 40) do
+        async =
+          [EverythingAsync]
+          |> Session.new()
+          |> Session.insert(facts)
+          |> Session.fire_rules(concurrency: concurrency)
+
+        assert unmarked(build(facts)) == unmarked(async)
       end
     end
 
@@ -722,6 +786,36 @@ defmodule Rete.PropertyTest do
 
   defp maybe_fire(session, :fire_each), do: Session.fire_rules(session)
   defp maybe_fire(session, :fire_last), do: session
+
+  # --- a dump and a load change nothing -----------------------------------------------------------
+
+  # A snapshot carries the state as it is, tombstones and pending work included. So the
+  # loaded session must equal the one it came from, before a fire and after one. Only the
+  # network differs, because the dump points the rules of this session at their images.
+  describe "dump and load" do
+    property "a dump and a load leave the session exactly as it was" do
+      check all(
+              ops <- list_of(op(), max_length: 30),
+              pending <- list_of(op(), max_length: 5),
+              max_runs: 40
+            ) do
+        {settled, _multiset} = apply_ops(ops)
+
+        session =
+          Enum.reduce(pending, settled, fn
+            {:insert, f}, session -> Session.insert(session, f)
+            {:retract, f}, session -> Session.retract(session, f)
+          end)
+
+        {:ok, loaded} = session |> Session.dump!("key") |> Session.load("key")
+
+        assert unnetworked(loaded) == unnetworked(session)
+        assert unnetworked(Session.fire_rules(loaded)) == unnetworked(Session.fire_rules(session))
+      end
+    end
+  end
+
+  defp unnetworked(%Session{state: state}), do: %{state | network: nil}
 
   # --- settled? answers for the agenda as well as the queue ----------------------------------
 

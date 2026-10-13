@@ -249,7 +249,7 @@ defmodule Rete.IR do
     @moduledoc """
     A rule or a query.
 
-    `t:t/0` types every field. Three are not obvious:
+    `t:t/0` types every field. Some are not obvious:
 
       * `:name` names the production, but the generated RHS function is `rhs_name/1` of
         it instead — a query owns its own name in its module.
@@ -267,6 +267,9 @@ defmodule Rete.IR do
         network.
       * `:rhs` is `nil` until the production is escaped. The engine logically inserts
         and truth-maintains its return value. `nil` or `[]` inserts nothing.
+      * `:args` is the first argument of the RHS when it is not `:hash`. Only a compound
+        negation helper sets it, to `{name, carried}`, which
+        `Rete.Compiler.Negation.marker/2` reads.
     """
 
     @type t :: %__MODULE__{
@@ -278,7 +281,8 @@ defmodule Rete.IR do
             params: [atom()],
             head: [String.t()],
             lhs: Rete.IR.lhs(),
-            rhs: (integer(), map() -> any()) | nil,
+            rhs: (term(), map() -> any()) | nil,
+            args: term() | nil,
             module: module(),
             __ast__: map() | nil
           }
@@ -291,6 +295,7 @@ defmodule Rete.IR do
       :bind,
       :lhs,
       :rhs,
+      :args,
       :module,
       :__ast__,
       params: [],

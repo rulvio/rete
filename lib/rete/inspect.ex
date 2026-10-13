@@ -281,7 +281,7 @@ defmodule Rete.Inspect do
         is_list(matched) ->
           [%{fact: matched, origin: :gathered, from: [], members: members(state, matched)}]
 
-        Network.marker?(state.network, matched) ->
+        Network.reserved?(state.network, matched) ->
           []
 
         true ->

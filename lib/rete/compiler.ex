@@ -7,6 +7,7 @@ defmodule Rete.Compiler do
 
       Rete.Compiler.Negation   rewrite compound negations into helper productions
       disambiguate_codes/1     qualify an expression code two modules disagree on
+      Rete.Image.target/2      point the productions at the image of each module
       Rete.Compiler.BetaGraph  build the beta nodes, sharing them where possible
       Rete.Network             group conditions into alpha nodes, index the taxonomy
 
@@ -34,14 +35,30 @@ defmodule Rete.Compiler do
 
   alias Rete.Compiler.BetaGraph
   alias Rete.Compiler.Negation
+  alias Rete.Image
   alias Rete.IR
   alias Rete.Network
 
   @doc """
   Builds a network from ruleset modules.
 
-  Options go to `Rete.Taxonomy.new/2`. `:fact_type_fn` is the one that matters, and it
-  defaults to struct, tagged tuple and tagged map.
+  Options:
+
+    * `:fact_type_fn` goes to `Rete.Taxonomy.new/2`. It defaults to struct, tagged tuple
+      and tagged map.
+    * `:target_images` is `false` by default. The network then calls the ruleset modules.
+      With `true`, it runs the image of each ruleset module, so it keeps its rules after a
+      hot upgrade of the module. `config :rete, target_images: true` changes the default.
+
+  `config :rete, compile_timeout: ms` limits each image compile. It acts when a ruleset
+  module compiles, so no build option can change it.
+
+  **With hot code upgrades, build with `target_images: true`.** Call
+  `Rete.Session.latest?/1` after each upgrade, and build a new network when it returns
+  `false`. Without target images, a network built before an upgrade calls the new code.
+
+  With `target_images: true`, raises `ArgumentError` if the image of a ruleset module did
+  not compile or does not load.
 
       Rete.Compiler.build([MyRuleset])
       Rete.Compiler.build([MyRuleset, OtherRuleset], fact_type_fn: &MyApp.type/1)
@@ -57,16 +74,41 @@ defmodule Rete.Compiler do
   @doc """
   Builds a network from productions directly, bypassing module aggregation.
 
-  Useful for testing a set of productions without a ruleset module per case.
+  Useful for testing a set of productions without a ruleset module per case. It takes the
+  options of `build/2`, and raises as `build/2` does.
   """
   @spec build_productions([IR.Production.t()], [tuple()], keyword()) :: Network.t()
   def build_productions(productions, taxo_data \\ [], opts \\ []) do
     validate_names!(productions)
 
-    productions
-    |> Enum.flat_map(&extract/1)
-    |> disambiguate_codes()
-    |> Network.new(taxo_data, opts)
+    productions = productions |> Enum.flat_map(&extract/1) |> disambiguate_codes()
+
+    {productions, built} =
+      if target_images?(opts), do: run_images(productions), else: {productions, %{}}
+
+    Network.new(productions, taxo_data, Keyword.put(opts, :built_images, built))
+  end
+
+  defp target_images?(opts),
+    do: Keyword.get(opts, :target_images, Application.get_env(:rete, :target_images, false))
+
+  # Every function of a network comes from its productions, so pointing them at the images
+  # before the build points the whole network. That walks the input, which is much smaller
+  # than the network. An image that did not compile, or does not load, raises. Calls to the
+  # module instead would hide it, and the session would no longer keep its rules across an
+  # upgrade. A module that offers no image, such as one that is not a ruleset, keeps its
+  # calls.
+  defp run_images(productions) do
+    modules = productions |> Enum.map(& &1.module) |> Enum.uniq()
+
+    with {:ok, images} <- Image.collect(modules),
+         :ok <- Image.load(Map.new(Map.values(images))) do
+      built = Map.new(images, fn {module, {name, _beam}} -> {module, name} end)
+      {Image.target(productions, images), built}
+    else
+      {:error, reason} ->
+        raise ArgumentError, "cannot build the network. " <> Image.message(reason)
+    end
   end
 
   # A helper must be added before the production that negates its marker. So its
