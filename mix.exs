@@ -97,7 +97,8 @@ defmodule Rete.MixProject do
         "Rete.Session.pending/1",
         "Rete.DSL.Codegen.type_code/1",
         "Rete.Inspect.query_plan/3",
-        "Rete.Memory.index_id/2"
+        "Rete.Memory.index_id/2",
+        "Rete.Network.marker?/2"
       ],
       groups_for_extras: [
         Guides: ["README.md", "docs/dsl.md"],
