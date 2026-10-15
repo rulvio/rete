@@ -308,8 +308,12 @@ defmodule Rete.Inspect do
     rules = state |> derivations(fact) |> Enum.map(&{&1.module, &1.name}) |> Enum.uniq()
     inserted = if Memory.inserted_count(state.memory, fact) > 0, do: [@inserted], else: []
 
-    %{fact: fact, origin: :assert, sources: inserted ++ Enum.sort(rules), members: nil}
+    %{fact: fact, origin: :assert, sources: inserted ++ sort_rules(rules), members: nil}
   end
+
+  defp sort_rules([] = rules), do: rules
+  defp sort_rules([_one] = rules), do: rules
+  defp sort_rules(rules), do: Enum.sort(rules)
 
   # Builds the `inserters` index, and keeps it for the rest of this call.
   #
