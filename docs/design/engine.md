@@ -269,7 +269,7 @@ hangs straight off the beta root, so the seeded token is its whole match. It the
 exactly one activation, on the first fire.
 
 Its conclusion rests on the root token, which no retraction reaches. So it is the one
-conclusion that survives retracting every fact the user asserted. That is not a leak. §8
+conclusion that survives retracting every fact the user inserted. That is not a leak. §8
 records every insertion against the token behind it, and nothing ever retracts this token.
 
 A query written the same way holds that one token and answers one row, in every session
@@ -373,7 +373,7 @@ that produced it, and it never discards one.
 Nothing needs weighing, because an **occurrence** is what a record holds up, and not a fact.
 A match that rests on occurrence 1 and concludes occurrence 2 grounds occurrence 2 on
 occurrence 1. Retracting occurrence 1 takes one insertion batch back, which retracts
-occurrence 2, and the chain unwinds to whatever the caller asserted. No count is ever held
+occurrence 2, and the chain unwinds to whatever the caller inserted. No count is ever held
 up by itself.
 
 A rule that reads what it writes therefore does not settle:

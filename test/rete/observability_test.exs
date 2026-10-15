@@ -131,18 +131,18 @@ defmodule Rete.ObservabilityTest do
     end
 
     # The distinction that makes provenance reconstructable from events alone.
-    test "an inserted fact is asserted and a concluded one is derived" do
+    test "an inserted fact names your call and a concluded one names its rule" do
       inserted =
         observed()
         |> Listener.Collect.by_tag(:fact_inserted)
         |> Map.new(fn {:fact_inserted, fact, origin} -> {fact, origin} end)
 
-      assert :asserted == inserted[{:order, 1, 250}]
-      assert {:derived, %{rule: {Rules, :flag}}} = inserted[{:flagged, 1}]
-      assert {:derived, %{rule: {Rules, :escalate}}} = inserted[{:escalated, 1}]
+      assert {Session, :insert} == inserted[{:order, 1, 250}]
+      assert {Rules, :flag} == inserted[{:flagged, 1}]
+      assert {Rules, :escalate} == inserted[{:escalated, 1}]
     end
 
-    test "a retraction cascade is visible as derived retractions" do
+    test "a retraction cascade names the rule of each support it removes" do
       retracted =
         observed()
         |> Session.retract({:order, 1, 250})
@@ -150,9 +150,9 @@ defmodule Rete.ObservabilityTest do
         |> Listener.Collect.by_tag(:fact_retracted)
         |> Map.new(fn {:fact_retracted, fact, origin} -> {fact, origin} end)
 
-      assert :asserted == retracted[{:order, 1, 250}]
-      assert {:derived, %{rule: {Rules, :flag}}} = retracted[{:flagged, 1}]
-      assert {:derived, %{rule: {Rules, :escalate}}} = retracted[{:escalated, 1}]
+      assert {Session, :retract} == retracted[{:order, 1, 250}]
+      assert {Rules, :flag} == retracted[{:flagged, 1}]
+      assert {Rules, :escalate} == retracted[{:escalated, 1}]
     end
 
     test "every occurrence of a fact is reported, and every one propagates" do
@@ -169,8 +169,8 @@ defmodule Rete.ObservabilityTest do
         |> Enum.filter(fn {_tag, fact, _origin} -> fact == {:order, 1, 250} end)
 
       assert [
-               {:fact_inserted, {:order, 1, 250}, :asserted},
-               {:fact_inserted, {:order, 1, 250}, :asserted}
+               {:fact_inserted, {:order, 1, 250}, {Session, :insert}},
+               {:fact_inserted, {:order, 1, 250}, {Session, :insert}}
              ] == inserted
 
       assert 2 == session |> Listener.Collect.by_tag(:activation_fired) |> Enum.count(&flagged?/1)
@@ -255,34 +255,50 @@ defmodule Rete.ObservabilityTest do
       assert %{rule: :flag, module: Rules, type: :rule, activations: [activation]} =
                Inspect.explain(session(), {Rules, :flag})
 
-      assert %{bindings: %{cid: 1, amt: 250}, inserted: [{:flagged, 1}]} = activation
-      assert [%{fact: {:order, 1, 250}, origin: :asserted, from: []}] = activation.matches
+      assert %{bindings: %{cid: 1, amt: 250}, asserts: [{:flagged, 1}]} = activation
+
+      assert [%{fact: {:order, 1, 250}, origin: :assert, sources: [{Session, :insert}]}] =
+               activation.matches
     end
 
-    # One level of provenance. `:from` names the rule, and you follow that pair to its own
-    # entry rather than reading a tree that repeats under everything resting on it.
-    test "a derived fact names the rule that concluded it" do
+    # One level of provenance. `:sources` names the rule, and you follow that pair to its
+    # own entry rather than reading a tree that repeats under everything resting on it.
+    test "a concluded fact names the rule that concluded it" do
       assert %{activations: [%{matches: [match]}]} =
                Inspect.explain(session(), {Rules, :escalate})
 
-      assert %{fact: {:flagged, 1}, origin: :derived, from: [{Rules, :flag}]} = match
+      assert %{fact: {:flagged, 1}, origin: :assert, sources: [{Rules, :flag}]} = match
     end
 
-    # The case a lookup returning the *first* support gets wrong, and the reason `:from` is
-    # a list rather than one pair.
+    # Memory counts occurrences, and not who added each one. So the inserted share is what
+    # the rules do not account for.
+    test "a fact you inserted that a rule also concluded names both" do
+      session = session([{:flagged, 1} | @facts])
+
+      assert %{activations: [%{matches: [match]}]} = Inspect.explain(session, {Rules, :escalate})
+      assert [{Session, :insert}, {Rules, :flag}] == match.sources
+
+      session = session |> Session.retract({:flagged, 1}) |> Session.fire_rules()
+
+      assert %{activations: [%{matches: [match]}]} = Inspect.explain(session, {Rules, :escalate})
+      assert [{Rules, :flag}] == match.sources
+    end
+
+    # The case a lookup returning the *first* support gets wrong, and the reason `:sources`
+    # is a list rather than one pair.
     test "a fact with two independent supports names both rules" do
       %{activations: activations} = Inspect.explain(session(), {Rules, :vip_gold})
       %{activations: spend} = Inspect.explain(session(), {Rules, :vip_spend})
 
-      assert [{:vip, 2}] == Enum.flat_map(activations, & &1.inserted)
-      assert [{:vip, 2}] == Enum.flat_map(spend, & &1.inserted)
+      assert [{:vip, 2}] == Enum.flat_map(activations, & &1.asserts)
+      assert [{:vip, 2}] == Enum.flat_map(spend, & &1.asserts)
 
       # Read from the other side: whatever matches {:vip, 2} sees both as its source.
       assert %{activations: [%{matches: [match]}]} =
                Inspect.explain(session(), {Rules, :vip_reader})
 
-      assert :derived == match.origin
-      assert [{Rules, :vip_gold}, {Rules, :vip_spend}] == Enum.sort(match.from)
+      assert :assert == match.origin
+      assert [{Rules, :vip_gold}, {Rules, :vip_spend}] == match.sources
     end
 
     test "a rule that never fired reports no activations" do
@@ -335,7 +351,7 @@ defmodule Rete.ObservabilityTest do
     # fact for the negation to match on, but it is not something the user's rules concluded
     # and must not appear in an explanation.
     test "internal negation markers never appear in an explanation" do
-      assert %{activations: [%{matches: matches, inserted: [{:clean, 3}]}]} =
+      assert %{activations: [%{matches: matches, asserts: [{:clean, 3}]}]} =
                Inspect.explain(session(), {Rules, :clean})
 
       assert [{:cust, 3}] == Enum.map(matches, & &1.fact)
@@ -354,9 +370,9 @@ defmodule Rete.ObservabilityTest do
       assert %{type: :query, activations: [activation]} =
                Inspect.explain(session(), {Rules, :flagged_rows})
 
-      assert [] == activation.inserted
+      assert [] == activation.asserts
 
-      assert [%{fact: {:flagged, 1}, origin: :derived, from: [{Rules, :flag}]}] =
+      assert [%{fact: {:flagged, 1}, origin: :assert, sources: [{Rules, :flag}]}] =
                activation.matches
     end
   end
@@ -580,16 +596,16 @@ defmodule Rete.ObservabilityTest do
       session = plain_collection()
       activation = only_activation(session, {Collections, :spend})
 
-      assert [%{fact: {:customer, 1, "Ada"}, origin: :asserted}, collection] =
+      assert [%{fact: {:customer, 1, "Ada"}, origin: :assert}, collection] =
                activation.matches
 
-      assert :gathered == collection.origin
+      assert :gather == collection.origin
       assert [{:order, 1, 40}, {:order, 1, 250}] == Enum.sort(collection.fact)
 
       assert [{:order, 1, 40}, {:order, 1, 250}] ==
                collection.members |> Enum.map(& &1.fact) |> Enum.sort()
 
-      assert [{:spend, 1, 2}] == activation.inserted
+      assert [{:spend, 1, 2}] == activation.asserts
     end
 
     # The fact the filter kept out must not appear. Reporting the stored candidates would
@@ -598,10 +614,10 @@ defmodule Rete.ObservabilityTest do
       session = filtered_collection()
       activation = only_activation(session, {Collections, :big})
 
-      collection = Enum.find(activation.matches, &(&1.origin == :gathered))
+      collection = Enum.find(activation.matches, &(&1.origin == :gather))
 
       assert [{:sale, 1, 250}] == collection.fact
-      assert [{:big, 1, 1}] == activation.inserted
+      assert [{:big, 1, 1}] == activation.asserts
     end
 
     # The case the old node-and-join-key call could not answer. Two thresholds over one
@@ -626,7 +642,7 @@ defmodule Rete.ObservabilityTest do
       gathered =
         for activation <- activations,
             match <- activation.matches,
-            match.origin == :gathered,
+            match.origin == :gather,
             do: {activation.bindings.limit, Enum.sort(match.fact)}
 
       # The activation for 100 gathered 250 and 150. The one for 200 gathered 250 alone.
@@ -660,10 +676,12 @@ defmodule Rete.ObservabilityTest do
         session
         |> only_activation({Gathered, :tally})
         |> Map.fetch!(:matches)
-        |> Enum.find(&(&1.origin == :gathered))
+        |> Enum.find(&(&1.origin == :gather))
 
-      assert Enum.all?(collection.members, &(&1.origin == :derived))
-      assert [[{Gathered, :flag_it}]] == collection.members |> Enum.map(& &1.from) |> Enum.uniq()
+      assert Enum.all?(collection.members, &(&1.origin == :assert))
+
+      assert [[{Gathered, :flag_it}]] ==
+               collection.members |> Enum.map(& &1.sources) |> Enum.uniq()
     end
   end
 

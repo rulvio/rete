@@ -39,37 +39,44 @@ defmodule Rete.Inspect do
   alias Rete.Network.Node
   alias Rete.Session
 
+  # The source a fact you inserted reports. It is a `{module, name}` pair like every rule
+  # source, so one pattern reads all of `:sources`.
+  @inserted {Rete.Session, :insert}
+
   @typedoc "A rule or query, named the way `Rete.Session.query/3` names one."
   @type ref :: {module(), atom()}
 
   @typedoc """
   One fact behind a match, and where it came from.
 
-  `:origin` is `:asserted` for a fact you inserted, `:derived` for one a rule concluded,
-  and `:gathered` for a collection. `:from` names the rules that concluded the fact. It is
-  a **list**, because a fact can rest on more than one independent support, and it is `[]`
-  unless `:origin` is `:derived`.
+  `:origin` is `:assert` for one fact, and `:gather` for a collection.
+
+  `:sources` says how the fact got into working memory. `{Rete.Session, :insert}` means you
+  inserted it. Any other pair names a rule that concluded it. It is a **list**, because a
+  fact can rest on more than one independent support. A fact you inserted and a rule also
+  concluded names both, unless you retracted it after the rule concluded it. `:sources` is
+  `[]` only on a collection.
 
   `:members` is `nil`, except on a collection. There `:fact` is the gathered list, which is
   what the rule received, and `:members` describes each fact in it.
   """
   @type match :: %{
           fact: term(),
-          origin: :asserted | :derived | :gathered,
-          from: [ref()],
+          origin: :assert | :gather,
+          sources: [{module(), atom()}],
           members: [match()] | nil
         }
 
   @typedoc """
   One match a rule fired on.
 
-  `:inserted` is what the rule concluded from this match. It is `[]` on a query, because a
+  `:asserts` is what the rule concluded from this match. It is `[]` on a query, because a
   query concludes nothing.
   """
   @type activation :: %{
           bindings: %{atom() => term()},
           matches: [match()],
-          inserted: [term()]
+          asserts: [term()]
         }
 
   @typedoc "What one rule or query did."
@@ -109,17 +116,17 @@ defmodule Rete.Inspect do
   What one rule or query did, match by match.
 
   Each activation is one match the rule fired on. `:bindings` is what that match bound,
-  `:matches` is the facts behind it, and `:inserted` is what the rule concluded from it.
+  `:matches` is the facts behind it, and `:asserts` is what the rule concluded from it.
 
   `activations: []` means the rule concluded nothing. That is usually a rule that never
   matched, and `why_not/2` then says where it stopped. A rule whose body returns `nil` or
   `[]` reports the same, because nothing in memory records a match no conclusion rests on.
   `Rete.Listener` sees that firing where this cannot.
 
-  Each entry of `:matches` says where its fact came from. `:from` names the rules that
+  Each entry of `:matches` says where its fact came from. `:sources` names the rules that
   concluded it, so you read a chain by following that pair to its own entry in the same
-  result. A collection reports the gathered list as its fact, and describes each member
-  under `:members`.
+  result. `{Rete.Session, :insert}` in `:sources` means you inserted the fact. A collection
+  reports the gathered list as its fact, and describes each member under `:members`.
 
   Activations are sorted by their bindings, and not by the order they fired in. Two that
   bind the same values keep an order that carries no meaning. One session gives one answer,
@@ -133,10 +140,10 @@ defmodule Rete.Inspect do
       ...>   |> Session.fire_rules()
       iex> %{activations: [activation]} =
       ...>   Inspect.explain(session, {Rete.Doc.Orders, :large_order})
-      iex> activation.inserted
+      iex> activation.asserts
       [{:flagged, 1, 250}]
-      iex> Enum.map(activation.matches, &{&1.fact, &1.origin})
-      [{{:customer, 1}, :asserted}, {{:order, 1, 250}, :asserted}]
+      iex> Enum.map(activation.matches, &{&1.fact, &1.sources})
+      [{{:customer, 1}, [{Rete.Session, :insert}]}, {{:order, 1, 250}, [{Rete.Session, :insert}]}]
 
   The query over what that rule concluded names the rule as the source of its own match:
 
@@ -147,8 +154,8 @@ defmodule Rete.Inspect do
       ...>   |> Session.fire_rules()
       iex> %{type: :query, activations: [%{matches: [match]}]} =
       ...>   Inspect.explain(session, {Rete.Doc.Orders, :flagged_for})
-      iex> {match.fact, match.origin, match.from}
-      {{:flagged, 1, 250}, :derived, [{Rete.Doc.Orders, :large_order}]}
+      iex> {match.fact, match.origin, match.sources}
+      {{:flagged, 1, 250}, :assert, [{Rete.Doc.Orders, :large_order}]}
   """
   @spec explain(Session.t(), ref()) :: explanation()
   def explain(%Session{state: state}, {module, name} = ref)
@@ -253,8 +260,8 @@ defmodule Rete.Inspect do
     |> sort_activations()
   end
 
-  defp activation(state, token, inserted) do
-    %{bindings: token.bindings, matches: matches(state, token), inserted: inserted}
+  defp activation(state, token, asserts) do
+    %{bindings: token.bindings, matches: matches(state, token), asserts: asserts}
   end
 
   # `all_tokens/2` reads a map of join keys, and `insertions` is a map of tokens, so
@@ -279,7 +286,7 @@ defmodule Rete.Inspect do
     Enum.flat_map(token.matches, fn {matched, _node_id} ->
       cond do
         is_list(matched) ->
-          [%{fact: matched, origin: :gathered, from: [], members: members(state, matched)}]
+          [%{fact: matched, origin: :gather, sources: [], members: members(state, matched)}]
 
         Network.reserved?(state.network, matched) ->
           []
@@ -293,15 +300,20 @@ defmodule Rete.Inspect do
   defp members(state, facts), do: Enum.map(facts, &fact_match(state, &1))
 
   # Where one fact came from. A fact that reached a match is in working memory by
-  # construction, so there is no third answer here: it was asserted, or a rule concluded
-  # it. `:from` is a list, because a fact can rest on more than one independent support,
-  # and each of them holds it up on its own.
+  # construction, so each of its occurrences was inserted by you or concluded by a rule.
+  # `:sources` is a list, because a fact can rest on more than one independent support,
+  # and each of them holds it up on its own. The rules are sorted, so one session gives
+  # one answer.
   defp fact_match(state, fact) do
-    case state |> derivations(fact) |> Enum.map(&{&1.module, &1.name}) |> Enum.uniq() do
-      [] -> %{fact: fact, origin: :asserted, from: [], members: nil}
-      refs -> %{fact: fact, origin: :derived, from: refs, members: nil}
-    end
+    rules = state |> derivations(fact) |> Enum.map(&{&1.module, &1.name}) |> Enum.uniq()
+    inserted = if Memory.inserted_count(state.memory, fact) > 0, do: [@inserted], else: []
+
+    %{fact: fact, origin: :assert, sources: inserted ++ sort_rules(rules), members: nil}
   end
+
+  defp sort_rules([] = rules), do: rules
+  defp sort_rules([_one] = rules), do: rules
+  defp sort_rules(rules), do: Enum.sort(rules)
 
   # Builds the `inserters` index, and keeps it for the rest of this call.
   #

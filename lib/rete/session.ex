@@ -279,7 +279,7 @@ defmodule Rete.Session do
       ...> |> Session.with_listener(Rete.Listener.Collect, [])
       ...> |> Session.insert({:customer, 1})
       ...> |> Rete.Listener.Collect.by_tag(:fact_inserted)
-      [{:fact_inserted, {:customer, 1}, :asserted}]
+      [{:fact_inserted, {:customer, 1}, {Rete.Session, :insert}}]
   """
   @spec with_listener(t(), module(), term()) :: t()
   def with_listener(session, module, init \\ nil),

@@ -309,7 +309,7 @@ defmodule Rete.Memory do
   @doc """
   The matches whose activation inserted `fact`, as `{node_id, token}` pairs.
 
-  Empty for a fact the user asserted. A fact two rules concluded has two entries, and one
+  Empty for a fact the user inserted. A fact two rules concluded has two entries, and one
   rule may appear twice if it concluded the fact on two activations of the same match.
 
   This is the index behind `Rete.Inspect.explain/1,2`, which asks it once per matched fact.
@@ -332,6 +332,37 @@ defmodule Rete.Memory do
 
   def inserters(%__MODULE__{inserters: inserters}, fact) do
     inserters |> Map.get(fact, %{}) |> Map.keys()
+  end
+
+  @doc """
+  How many occurrences of `fact` the user inserted, and no rule concluded.
+
+  Memory keeps no separate count of these. A conclusion adds an occurrence to `facts` as an
+  insert does, and `insertions` records it one time for each fact in a batch. So the
+  difference between the two is what the user inserted.
+
+  The result is never below zero. Like `inserters/2`, this scans every insertion record
+  when the index is not built.
+  """
+  @spec inserted_count(t(), term()) :: non_neg_integer()
+  def inserted_count(%__MODULE__{facts: facts} = memory, fact) do
+    case Map.get(facts, fact, 0) - concluded_count(memory, fact) do
+      count when is_integer(count) and count > 0 -> count
+      _none -> 0
+    end
+  end
+
+  defp concluded_count(%__MODULE__{inserters: nil, insertions: insertions}, fact) do
+    for {_node_id, by_token} <- insertions,
+        {_token, batches} <- by_token,
+        batch <- batches,
+        ^fact <- batch,
+        reduce: 0,
+        do: (n -> n + 1)
+  end
+
+  defp concluded_count(%__MODULE__{inserters: inserters}, fact) do
+    inserters |> Map.get(fact, %{}) |> Map.values() |> Enum.sum()
   end
 
   @doc """

@@ -110,12 +110,17 @@ defmodule Rete.ReadmeTest do
       assert %{
                bindings: %{cid: 1, name: "Ada"},
                matches: [
-                 %{fact: {:customer, 1, "Ada"}, origin: :asserted, from: [], members: nil}
+                 %{
+                   fact: {:customer, 1, "Ada"},
+                   origin: :assert,
+                   sources: [{Session, :insert}],
+                   members: nil
+                 }
                ],
-               inserted: [{:dormant, "Ada"}]
+               asserts: [{:dormant, "Ada"}]
              } = ada
 
-      assert %{bindings: %{cid: 2, name: "Bo"}, inserted: [{:dormant, "Bo"}]} = bo
+      assert %{bindings: %{cid: 2, name: "Bo"}, asserts: [{:dormant, "Bo"}]} = bo
     end
 
     test "a dumped session loads and answers the query by its pair" do

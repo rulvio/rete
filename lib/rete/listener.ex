@@ -36,8 +36,10 @@ defmodule Rete.Listener do
   `source` is `%{node: node_id, rule: {module, name}}`. It is a map, so a field can be
   added later without changing the shape every listener matches on. `{:propagated, ...}`
   is the exception, and it carries the bare id, because a join has no user-facing name.
-  `origin` is `:asserted` or `{:derived, source}`. This is what lets a listener
-  reconstruct provenance, without reading memory. See `docs/design/observability.md` §1.
+  `origin` is a `{module, name}` pair. `{Rete.Session, :insert}` and
+  `{Rete.Session, :retract}` mean your own call. Any other pair names the rule whose match
+  added or lost the fact. This is what lets a listener reconstruct provenance, without
+  reading memory. See `docs/design/observability.md` §1.
   """
 
   @typedoc "Anything a listener chooses to carry between events."
@@ -46,8 +48,8 @@ defmodule Rete.Listener do
   @typedoc "Which terminal an event came from: its node id and its `{module, name}`."
   @type source :: %{node: term(), rule: {module(), atom()}}
 
-  @typedoc "Where a fact came from."
-  @type origin :: :asserted | {:derived, source()}
+  @typedoc "Where a fact came from, or what took it away: your own call, or a rule."
+  @type origin :: {module(), atom()}
 
   @typedoc "An engine event. Match the ones you care about and ignore the rest."
   @type event ::
@@ -139,15 +141,15 @@ defmodule Rete.Listener.Trace do
 
   defp describe({:fire_started, _opts}), do: "fire"
   defp describe({:fire_finished, fired}), do: "settled after #{fired} activations"
-  defp describe({:fact_inserted, fact, :asserted}), do: "  + #{inspect(fact)}"
+  defp describe({:fact_inserted, fact, {Rete.Session, :insert}}), do: "  + #{inspect(fact)}"
 
-  defp describe({:fact_inserted, fact, {:derived, source}}),
-    do: "  + #{inspect(fact)} (from #{rule(source)})"
+  defp describe({:fact_inserted, fact, origin}),
+    do: "  + #{inspect(fact)} (from #{rule(origin)})"
 
-  defp describe({:fact_retracted, fact, :asserted}), do: "  - #{inspect(fact)}"
+  defp describe({:fact_retracted, fact, {Rete.Session, :retract}}), do: "  - #{inspect(fact)}"
 
-  defp describe({:fact_retracted, fact, {:derived, source}}),
-    do: "  - #{inspect(fact)} (support from #{rule(source)} gone)"
+  defp describe({:fact_retracted, fact, origin}),
+    do: "  - #{inspect(fact)} (support from #{rule(origin)} gone)"
 
   defp describe({:activation_added, source, token}),
     do: "  ready  #{rule(source)} #{inspect(token.bindings)}"
@@ -163,6 +165,8 @@ defmodule Rete.Listener.Trace do
 
   defp describe(other), do: inspect(other)
 
+  defp rule(%{rule: ref}), do: rule(ref)
+
   # credo:disable-for-next-line Credo.Check.Design.AliasUsage
-  defp rule(%{rule: ref}), do: Rete.Network.ref_string(ref)
+  defp rule(ref), do: Rete.Network.ref_string(ref)
 end

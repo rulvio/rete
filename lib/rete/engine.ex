@@ -63,7 +63,7 @@ defmodule Rete.Engine do
   `docs/design/engine.md` §2.
   """
   @spec insert(State.t(), [term()], Rete.Listener.origin()) :: State.t()
-  def insert(state, facts, origin \\ :asserted)
+  def insert(state, facts, origin \\ {Rete.Session, :insert})
 
   def insert(%State{} = state, facts, origin) do
     check_reserved!(state, facts, origin, "insert")
@@ -92,7 +92,7 @@ defmodule Rete.Engine do
   order it arrived in, whatever a caller put between the two calls.
   """
   @spec retract(State.t(), [term()], Rete.Listener.origin()) :: State.t()
-  def retract(state, facts, origin \\ :asserted)
+  def retract(state, facts, origin \\ {Rete.Session, :retract})
 
   def retract(%State{} = state, facts, origin) do
     check_reserved!(state, facts, origin, "retract")
@@ -681,7 +681,7 @@ defmodule Rete.Engine do
 
         %State{state | memory: memory}
         |> emit(fn -> {:activation_fired, Node.source(node), token, facts} end)
-        |> insert(facts, {:derived, Node.source(node)})
+        |> insert(facts, {node.module, node.name})
     end
   end
 
@@ -783,7 +783,7 @@ defmodule Rete.Engine do
 
   # All facts are checked before any of them changes the state. See
   # `Rete.Compiler.Negation.marker_alpha/1` for why a marker type is reserved.
-  defp check_reserved!(%State{network: network}, facts, :asserted, action) do
+  defp check_reserved!(%State{network: network}, facts, {Rete.Session, _call}, action) do
     case Enum.find(facts, &reserved?(network, &1)) do
       nil ->
         :ok
@@ -881,9 +881,9 @@ defmodule Rete.Engine do
         state
 
       {:ok, {:retract_facts, node_id, facts}, state} ->
-        source = state.network |> Network.node(node_id) |> Node.source()
+        node = Network.node(state.network, node_id)
 
-        state |> retract(facts, {:derived, source}) |> drain()
+        state |> retract(facts, {node.module, node.name}) |> drain()
 
       {:ok, {:event, event}, state} ->
         state |> emit(fn -> event end) |> drain()
