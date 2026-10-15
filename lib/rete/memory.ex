@@ -309,7 +309,7 @@ defmodule Rete.Memory do
   @doc """
   The matches whose activation inserted `fact`, as `{node_id, token}` pairs.
 
-  Empty for a fact the user asserted. A fact two rules concluded has two entries, and one
+  Empty for a fact the user inserted. A fact two rules concluded has two entries, and one
   rule may appear twice if it concluded the fact on two activations of the same match.
 
   This is the index behind `Rete.Inspect.explain/1,2`, which asks it once per matched fact.
@@ -341,9 +341,8 @@ defmodule Rete.Memory do
   insert does, and `insertions` records it one time for each fact in a batch. So the
   difference between the two is what the user inserted.
 
-  The result is never below zero. A user can retract a fact that a rule concluded. The
-  engine cannot tell which occurrence went, so the retract cancels the user's own insert
-  first. Like `inserters/2`, this scans every insertion record when the index is not built.
+  The result is never below zero. Like `inserters/2`, this scans every insertion record
+  when the index is not built.
   """
   @spec inserted_count(t(), term()) :: non_neg_integer()
   def inserted_count(%__MODULE__{facts: facts} = memory, fact) do

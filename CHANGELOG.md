@@ -12,8 +12,9 @@ All notable changes to `rete` are recorded here. The format follows
   fact and `origin: :gather` for a collection. `:derived` and `:asserted` are gone.
 * The `:from` field of a match is now `:sources`. `{Rete.Session, :insert}` in it means you
   inserted the fact. Any other pair names a rule that concluded it. A fact you inserted and
-  a rule also concluded names both. Before, `explain/1,2` named only the rule. Rule pairs
-  are sorted, so one session gives one answer.
+  a rule also concluded names both, unless you retracted it after the rule concluded it.
+  Before, `explain/1,2` named only the rule. Rule pairs are sorted, so one session gives one
+  answer.
 * The `:inserted` field of an activation is now `:asserts`.
 * The `origin` of `:fact_inserted` and `:fact_retracted` events is now a `{module, name}`
   pair. `{Rete.Session, :insert}` and `{Rete.Session, :retract}` mean your own call. Any

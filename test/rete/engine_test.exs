@@ -1545,7 +1545,7 @@ defmodule Rete.EngineTest do
     # The other side of the coin, and the reason none of this is about "a fact that is
     # already there". This rule does not rest on what it concludes, so it settles, and
     # the user's own copy is a second support rather than a loop.
-    test "a conclusion the user also asserted still has two supports" do
+    test "a conclusion the user also inserted still has two supports" do
       session = run([Mirror], [{:seed, 1}, {:mirror, 1}])
       assert %{{:seed, 1} => 1, {:mirror, 1} => 2} == session.state.memory.facts
 
@@ -1579,7 +1579,7 @@ defmodule Rete.EngineTest do
     end
 
     # The chain the removed check used to forbid, end to end. Occurrence k of `{:n, k}`
-    # holds up occurrence k + 1, down to the one the caller asserted. Retracting that one
+    # holds up occurrence k + 1, down to the one the caller inserted. Retracting that one
     # has to unwind all five, which is the whole argument for dropping the check.
     test "retracting the seed unwinds every occurrence it supports" do
       session = run([Repeat], [{:n, 0}])

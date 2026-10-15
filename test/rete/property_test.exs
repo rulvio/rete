@@ -225,7 +225,7 @@ defmodule Rete.PropertyTest do
 
   # --- the oracle ---------------------------------------------------------------------
 
-  # What the ruleset means over a fact multiset: the asserted facts with their
+  # What the ruleset means over a fact multiset: the inserted facts with their
   # multiplicities, plus one support per match of every rule.
   defp expected(multiset) do
     Map.merge(Enum.frequencies(multiset), derived(multiset), fn _f, a, b -> a + b end)
@@ -525,7 +525,7 @@ defmodule Rete.PropertyTest do
       end
     end
 
-    property "the fact multiset is the asserted facts plus the truth maintenance ledger" do
+    property "the fact multiset is the inserted facts plus the truth maintenance ledger" do
       # An independent reading of the same number: every support in `facts` must
       # be an insertion some production is on the hook for. A node that
       # propagated twice would have to forge a ledger entry to pass this.

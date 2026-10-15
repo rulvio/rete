@@ -966,7 +966,7 @@ Two consequences surprise people:
 
 * **a conclusion cannot hold itself up.** Every fact a rule concludes rests on the
   occurrence the match read, and that occurrence rests on the one before it. The chain ends
-  at what you asserted, so retracting what you inserted really does empty the session. A
+  at what you inserted, so retracting what you inserted really does empty the session. A
   rule with **no conditions** is the one exception: its support is the root token rather
   than a fact, so its conclusion stays.
 * **a rule that concludes something its own left hand side matches on will loop.** The
