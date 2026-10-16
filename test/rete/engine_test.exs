@@ -1040,14 +1040,14 @@ defmodule Rete.EngineTest do
 
       # Two ops, because one op is returned as it stands and never reaches the merge.
       queue =
-        :queue.from_list([{:event, {:fire_started, []}} | :queue.to_list(session.state.queue)])
+        :queue.from_list([{:event, {:fire_started}} | :queue.to_list(session.state.queue)])
 
       error =
         assert_raise RuntimeError, fn ->
           Rete.Engine.fire_rules(%{session.state | queue: queue})
         end
 
-      assert error.message =~ "{:event, {:fire_started, []}} cannot be merged"
+      assert error.message =~ "{:event, {:fire_started}} cannot be merged"
       assert error.message =~ "Rete.Engine.State.op/0"
     end
   end

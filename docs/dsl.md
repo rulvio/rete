@@ -649,8 +649,9 @@ A build can give them too, to every rule of every module in it:
 Rete.Session.new([MyRuleset, OtherRuleset], default_rule_opts: %{cache: true})
 ```
 
-The defaults take `:salience`, `:cache` and `:meta`. Any other key raises an error. A map
-and a keyword list both work. In the module, write the map literally.
+The defaults take `:salience`, `:cache` and `:meta`. Any other key raises an error, and so
+does a key that is not an atom or a key given twice. A map and a keyword list both work. In
+the module, write the map literally.
 
 When two levels set one key, the more specific level wins. The build default is the
 weakest. The module default wins over it. The options map of the rule wins over both. So
@@ -658,8 +659,13 @@ weakest. The module default wins over it. The options map of the rule wins over 
 
 A default merges key by key. A `:meta` in a rule replaces a default `:meta` as a whole. A
 change to a default `:cache` value makes every cached rule of that level miss. A query gets
-no defaults. A negation helper that the compiler generates gets a default
-salience, as it gets a written one. It never gets `:cache`.
+the defaults too, and ignores `:salience` as it ignores a written one. A negation helper
+that the compiler generates gets a default salience, as it gets a written one. It never
+gets `:cache`.
+
+The values of a module default are evaluated one time, where `use` is. A module attribute
+that a default names keeps the value it had there. A module can use `Rete.Ruleset` only one
+time, and a second `use` raises an error.
 
 `Rete.get_rule_data/1` shows the options of a rule after the module defaults. The build
 defaults are not in it, because they belong to the build.
@@ -1122,8 +1128,8 @@ concluded. So there is nothing to fill. Some results of this:
 Two activations are equal when the rule and the key are equal. The rule is its module, its
 name, a hash of its source, and its `:cache` value. The hash covers the left hand side, the
 options map and the body. So an edit to the rule makes a miss. A new `:cache` value makes a
-miss too, also when a default gives it. So the value acts as a version. The key is the facts
-that the activation matched, and its bindings. The cache and the session can come from
+miss too, also when a default gives it. So the value acts as a version. The key is the bindings
+of the activation, because they are all that the body reads. The cache and the session can come from
 different builds, or from different sets of modules. Only the rules that both have can hit.
 A body that returned `nil` or `[]` hits too, and the engine inserts nothing.
 
@@ -1131,6 +1137,7 @@ A body still runs in these cases:
 
 * the cache has no equal activation.
 * the rule did not opt in, or it had another `:cache` value when the cache was built.
+* the key function of the fire returned `nil` for the activation.
 
 The hash does not see the code of a function that the body calls. It does not see the value
 of a module attribute either, only its name. So a change to either one still hits, and
@@ -1146,11 +1153,21 @@ Session.fire_rules(next, activation_cache: cache, activation_cache_key_fn: key_f
 
 The key function gets `%{rule: {module, name}, hash: hash, cache: cache, token: token}`.
 `from_session/2` uses it to key the cache, and `fire_rules/2` uses it to key each
-activation. Give both the same function, or nothing hits. A key of `nil` leaves that one
-activation out of the cache.
+activation. Give both the same function, or nothing hits. When it returns `nil`,
+`from_session/2` leaves that activation out of the cache, and `fire_rules/2` runs its body.
+A key function that raises is reported as a body that raises.
+
+A lookup builds the key and hashes it, so its cost grows with the size of the bindings.
+The cache suits a body that costs more than that, such as one that calls a service.
 
 A hit emits `{:activation_fired, source, token, facts}`, as a firing does. Its `source` has
-`cached: true`. The source of a firing does not have the key.
+`cached: true`. The source of a firing has no `:cached` field. Each fact a hit inserts has
+the origin `{module, name, :cached}`. See `Rete.Listener`.
+
+A query can opt in too, with the same `:cache` option. A query computes its rows when you
+read it, so a fire with a cache keeps the rows that the cache gives for its tokens. A read
+then uses those rows, and runs the body only for a token that the cache did not hold.
+`from_session/2` runs the body of a cached query once for each token, to fill the cache.
 
 The cache is sound because of the rule above: the return value follows from the bindings.
 A body that breaks it also breaks the cache, because a hit replays a value that the body

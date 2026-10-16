@@ -1,6 +1,7 @@
 defmodule Rete.ActivationCacheTest do
   @moduledoc """
-  A prior session as the cache of a fire. See `Rete.ActivationCache`.
+  A cache from `Rete.ActivationCache.from_session/2` stands in for the body of a rule or a
+  query. See `Rete.ActivationCache`.
 
   A body sends a message to the process that fires, so a test counts the bodies that ran
   by counting messages.
@@ -51,6 +52,59 @@ defmodule Rete.ActivationCacheTest do
     end
   end
 
+  defmodule Queried do
+    use Rete.Ruleset
+
+    defquery profile(%{cache: true}, {:customer, cid}) do
+      send(self(), {:ran, :profile, cid})
+      {:row, cid}
+    end
+
+    defquery plain({:customer, cid}) do
+      send(self(), {:ran, :plain, cid})
+      cid
+    end
+  end
+
+  # Two rules of one salience, so one activation group. `block` returns a task whose
+  # conclusion takes away the match of `work`.
+  defmodule Group do
+    use Rete.Ruleset
+
+    defrule block({:job, id}) do
+      test = self()
+
+      Task.async(fn ->
+        Process.sleep(30)
+        send(test, {:block_done, id})
+        {:block, id}
+      end)
+    end
+
+    defrule work(%{cache: true}, {:job, id}, {:not, [{:block, id}]}) do
+      send(self(), {:ran, :work, id})
+      {:worked, id}
+    end
+  end
+
+  # A live rule ahead of a cached one in one group, so a key function can fail behind a
+  # task.
+  defmodule Ahead do
+    use Rete.Ruleset
+
+    defrule slow({:job, id}) do
+      test = self()
+
+      Task.async(fn ->
+        Process.sleep(30)
+        send(test, {:slow_done, id})
+        {:slow, id}
+      end)
+    end
+
+    defrule keyed(%{cache: true}, {:job, id}), do: {:keyed, id}
+  end
+
   defmodule Other do
     use Rete.Ruleset
 
@@ -88,6 +142,18 @@ defmodule Rete.ActivationCacheTest do
   end
 
   defp cache(session), do: ActivationCache.from_session(session)
+
+  # A cache written by hand, for a test that needs one no session would produce.
+  defp handmade(modules, name, entries) do
+    node =
+      modules
+      |> Session.new()
+      |> Session.network()
+      |> Network.beta_nodes()
+      |> Enum.find(&match?(%{name: ^name, cache: _}, &1))
+
+    %{{node.module, node.name, node.hash, node.cache} => entries}
+  end
 
   defp sorted_facts(session), do: session |> Session.facts() |> Enum.sort()
 
@@ -218,6 +284,177 @@ defmodule Rete.ActivationCacheTest do
       assert ran() == []
       assert sorted_facts(next) == sorted_facts(prior)
     end
+
+    test "applies in group order behind a task that missed" do
+      cache = handmade([Tasks], :fetch, %{%{id: 1} => [{:done, 1}]})
+      facts = [{:job, 1}, {:job, 2}]
+
+      parallel = fire([Tasks], facts, concurrency: 2, activation_cache: cache)
+      assert ran() == [fetch: 2]
+
+      serial = fire([Tasks], facts, activation_cache: cache)
+      assert ran() == [fetch: 2]
+
+      assert sorted_facts(parallel) == sorted_facts(serial)
+    end
+
+    test "is dropped when a conclusion ahead of it in the group takes its match away" do
+      cache = handmade([Group], :work, %{%{id: 1} => [{:worked, 1}]})
+
+      for concurrency <- [1, 2] do
+        fired =
+          [Group]
+          |> Session.new()
+          |> Session.with_listener(Collect, [])
+          |> Session.insert({:job, 1})
+          |> Session.fire_rules(concurrency: concurrency, activation_cache: cache)
+
+        assert {:block, 1} in Session.facts(fired)
+        refute {:worked, 1} in Session.facts(fired)
+
+        cached =
+          for {:activation_fired, %{cached: true} = source, _token, _facts} <-
+                Collect.events(fired),
+              do: source.rule
+
+        assert cached == [], "concurrency: #{concurrency} applied a cancelled hit"
+        assert ran() == []
+        assert_received {:block_done, 1}
+      end
+    end
+  end
+
+  describe "a key function that raises" do
+    test "raises its own error, as a body would" do
+      cache = handmade([Ahead], :keyed, %{%{id: 1} => [{:keyed, 1}]})
+      boom = fn _activation -> raise "key boom" end
+
+      assert_raise RuntimeError, "key boom", fn ->
+        fire([Ahead], [{:job, 1}], activation_cache: cache, activation_cache_key_fn: boom)
+      end
+    end
+
+    test "under concurrency, raises in group order, after the task ahead of it" do
+      cache = handmade([Ahead], :keyed, %{%{id: 1} => [{:keyed, 1}]})
+      boom = fn _activation -> raise "key boom" end
+
+      assert_raise RuntimeError, "key boom", fn ->
+        fire([Ahead], [{:job, 1}],
+          concurrency: 2,
+          activation_cache: cache,
+          activation_cache_key_fn: boom
+        )
+      end
+
+      # The task ahead was awaited and applied before the error, so its message is here.
+      assert_received {:slow_done, 1}
+    end
+  end
+
+  describe "a key function that returns nil" do
+    test "runs that activation without the cache, under concurrency too" do
+      cache = handmade([Tasks], :fetch, %{%{id: 1} => [{:done, 1}], %{id: 2} => [{:done, 2}]})
+
+      skip_two = fn %{token: token} = a ->
+        if token.bindings.id == 2, do: nil, else: ActivationCache.key(a)
+      end
+
+      for concurrency <- [1, 2] do
+        fire([Tasks], [{:job, 1}, {:job, 2}],
+          concurrency: concurrency,
+          activation_cache: cache,
+          activation_cache_key_fn: skip_two
+        )
+
+        assert ran() == [fetch: 2]
+      end
+    end
+  end
+
+  describe "a cached query" do
+    test "reads the rows the cache gave, and runs no body" do
+      prior = fire([Queried], [{:customer, 1}, {:customer, 2}])
+      cache = cache(prior)
+      assert Enum.sort(ran()) == [profile: 1, profile: 2]
+
+      next = fire([Queried], [{:customer, 1}, {:customer, 2}], activation_cache: cache)
+
+      assert Enum.sort(Queried.profile(next)) == [{:row, 1}, {:row, 2}]
+      assert ran() == []
+    end
+
+    test "runs the body on read for a token the cache does not hold" do
+      cache = [Queried] |> fire([{:customer, 1}]) |> cache()
+      ran()
+
+      next = fire([Queried], [{:customer, 1}, {:customer, 2}], activation_cache: cache)
+
+      assert Enum.sort(Queried.profile(next)) == [{:row, 1}, {:row, 2}]
+      assert ran() == [profile: 2]
+    end
+
+    test "drops the row of a token that leaves, and keeps no row in a drained session" do
+      cache = [Queried] |> fire([{:customer, 1}]) |> cache()
+      next = fire([Queried], [{:customer, 1}], activation_cache: cache)
+      assert map_size(next.state.memory.query_rows) == 1
+
+      drained = next |> Session.retract({:customer, 1}) |> Session.fire_rules()
+
+      assert Queried.profile(drained) == []
+      assert drained.state.memory.query_rows == %{}
+    end
+
+    test "is in from_session, under its identity, with a row for each token" do
+      cache = [Queried] |> fire([{:customer, 1}]) |> cache()
+
+      assert [{{Queried, :profile, _hash, true}, %{%{cid: 1} => {:row, 1}}}] = Map.to_list(cache)
+    end
+
+    test "survives a save and a load" do
+      saved = [Queried] |> fire([{:customer, 1}]) |> cache() |> :erlang.term_to_binary()
+      ran()
+
+      loaded = :erlang.binary_to_term(saved, [:safe])
+      next = fire([Queried], [{:customer, 1}], activation_cache: loaded)
+
+      assert Queried.profile(next) == [{:row, 1}]
+      assert ran() == []
+    end
+
+    test "a query that did not opt in runs its body" do
+      cache = [Queried] |> fire([{:customer, 1}]) |> cache()
+      next = fire([Queried], [{:customer, 1}], activation_cache: cache)
+      ran()
+
+      assert Queried.plain(next) == [1]
+      assert ran() == [plain: 1]
+    end
+
+    test "the session keeps no cache after the fire" do
+      cache = [Queried] |> fire([{:customer, 1}]) |> cache()
+      next = fire([Queried], [{:customer, 1}], activation_cache: cache)
+
+      assert next.state.activation_cache == nil
+    end
+  end
+
+  describe "origins" do
+    test "a fact a hit inserted has a cached origin, and a live one does not" do
+      cache = [Cached] |> fire([{:customer, 1}]) |> cache()
+
+      origins =
+        [Cached]
+        |> Session.new()
+        |> Session.with_listener(Collect, [])
+        |> Session.insert({:customer, 1})
+        |> Session.fire_rules(activation_cache: cache)
+        |> Collect.by_tag(:fact_inserted)
+        |> Map.new(fn {:fact_inserted, fact, origin} -> {fact, origin} end)
+
+      assert origins[{:profile, 1}] == {Cached, :enrich, :cached}
+      assert origins[{:seen, 1}] == {Cached, :live}
+      assert origins[{:customer, 1}] == {Session, :insert}
+    end
   end
 
   describe "from_session/2" do
@@ -228,11 +465,11 @@ defmodule Rete.ActivationCacheTest do
       assert Enum.sort(names) == [:chained, :enrich, :tag]
     end
 
-    test "holds the facts concluded, under the default key" do
+    test "holds the facts concluded, under the bindings" do
       cache = [Cached] |> fire([{:customer, 1}]) |> cache()
 
       {_identity, entries} = Enum.find(cache, &match?({{Cached, :enrich, _, _}, _}, &1))
-      assert entries == %{{[{:customer, 1}], %{cid: 1}} => [{:profile, 1}]}
+      assert entries == %{%{cid: 1} => [{:profile, 1}]}
     end
 
     test "holds a firing that concluded nothing" do
@@ -257,7 +494,7 @@ defmodule Rete.ActivationCacheTest do
       assert {:live, 1} in ran()
     end
 
-    test "runs the body for facts the prior session did not see" do
+    test "runs the body for facts the cache does not hold" do
       prior = fire([Cached], [{:customer, 1}])
       ran()
 
@@ -274,7 +511,7 @@ defmodule Rete.ActivationCacheTest do
       assert {:tagged, 1} in Session.facts(next)
     end
 
-    test "runs a body whose conclusion lost its support in the prior session" do
+    test "runs a body whose conclusion lost its support before the cache was built" do
       prior =
         [Cached]
         |> fire([{:customer, 1}])
@@ -288,7 +525,7 @@ defmodule Rete.ActivationCacheTest do
       assert {:enrich, 1} in ran()
     end
 
-    test "runs a rule whose code changed since the prior session" do
+    test "runs a rule whose code changed since the cache was built" do
       source = fn body ->
         """
         defmodule Rete.ActivationCacheTest.Changed do
@@ -316,7 +553,7 @@ defmodule Rete.ActivationCacheTest do
       assert Session.facts(next) |> Enum.sort() == [{:x, 1}, {:z, 1}]
     end
 
-    test "is the whole fire when no prior session is given" do
+    test "is the whole fire when no cache is given" do
       fire([Cached], [{:customer, 1}], activation_cache: nil)
       assert length(ran()) == 4
     end
@@ -411,12 +648,30 @@ defmodule Rete.ActivationCacheTest do
   end
 
   describe "invalid options" do
-    test "a session given as the cache is refused, and the error names from_session" do
+    test "a session given as the cache is refused by name, without its contents" do
       prior = fire([Cached], [{:customer, 1}])
 
-      assert_raise ArgumentError, ~r/Rete.ActivationCache.from_session\(session\)/, fn ->
-        fire([Cached], [], activation_cache: prior)
-      end
+      error =
+        assert_raise ArgumentError, fn -> fire([Cached], [], activation_cache: prior) end
+
+      assert error.message =~ "got a Rete.Session struct"
+      assert error.message =~ "Rete.ActivationCache.from_session(session)"
+      refute error.message =~ "%Rete.Session{"
+    end
+
+    test "a cached value that is not a fact names the cache, not the body" do
+      cache = handmade([Cached], :enrich, %{%{cid: 1} => [:not_a_fact]})
+
+      error =
+        assert_raise ArgumentError, fn ->
+          fire([Cached], [{:customer, 1}], activation_cache: cache)
+        end
+
+      assert error.message =~
+               "The activation cache holds :not_a_fact for Rete.ActivationCacheTest.Cached.enrich"
+
+      assert error.message =~ "The body did not run."
+      refute error.message =~ "returned :not_a_fact"
     end
 
     test "a cache that is not a map is refused" do
@@ -424,7 +679,7 @@ defmodule Rete.ActivationCacheTest do
         fire([Cached], [], activation_cache: :bogus)
       end
 
-      assert_raise ArgumentError, ~r/:activation_cache must be a map/, fn ->
+      assert_raise ArgumentError, ~r/got a Rete.Token struct/, fn ->
         fire([Cached], [], activation_cache: %Rete.Token{})
       end
     end
@@ -486,7 +741,7 @@ defmodule Rete.ActivationCacheTest do
       assert Session.facts(next) |> Enum.sort() == Session.facts(prior) |> Enum.sort()
     end
 
-    test "a prior rule that did not opt in is not a cache" do
+    test "a cache from a rule that did not opt in holds nothing for it" do
       prior = fire_built([], [{:a, 1}])
       next = fire_observed([default_rule_opts: %{cache: true}], [{:a, 1}], prior)
 
@@ -527,9 +782,84 @@ defmodule Rete.ActivationCacheTest do
       assert salience == %{plain: 5, opted_out: 5, louder: 9}
     end
 
-    test "a module default does not reach a query" do
+    test "a module default reaches a query too" do
       query = Enum.find(Rete.get_rule_data([ModuleDefaults]), &(&1.name == :bs))
-      assert query.opts == []
+      assert Keyword.get(query.opts, :cache) == true
+
+      node =
+        [ModuleDefaults]
+        |> Session.new()
+        |> Session.network()
+        |> Network.query({ModuleDefaults, :bs})
+
+      assert node.cache == true
+    end
+
+    test "a build default reaches a query too" do
+      node =
+        [Queried]
+        |> Session.new(default_rule_opts: %{cache: 7})
+        |> Session.network()
+        |> Network.query({Queried, :plain})
+
+      assert node.cache == 7
+    end
+
+    test "a module default is evaluated where `use` is" do
+      Code.compile_string("""
+      defmodule Rete.ActivationCacheTest.Reassigned do
+        @v 3
+        use Rete.Ruleset, default_rule_opts: [cache: @v]
+        defrule r({:x, id}), do: {:y, id}
+        @v 4
+        defrule s({:x, id}), do: {:z, id}
+      end
+      """)
+
+      assert cache_flags(Session.new([Rete.ActivationCacheTest.Reassigned])) == %{r: 3, s: 3}
+    end
+
+    test "a second use of Rete.Ruleset is refused" do
+      error =
+        assert_raise ArgumentError, fn ->
+          Code.compile_string("""
+          defmodule Rete.ActivationCacheTest.Twice do
+            use Rete.Ruleset, default_rule_opts: %{cache: true}
+            use Rete.Ruleset
+          end
+          """)
+        end
+
+      assert error.message =~ "uses Rete.Ruleset more than once"
+    end
+
+    test "a repeated key is named as repeated" do
+      assert_raise ArgumentError, ~r/sets \[:salience\] more than once/, fn ->
+        Session.new([NoDefaults], default_rule_opts: [salience: 1, salience: 2])
+      end
+    end
+
+    test "a key that is not an atom is named, with the defaults as written" do
+      error =
+        assert_raise ArgumentError, fn ->
+          Session.new([NoDefaults], default_rule_opts: %{"cache" => true})
+        end
+
+      assert error.message =~ ~s(takes atom keys)
+      assert error.message =~ ~s(%{"cache" => true} has ["cache"])
+    end
+
+    test "a module default written as a map update is refused as written" do
+      error =
+        assert_raise ArgumentError, fn ->
+          Code.compile_string("""
+          defmodule Rete.ActivationCacheTest.Update do
+            use Rete.Ruleset, default_rule_opts: %{%{} | cache: true}
+          end
+          """)
+        end
+
+      assert error.message =~ "must be a literal map or keyword list, got: %{%{} | cache: true}"
     end
 
     test "a session default reaches every rule, beneath the module and the rule" do

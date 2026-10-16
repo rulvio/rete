@@ -153,11 +153,15 @@ defmodule Rete.Snapshot do
     nodes =
       Map.new(nodes, fn
         {id, %Node.Production{} = node} -> {id, Map.put_new(node, :cache, nil)}
+        {id, %Node.Query{} = node} -> {id, Map.put_new(node, :cache, nil)}
         entry -> entry
       end)
 
+    state = state |> Map.put_new(:activation_cache, nil) |> Map.put(:memory, memory(state))
     %State{state | network: %Network{state.network | graph: %BetaGraph{graph | nodes: nodes}}}
   end
+
+  defp memory(%State{memory: memory}), do: Map.put_new(memory, :query_rows, %{})
 
   # The network without its taxonomy. The taxonomy can hold a `:fact_type_fn`, which is not
   # part of any rule. It keeps its captures, so it always runs the version of the node, as a

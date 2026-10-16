@@ -39,12 +39,22 @@ defmodule Rete.ActivationCache do
       hash covers the left hand side, the options map and the body, as written. So an edit
       to the rule makes a miss. A new `:cache` value makes a miss too, also when a default
       gives it. So the value acts as a version.
-    * the key. `key/1` gives the facts that the activation matched, and its bindings.
-      `from_session/2` takes `:key_fn` to replace it, and `fire_rules/2` takes
-      `:activation_cache_key_fn`. Give both the same function, or nothing hits.
+    * the key. `key/1` gives the bindings of the activation. `from_session/2` takes
+      `:key_fn` to replace it, and `fire_rules/2` takes `:activation_cache_key_fn`. Give
+      both the same function, or nothing hits. When the function returns `nil`, that
+      activation is left out of the cache, or runs without it.
 
   The rule is found by these values and not by node ids. So a cache serves sessions from
   other builds, and from other sets of modules. Only the rules that both have can hit.
+
+  A query can opt in too. A query computes its rows when it is read, so a fire with a
+  cache keeps the rows that the cache gives for its tokens. A read then uses those rows,
+  and runs the body only for a token that the cache did not hold. `from_session/2` runs
+  the body of a cached query once for each token, unless a row came from a cache before.
+  The session keeps no reference to the cache after the fire.
+
+  A lookup builds the key and hashes it, so its cost grows with the size of the bindings.
+  Use the cache for a body that costs more than that, such as one that calls a service.
 
   These limits apply:
 
@@ -78,23 +88,27 @@ defmodule Rete.ActivationCache do
   The identity is `{module, name, hash, cache}`.
   """
   @type t :: %{
-          optional({module(), atom(), integer(), term()}) => %{optional(term()) => [term()]}
+          optional({module(), atom(), integer(), term()}) => %{optional(term()) => term()}
         }
 
   @doc """
-  The default key of an activation: the facts it matched, in match order, and its
-  bindings.
+  The default key of an activation: its bindings.
+
+  A body reads only the variables that its left hand side binds. Its return value must
+  follow from them, and the hash of the rule covers its code. So the bindings are all that
+  the result depends on. The matched facts are not in the key. Two branches of a
+  disjunction can match the same facts and bind different variables, so the facts alone
+  would not be a sound key. A collection bound to a variable is in the bindings once.
 
   The key holds the full terms and not a hash of them. So two keys are equal only when the
-  activations are. The node ids of the match are not in it, so the key does not change
-  from one network to another.
+  bindings are. It holds no node ids, so it does not change from one network to another.
 
       iex> token = %Rete.Token{matches: [{{:order, 1}, 7}], bindings: %{id: 1}}
       iex> Rete.ActivationCache.key(%{rule: {MyRules, :r}, hash: 1, cache: true, token: token})
-      {[{:order, 1}], %{id: 1}}
+      %{id: 1}
   """
   @spec key(activation()) :: term()
-  def key(%{token: %Token{} = token}), do: {Token.facts(token), token.bindings}
+  def key(%{token: %Token{bindings: bindings}}), do: bindings
 
   @doc """
   Builds a cache from what a session concluded.
@@ -105,9 +119,9 @@ defmodule Rete.ActivationCache do
 
   Options:
 
-    * `:key_fn` — an arity-1 function that gives the key of an activation, or `nil` to
-      leave it out. `key/1` by default. Give `fire_rules/2` the same function as
-      `:activation_cache_key_fn`.
+    * `:key_fn` — an arity-1 function that gives the key of an activation. When it returns
+      `nil`, that activation is left out of the cache. `key/1` by default. Give
+      `fire_rules/2` the same function as `:activation_cache_key_fn`.
 
       iex> alias Rete.Session
       iex> [Rete.Doc.Orders]
@@ -123,22 +137,41 @@ defmodule Rete.ActivationCache do
   @spec from_session(Rete.Session.t(), keyword()) :: t()
   def from_session(%Rete.Session{state: %State{} = state}, opts \\ []) do
     key_fn = opts |> Keyword.get(:key_fn, &key/1) |> validate_key_fn!()
-    %State{network: network, memory: %Memory{insertions: insertions}} = state
+    %State{network: network, memory: memory} = state
 
-    # Any batch of a token will do. `Rete.Memory.add_insertion/4` says why they are equal.
-    for %Node.Production{cache: cache} = node <- Network.production_nodes(network),
-        cache not in [nil, false],
-        by_token = Map.get(insertions, node.id, %{}),
-        map_size(by_token) > 0,
-        into: %{} do
-      entries =
-        for {token, [batch | _]} <- by_token,
-            key = key_fn.(activation(node, token)),
-            key != nil,
-            into: %{},
-            do: {key, batch}
+    for node <- Network.beta_nodes(network),
+        cached?(node),
+        entries = entries(node, memory, key_fn),
+        map_size(entries) > 0,
+        into: %{},
+        do: {identity(node), entries}
+  end
 
-      {identity(node), entries}
+  # Any batch of a token will do. `Rete.Memory.add_insertion/4` says why they are equal.
+  defp entries(%Node.Production{} = node, %Memory{insertions: insertions}, key_fn) do
+    for {token, [batch | _]} <- Map.get(insertions, node.id, %{}),
+        key = key_fn.(activation(node, token)),
+        key != nil,
+        into: %{},
+        do: {key, batch}
+  end
+
+  # A query keeps no record of its rows. The row comes from a hit of an earlier fire, or
+  # from the body, which runs here once for each token.
+  defp entries(%Node.Query{} = node, %Memory{} = memory, key_fn) do
+    for token <- Memory.all_tokens(memory, node.id),
+        key = key_fn.(activation(node, token)),
+        key != nil,
+        into: %{},
+        do: {key, row(node, memory, token)}
+  end
+
+  defp entries(_node, _memory, _key_fn), do: %{}
+
+  defp row(node, memory, token) do
+    case Memory.row(memory, node.id, token) do
+      {:ok, row} -> row
+      :error -> node.rhs.(node.hash, token.bindings)
     end
   end
 
@@ -149,10 +182,19 @@ defmodule Rete.ActivationCache do
   end
 
   @doc false
-  @spec lookup(t(), Node.Production.t(), Token.t(), (activation() -> term())) ::
-          {:ok, [term()]} | :error
-  def lookup(cache, %Node.Production{} = node, token, key_fn) do
-    with {:ok, entries} <- Map.fetch(cache, identity(node)),
+  # `cache` is what `Rete.Engine.fire_rules/2` puts on the state for one call: the map and
+  # the key function, or `nil` when the call has no cache.
+  @spec lookup(
+          {t(), (activation() -> term())} | nil,
+          Node.Production.t() | Node.Query.t(),
+          Token.t()
+        ) ::
+          {:ok, term()} | :error
+  def lookup(nil, _node, _token), do: :error
+
+  def lookup({cache, key_fn}, node, token) do
+    with true <- cached?(node),
+         {:ok, entries} <- Map.fetch(cache, identity(node)),
          key when key != nil <- key_fn.(activation(node, token)) do
       Map.fetch(entries, key)
     else
@@ -160,9 +202,14 @@ defmodule Rete.ActivationCache do
     end
   end
 
-  defp identity(%Node.Production{module: module, name: name, hash: hash, cache: cache}),
+  # A pattern rather than a field read, so a node from a snapshot that predates the field
+  # is a node that did not opt in.
+  defp cached?(%{cache: cache}), do: cache not in [nil, false]
+  defp cached?(_node), do: false
+
+  defp identity(%{module: module, name: name, hash: hash, cache: cache}),
     do: {module, name, hash, cache}
 
-  defp activation(%Node.Production{} = node, token),
+  defp activation(node, token),
     do: %{rule: {node.module, node.name}, hash: node.hash, cache: node.cache, token: token}
 end

@@ -99,19 +99,16 @@ defmodule Rete.Compiler do
 
   # Before extraction, so every production here is one the user wrote, and a negation
   # helper inherits a default salience as it inherits a written one. It never inherits
-  # `:cache`. See `Rete.Compiler.Negation`.
+  # `:cache`. See `Rete.Compiler.Negation`. A query takes the defaults too, and ignores
+  # `:salience` as it ignores a written one.
   defp with_defaults(productions, defaults) do
-    case Parser.check_default_rule_opts!(":default_rule_opts", defaults) do
+    case Parser.check_default_rule_opts!(":default_rule_opts", defaults, inspect(defaults)) do
       [] ->
         productions
 
       defaults ->
-        Enum.map(productions, fn
-          %IR.Production{type: :rule} = production ->
-            %IR.Production{production | opts: Keyword.merge(defaults, production.opts)}
-
-          production ->
-            production
+        Enum.map(productions, fn %IR.Production{} = production ->
+          %IR.Production{production | opts: Keyword.merge(defaults, production.opts)}
         end)
     end
   end

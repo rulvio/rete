@@ -256,6 +256,10 @@ defmodule Rete.Network.Node do
     with no head. Nothing matches on it. It is here for one message: a bare name given to
     `Rete.Engine.query/3` names the call to write in its place. Without this the message
     would print a placeholder, because nothing else here knows the head.
+
+    `:cache` is the query's `:cache` option, as on `Rete.Network.Node.Production`. A fire
+    with an activation cache keeps the rows that the cache gives for its tokens, and a
+    read then uses them in place of the body.
     """
     @type t :: %__MODULE__{
             id: non_neg_integer() | nil,
@@ -265,9 +269,10 @@ defmodule Rete.Network.Node do
             rhs: fun(),
             bind: [atom()],
             params: [atom()],
-            head: [String.t()]
+            head: [String.t()],
+            cache: term()
           }
-    defstruct [:id, :name, :module, :hash, :rhs, bind: [], params: [], head: []]
+    defstruct [:id, :name, :module, :hash, :rhs, :cache, bind: [], params: [], head: []]
   end
 
   @type t ::

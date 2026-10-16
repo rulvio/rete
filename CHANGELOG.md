@@ -8,28 +8,36 @@ All notable changes to `rete` are recorded here. The format follows
 
 ### Added
 
-* An activation cache. A rule opts in when its `:cache` option is a value other than `nil`
-  or `false`, such as `%{cache: true}` or `%{cache: 2}`.
+* An activation cache. A rule or a query opts in when its `:cache` option is a value other
+  than `nil` or `false`, such as `%{cache: true}` or `%{cache: 2}`.
   `Rete.ActivationCache.from_session/2` builds a cache from a session that fired.
   `Rete.Session.fire_rules(session, activation_cache: cache)` then takes the conclusion of
   an equal activation from the cache, and the body does not run. The cache is a plain map,
-  so you can save it with `:erlang.term_to_binary/1` and load it without the session. Load
-  a cache only from storage you trust, because it inserts facts that no rule checks. A hit
-  is recorded like a firing, so a cache from the new session holds the hits too. Two
-  activations are equal when their rule and their key are equal. The rule is its module,
-  its name, the hash of its source, and its `:cache` value. A new `:cache` value is a new
-  version, so every entry made under the old value misses. The key is the matched facts
-  and the bindings. `:key_fn` on `from_session/2` and `:activation_cache_key_fn` on
-  `fire_rules/2` replace the key, and both must be the same function. See
+  so you can save it with `:erlang.term_to_binary/1` and load it without the session. Any
+  other value raises, a session included. Load a cache only from storage you trust,
+  because it inserts facts that no rule checks. A hit is recorded like a firing, so a cache
+  from the new session holds the hits too. Two activations are equal when their rule and
+  their key are equal. The rule is its module, its name, the hash of its source, and its
+  `:cache` value. A new `:cache` value is a new version, so every entry made under the old
+  value misses. The key is the bindings. `:key_fn` on `from_session/2` and
+  `:activation_cache_key_fn` on `fire_rules/2` replace the key, and both must be the same
+  function. When the function returns `nil`, that activation is left out of the cache, or
+  runs without it. A key function that raises is reported as a body that raises. See
   `Rete.ActivationCache`.
-* A hit emits `:activation_fired` with `cached: true` in its source.
-* `default_rule_opts` gives options to many rules at once. `use Rete.Ruleset,
-  default_rule_opts: ...` gives them to the rules of one module. The `:default_rule_opts`
-  build option gives them to every rule of a build. The build default is the weakest, and
-  the options map of a rule wins over both. The defaults take `:salience`, `:cache` and
-  `:meta`. A query gets no defaults.
-* A production node has a new `cache` field. The snapshot format stays 1. `load/2` gives
-  `cache: nil` to the nodes of a snapshot from an earlier release.
+* A cached query keeps the rows that the cache gave during the fire, and a read uses them
+  in place of the body. `from_session/2` runs the body of a cached query once for each
+  token. The session keeps no reference to the cache after the fire.
+* A hit emits `:activation_fired` with `cached: true` in its source. Each fact that a hit
+  inserts has the origin `{module, name, :cached}`. `Rete.Listener.Trace` writes `cached`
+  for both. An error about a cached fact names the cache and not the body.
+* `default_rule_opts` gives options to many rules and queries at once. `use Rete.Ruleset,
+  default_rule_opts: ...` gives them to one module, and evaluates them one time, where
+  `use` is. The `:default_rule_opts` build option gives them to every production of a
+  build. The build default is the weakest, and the options map of a production wins over
+  both. The defaults take `:salience`, `:cache` and `:meta`, each one time, with atom keys.
+* Production and query nodes have a new `cache` field. The state and the memory have
+  fields for the cache too. The snapshot format stays 1. `load/2` fills these fields in
+  for a snapshot from an earlier release.
 
 ### Changed
 
@@ -37,6 +45,10 @@ All notable changes to `rete` are recorded here. The format follows
   as an activation with `asserts: []`, so it is no longer the same as a rule that never
   matched. The `:activations` count of `why_not/1,2` includes it. Clara records only the
   matches with an insertion, so rete now differs from Clara here.
+* The `:fire_started` event is now `{:fire_started}`. It no longer carries the options of
+  `fire_rules/2`.
+* A module that uses `Rete.Ruleset` a second time now raises an error when it compiles.
+  The second `use` reset the rules that the first one collected.
 
 ## 1.2.0
 

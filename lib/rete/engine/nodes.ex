@@ -373,13 +373,19 @@ defmodule Rete.Engine.Nodes do
   # A query with no parameters keys every token on `%{}`, which is one bucket. It thus
   # still returns its rows in arrival order.
   defp dispatch(%Node.Query{} = node, :left, tokens, %State{} = state) do
-    memory = by_params(node, tokens, state.memory, &Memory.add_tokens/4)
+    memory =
+      node
+      |> by_params(tokens, state.memory, &Memory.add_tokens/4)
+      |> cached_rows(node, tokens, state.activation_cache)
 
     {%State{state | memory: memory}, []}
   end
 
   defp dispatch(%Node.Query{} = node, :left_retract, tokens, %State{} = state) do
-    memory = by_params(node, tokens, state.memory, &drop_tokens/4)
+    memory =
+      node
+      |> by_params(tokens, state.memory, &drop_tokens/4)
+      |> Memory.drop_rows(node.id, tokens)
 
     {%State{state | memory: memory}, []}
   end
@@ -402,6 +408,19 @@ defmodule Rete.Engine.Nodes do
     tokens
     |> Enum.group_by(&Token.join_key(&1, node.params))
     |> Enum.reduce(memory, fn {key, group}, memory -> fun.(memory, node.id, key, group) end)
+  end
+
+  # A query computes its rows when it is read, after the fire and its cache are gone. So a
+  # hit is kept here, as the token arrives, for the read to use.
+  defp cached_rows(memory, _node, _tokens, nil), do: memory
+
+  defp cached_rows(memory, node, tokens, cache) do
+    Enum.reduce(tokens, memory, fn token, memory ->
+      case Rete.ActivationCache.lookup(cache, node, token) do
+        {:ok, row} -> Memory.put_row(memory, node.id, token, row)
+        :error -> memory
+      end
+    end)
   end
 
   # `remove_tokens/4` returns what it found. Nothing below a query reads that, so this

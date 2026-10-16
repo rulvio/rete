@@ -54,12 +54,29 @@ defmodule Rete.Ruleset do
 
   @doc false
   defmacro __using__(opts) do
-    # Put at expansion, not in the quote. A module body expands in full before any of it
-    # runs, so a `defrule` below could not read an attribute that the quote sets.
-    Module.put_attribute(__CALLER__.module, :rete_default_rule_opts, module_defaults(opts))
+    module = __CALLER__.module
+
+    # A second `use` would reset every attribute below, and the rules above it would be
+    # lost from `@rule_data` without a word. A wrapper macro that also uses this module is
+    # the likely cause, so the error says to keep one `use`.
+    if Module.has_attribute?(module, :rete_default_rule_opts) do
+      raise ArgumentError,
+            "#{inspect(module)} uses Rete.Ruleset more than once. A second `use` would " <>
+              "reset the rules and the defaults that the first one collected. Keep one " <>
+              "`use Rete.Ruleset`, and give it `default_rule_opts:` if you need defaults."
+    end
+
+    defaults = module_defaults(opts)
+
+    # The keys are put at expansion, because a module body expands in full before any of
+    # it runs, so a `defrule` below could not read an attribute that the quote sets. The
+    # values are set in the quote, so they are evaluated one time, here, where `use` is.
+    Module.put_attribute(module, :rete_default_rule_opts, Keyword.keys(defaults))
 
     quote do
       import Rete.Ruleset
+
+      Module.put_attribute(__MODULE__, :rete_default_rule_opts_values, unquote(defaults))
 
       @rule_data []
       @taxo_data []
@@ -166,11 +183,16 @@ defmodule Rete.Ruleset do
   # checked here.
   defp module_defaults(opts) do
     case Keyword.get(opts, :default_rule_opts, []) do
-      {:%{}, _meta, pairs} when is_list(pairs) ->
-        Parser.check_default_rule_opts!(":default_rule_opts", pairs)
+      {:%{}, _meta, [{:|, _, _}]} = update ->
+        raise ArgumentError,
+              ":default_rule_opts must be a literal map or keyword list, got: " <>
+                Macro.to_string(update)
+
+      {:%{}, _meta, pairs} = written when is_list(pairs) ->
+        Parser.check_default_rule_opts!(":default_rule_opts", pairs, Macro.to_string(written))
 
       pairs when is_list(pairs) ->
-        Parser.check_default_rule_opts!(":default_rule_opts", pairs)
+        Parser.check_default_rule_opts!(":default_rule_opts", pairs, Macro.to_string(pairs))
 
       other ->
         raise ArgumentError,
@@ -179,16 +201,21 @@ defmodule Rete.Ruleset do
     end
   end
 
-  # The rule's own options come last, so they win. A query takes no defaults, because
-  # salience and caching mean nothing to a production that never fires.
-  defp with_module_defaults(%IR.Production{type: :rule, opts: opts} = production, env) do
+  # The production's own options come last, so they win. Each default reads the value that
+  # `use` evaluated, so a later change to an attribute it names does not reach it.
+  defp with_module_defaults(%IR.Production{opts: opts} = production, env) do
     case Module.get_attribute(env.module, :rete_default_rule_opts) do
-      defaults when defaults in [nil, []] -> production
-      defaults -> %IR.Production{production | opts: Keyword.merge(defaults, opts)}
+      keys when keys in [nil, []] ->
+        production
+
+      keys ->
+        defaults =
+          for key <- keys,
+              do: {key, quote(do: Keyword.fetch!(@rete_default_rule_opts_values, unquote(key)))}
+
+        %IR.Production{production | opts: Keyword.merge(defaults, opts)}
     end
   end
-
-  defp with_module_defaults(production, _env), do: production
 
   # The name check is spliced in ahead of the codegen. So the first thing to fail on a
   # repeated name is the check that can explain it. Two queries of one name would

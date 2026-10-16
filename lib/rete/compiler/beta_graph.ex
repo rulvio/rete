@@ -354,7 +354,8 @@ defmodule Rete.Compiler.BetaGraph do
       rhs: production.rhs,
       bind: production.bind || [],
       params: production.params || [],
-      head: production.head || []
+      head: production.head || [],
+      cache: Keyword.get(production.opts || [], :cache)
     }
   end
 

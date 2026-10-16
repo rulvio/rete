@@ -214,13 +214,13 @@ defmodule Rete.Engine do
       `docs/design/engine.md` §11.
     * `:timeout` — milliseconds the engine waits for one returned task, or `:infinity`, the
       default. A task that takes longer is shut down, and the call raises.
-    * `:activation_cache` — a map from `Rete.ActivationCache.from_session/2`, or `nil`, the
-      default. A rule can set `:cache` to a value other than `nil` or `false`. An
-      activation of it then takes the facts that the cache holds for an equal activation,
-      and its body does not run.
+    * `:activation_cache` — a plain map from `Rete.ActivationCache.from_session/2`, or
+      `nil`, the default. Any other value raises. A rule or a query can set `:cache` to a
+      value other than `nil` or `false`. An activation of it then takes what the cache
+      holds for an equal activation, and its body does not run.
     * `:activation_cache_key_fn` — an arity-1 function that gives the key of an
-      activation, or `nil` to run it without the cache. `Rete.ActivationCache.key/1` by
-      default. Give the same function that built the cache.
+      activation. When it returns `nil`, that activation runs without the cache.
+      `Rete.ActivationCache.key/1` by default. Give the same function that built the cache.
   """
   @spec fire_rules(State.t(), keyword()) :: State.t()
   def fire_rules(%State{} = state, opts \\ []) do
@@ -233,16 +233,23 @@ defmodule Rete.Engine do
       max_cycles: opts |> Keyword.get(:max_cycles, @default_max_cycles) |> validate_cycles!(),
       concurrency:
         opts |> Keyword.get(:concurrency, @default_concurrency) |> validate_concurrency!(),
-      timeout: opts |> Keyword.get(:timeout, @default_timeout) |> validate_timeout!(),
-      cache: opts |> Keyword.get(:activation_cache) |> validate_cache!(),
-      key_fn: key_fn
+      timeout: opts |> Keyword.get(:timeout, @default_timeout) |> validate_timeout!()
     }
 
-    state
-    |> emit(fn -> {:fire_started, opts} end)
+    cache =
+      case opts |> Keyword.get(:activation_cache) |> validate_cache!() do
+        nil -> nil
+        cache -> {cache, key_fn}
+      end
+
+    # The cache is on the state only while this call runs. A query node reads it there
+    # during propagation. Clearing it on return keeps it out of the session and its dumps.
+    %State{state | activation_cache: cache}
+    |> emit(fn -> {:fire_started} end)
     |> coalesce_queue()
     |> drain()
     |> fire_loop(cfg, 0, %{})
+    |> Map.put(:activation_cache, nil)
   end
 
   # Do not relax this to accept any term. `fired >= nil` is false for every integer under
@@ -278,6 +285,14 @@ defmodule Rete.Engine do
 
   defp validate_cache!(nil), do: nil
   defp validate_cache!(cache) when is_map(cache) and not is_struct(cache), do: cache
+
+  # Named, not inspected. A session is the likely struct here, and its dump is the whole
+  # working memory.
+  defp validate_cache!(%module{}) do
+    raise ArgumentError,
+          ":activation_cache takes a plain map, and got a #{inspect(module)} struct. Build " <>
+            "the map with `Rete.ActivationCache.from_session(session)`, and give that."
+  end
 
   defp validate_cache!(other) do
     raise ArgumentError,
@@ -315,13 +330,24 @@ defmodule Rete.Engine do
     params = normalize_params(params)
     check_params!(node, params)
 
-    state.memory
-    |> Memory.tokens(node.id, params)
-    |> Enum.map(&node.rhs.(node.hash, &1.bindings))
+    tokens = Memory.tokens(state.memory, node.id, params)
+
+    case Memory.rows(state.memory, node.id) do
+      nil -> Enum.map(tokens, &node.rhs.(node.hash, &1.bindings))
+      rows -> Enum.map(tokens, &row(node, rows, &1))
+    end
   end
 
   def query(%State{} = state, name, _params) when is_atom(name) do
     raise ArgumentError, bare_name_message(state, name)
+  end
+
+  # A row an activation cache gave during a fire, or the body when the cache had none.
+  defp row(node, rows, token) do
+    case Map.fetch(rows, token) do
+      {:ok, row} -> row
+      :error -> node.rhs.(node.hash, token.bindings)
+    end
   end
 
   defp bare_name_message(state, name) do
@@ -574,11 +600,7 @@ defmodule Rete.Engine do
   defp fire_cycle(%State{} = state, [activation], cfg, :popped) do
     node = Network.node(state.network, activation.node_id)
 
-    result =
-      case lookup(cfg, node, activation) do
-        {:ok, facts} -> {:cached, facts}
-        :error -> node |> compute(activation) |> settle(node, activation, cfg.timeout)
-      end
+    result = state |> compute(node, activation) |> settle(node, activation, cfg.timeout)
 
     state |> conclude(activation, node, result) |> drain()
   end
@@ -621,13 +643,7 @@ defmodule Rete.Engine do
   # A hit is not a task, so `shrink/5` applies it as soon as it reaches the head.
   defp run_body(state, activation, window, in_flight, cfg) do
     node = Network.node(state.network, activation.node_id)
-
-    outcome =
-      case lookup(cfg, node, activation) do
-        {:ok, facts} -> {:cached, facts}
-        :error -> compute(node, activation)
-      end
-
+    outcome = compute(state, node, activation)
     in_flight = if match?({:task, _}, outcome), do: in_flight + 1, else: in_flight
 
     shrink(state, :queue.in({activation, node, outcome}, window), in_flight, cfg, cfg.concurrency)
@@ -677,20 +693,21 @@ defmodule Rete.Engine do
     end
   end
 
-  defp lookup(%{cache: nil}, _node, _activation), do: :error
-
-  defp lookup(cfg, %Node.Production{cache: cache} = node, %Activation{token: token})
-       when cache != nil and cache != false,
-       do: Rete.ActivationCache.lookup(cfg.cache, node, token, cfg.key_fn)
-
-  defp lookup(_cfg, _node, _activation), do: :error
-
   # It returns failure rather than raising it. Under concurrency the failure waits for its
   # turn in group order, so it is raised where the sequential path would raise it.
-  defp compute(node, %Activation{token: token}) do
-    case node.rhs.(node.args, token.bindings) do
-      %Task{} = task -> {:task, task}
-      result -> {:ok, normalize_facts(result)}
+  #
+  # The cache lookup is inside the rescue too. It calls the user's key function, so its
+  # failure is reported as a body's would be.
+  defp compute(%State{activation_cache: cache}, node, %Activation{token: token}) do
+    case Rete.ActivationCache.lookup(cache, node, token) do
+      {:ok, facts} ->
+        {:cached, facts}
+
+      :error ->
+        case node.rhs.(node.args, token.bindings) do
+          %Task{} = task -> {:task, task}
+          result -> {:ok, normalize_facts(result)}
+        end
     end
   rescue
     error -> {:raised, error, __STACKTRACE__}
@@ -728,26 +745,24 @@ defmodule Rete.Engine do
   # `Rete.Inspect` then see no difference, and this session can be the cache of the next.
   # The facts are checked again, because the cache can come from another network.
   defp conclude(%State{} = state, %Activation{token: token}, node, result) do
-    facts = result |> unwrap!(node, token) |> check_facts!(state, node, token)
-    source = source(node, result)
+    cached? = match?({:cached, _facts}, result)
+    facts = result |> unwrap!(node, token) |> check_facts!(state, node, token, cached?)
+    memory = Memory.add_insertion(state.memory, node.id, token, facts)
+    state = emit(%State{state | memory: memory}, fn -> fired(node, token, facts, cached?) end)
 
     case facts do
-      [] ->
-        memory = Memory.add_insertion(state.memory, node.id, token, [])
-
-        emit(%State{state | memory: memory}, fn -> {:activation_fired, source, token, []} end)
-
-      facts ->
-        memory = Memory.add_insertion(state.memory, node.id, token, facts)
-
-        %State{state | memory: memory}
-        |> emit(fn -> {:activation_fired, source, token, facts} end)
-        |> insert(facts, {node.module, node.name})
+      [] -> state
+      facts -> insert(state, facts, origin(node, cached?))
     end
   end
 
-  defp source(node, {:cached, _facts}), do: Map.put(Node.source(node), :cached, true)
-  defp source(node, _result), do: Node.source(node)
+  defp fired(node, token, facts, false), do: {:activation_fired, Node.source(node), token, facts}
+
+  defp fired(node, token, facts, true),
+    do: {:activation_fired, Map.put(Node.source(node), :cached, true), token, facts}
+
+  defp origin(node, false), do: {node.module, node.name}
+  defp origin(node, true), do: {node.module, node.name, :cached}
 
   defp unwrap!({:ok, facts}, _node, _token), do: facts
   defp unwrap!({:cached, facts}, _node, _token), do: facts
@@ -787,43 +802,70 @@ defmodule Rete.Engine do
   # Attributes a body's non-fact return value to the rule that returned it. The `try`
   # must wrap the type call for one fact, and nothing else. Wrapping the insertion too
   # would catch whatever the resulting cascade raises, and blame it on this rule.
-  defp check_facts!(facts, %State{} = state, node, token) do
+  #
+  # A cached fact is checked as well, because the cache can come from another network. Its
+  # error says so, because the body did not run and cannot be the cause.
+  defp check_facts!(facts, %State{} = state, node, token, cached?) do
     Enum.each(facts, fn
       # A task is a struct, so the taxonomy would give it a type and insert it.
       %Task{} = task ->
-        raise ArgumentError, task_in_facts(node, token, task)
+        raise ArgumentError, task_in_facts(node, token, task, cached?)
 
       fact ->
-        check_fact!(fact, state, node, token)
+        check_fact!(fact, state, node, token, cached?)
     end)
 
     facts
   end
 
-  defp check_fact!(fact, %State{} = state, node, token) do
+  defp check_fact!(fact, %State{} = state, node, token, cached?) do
     type =
       try do
         Taxonomy.fact_type(state.network.taxonomy, fact)
       rescue
         error ->
           reraise ArgumentError,
-                  [message: not_a_fact(node, token, fact, error)],
+                  [message: not_a_fact(node, token, fact, error, cached?)],
                   __STACKTRACE__
       end
 
     if not node.generated? and MapSet.member?(state.network.reserved_types, type) do
-      raise ArgumentError, concluded_marker(node, token, fact, type)
+      raise ArgumentError, concluded_marker(node, token, fact, type, cached?)
     end
   end
 
-  defp task_in_facts(node, token, task) do
+  # The opening of each error about a returned value. A hit names the cache, because the
+  # body did not run.
+  defp gave(node, value, false),
+    do: "#{Network.ref_string({node.module, node.name})} returned #{inspect(value)}"
+
+  defp gave(node, value, true),
+    do:
+      "The activation cache holds #{inspect(value)} for " <>
+        Network.ref_string({node.module, node.name})
+
+  @cache_advice "The body did not run. The cache came from another network or from " <>
+                  "storage. Build it again with `Rete.ActivationCache.from_session/2`, or " <>
+                  "give `:cache` a new value."
+
+  defp task_in_facts(node, token, task, cached? \\ false)
+
+  defp task_in_facts(node, token, task, false) do
     """
-    #{Network.ref_string({node.module, node.name})} returned #{inspect(task)} among its \
-    facts.
+    #{gave(node, task, false)} among its facts.
 
     It fired on #{inspect(token.bindings)}. A body may return one task, and the result of \
     that task is the facts. The engine does not await a task in a list, or a task that a \
     task returns.\
+    """
+  end
+
+  defp task_in_facts(node, token, task, true) do
+    """
+    #{gave(node, task, true)} among its facts.
+
+    It fired on #{inspect(token.bindings)}. A cache holds facts, and not tasks. \
+    #{@cache_advice}\
     """
   end
 
@@ -837,12 +879,13 @@ defmodule Rete.Engine do
     """
   end
 
-  defp concluded_marker(node, token, fact, type) do
-    """
-    #{Network.ref_string({node.module, node.name})} returned #{inspect(fact)}. \
-    #{Negation.reserved_message(type)}
+  defp concluded_marker(node, token, fact, type, cached?) do
+    advice = if cached?, do: @cache_advice, else: "Return a fact of another type."
 
-    It fired on #{inspect(token.bindings)}. Return a fact of another type.\
+    """
+    #{gave(node, fact, cached?)}. #{Negation.reserved_message(type)}
+
+    It fired on #{inspect(token.bindings)}. #{advice}\
     """
   end
 
@@ -879,14 +922,23 @@ defmodule Rete.Engine do
     ArgumentError -> false
   end
 
-  defp not_a_fact(node, token, fact, error) do
+  defp not_a_fact(node, token, fact, error, false) do
     """
-    #{Network.ref_string({node.module, node.name})} returned #{inspect(fact)}, \
-    which is not a fact.
+    #{gave(node, fact, false)}, which is not a fact.
 
     It fired on #{inspect(token.bindings)}. The body of a rule is the facts to \
     insert: return a struct, a tagged tuple `{:type, ...}`, a tagged map \
     `%{__type__: ...}`, a list of those, or `nil`/`[]` to insert nothing.
+
+    #{Exception.message(error)}\
+    """
+  end
+
+  defp not_a_fact(node, token, fact, error, true) do
+    """
+    #{gave(node, fact, true)}, which is not a fact on this network.
+
+    It fired on #{inspect(token.bindings)}. #{@cache_advice}
 
     #{Exception.message(error)}\
     """

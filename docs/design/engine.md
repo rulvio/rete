@@ -358,28 +358,32 @@ fewer events, larger counts, same shape.
 ### A cache can stand in for a body
 
 `fire_rules(session, activation_cache: cache)` lets a cache answer for the body of a rule
-whose `:cache` is a value other than `nil` or `false`. `Rete.ActivationCache` holds the
+or a query whose `:cache` is a value other than `nil` or `false`. `Rete.ActivationCache` holds the
 user contract. This is how the engine does it.
 
 The cache comes from the `insertions` memory of a session that fired (§4). Truth
 maintenance already needs a record of what each activation concluded, so the cache adds no
 store. `Rete.ActivationCache.from_session/2` reads that record in one pass, and it builds
 an index from it. The index is a plain map, so a caller can save it and load it without
-the session. A fire does no pass of its own. Each lookup is one `Map.fetch/2` for the rule
-and one for the key.
+the session. A fire does no pass of its own. A lookup finds the rule with one
+`Map.fetch/2`, then builds the key and finds it with another. The key is the bindings by
+default, so a lookup costs in proportion to their size.
 
 The index does not use node ids. Two networks give one rule different ids, and a token
 carries the ids of the nodes it matched. So a rule is found by `{module, name, hash,
-cache}`, and an activation by its key. The default key is the matched facts and the
-bindings. The `:cache` value is in the identity because it acts as a version. A rule that
+cache}`, and an activation by its key. The default key is the bindings. A body reads
+only those, so they are all its result depends on. The facts alone would not do. Two
+branches of a disjunction can match the same facts and bind different variables. The `:cache` value is in the identity because it acts as a version. A rule that
 had another value, or none, when the cache was built never hits.
 
-The lookup comes before the body, on both paths. A hit becomes `{:cached, facts}`, which
-`conclude/4` treats like a body's result. So a hit is checked, recorded in `insertions`,
+The lookup comes before the body, on both paths, inside the same rescue as the body. So a
+key function that raises is reported as a body is, in group order. A hit becomes
+`{:cached, facts}`, which `conclude/4` treats like a body's result. So a hit is checked, recorded in `insertions`,
 and inserted like any conclusion. Three things follow:
 
 * truth maintenance and `Rete.Inspect` see no difference between a hit and a firing.
-* the new session holds a record of its hits, so it is a cache for the next fire.
+* the new session holds a record of its hits. So `from_session/2` of the new session
+  gives the cache for the next fire.
 * there is no write step. Nothing can store the result of a body that raised, or of an
   activation that a conclusion earlier in its group cancelled.
 
@@ -390,6 +394,13 @@ A body that concluded nothing is recorded too, as an empty batch in `insertions`
 cache answers for it as for any other. The cost is one entry for each firing that
 concludes nothing, in every session, cached or not. The same record lets `Rete.Inspect`
 report that firing.
+
+A query is read after the fire, when the cache is gone. So the cache rides on the state
+for the length of one `fire_rules/2` call, as `:activation_cache`. A token that reaches a
+cached query node looks itself up there, and a hit leaves its row in `Memory.query_rows`.
+A read takes that row in place of the body. The row goes when its token goes, so a
+drained session still equals a fresh one. The call clears the field before it returns,
+so no session keeps the cache.
 
 ## 8. Truth maintenance
 

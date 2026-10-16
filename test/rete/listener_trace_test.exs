@@ -23,6 +23,12 @@ defmodule Rete.ListenerTraceTest do
     defrule escalate({:flagged, cid}), do: {:escalated, cid}
   end
 
+  defmodule CachedRules do
+    use Rete.Ruleset
+
+    defrule flag(%{cache: true}, {:order, cid, amt} when amt > 100), do: {:flagged, cid}
+  end
+
   # Inserts one fact twice, retracts both occurrences so the conclusion cascades, then
   # queues an insert and its retraction so an activation is cancelled before it fires.
   defp traced(opts) do
@@ -76,6 +82,34 @@ defmodule Rete.ListenerTraceTest do
 
       refute Enum.any?(quiet, &String.match?(&1, ~r/^\[rete\]     (left|right)/))
       assert Enum.any?(quiet, &String.match?(&1, ~r/^\[rete\]   fire   /))
+    end
+
+    test "a hit reads cached, and so do the facts it inserted" do
+      cache =
+        [CachedRules]
+        |> Session.new()
+        |> Session.insert({:order, 1, 250})
+        |> Session.fire_rules()
+        |> Rete.ActivationCache.from_session()
+
+      {:ok, io} = StringIO.open("")
+
+      [CachedRules]
+      |> Session.new()
+      |> Session.with_listener(Trace, device: io)
+      |> Session.insert({:order, 1, 250})
+      |> Session.fire_rules(activation_cache: cache)
+
+      lines = io |> StringIO.contents() |> elem(1) |> String.split("\n", trim: true)
+
+      assert Enum.any?(lines, &String.match?(&1, ~r/^\[rete\]   cached .*flag .* -> /))
+
+      assert Enum.any?(
+               lines,
+               &String.match?(&1, ~r/\(cached from Rete\.ListenerTraceTest\.CachedRules\.flag\)$/)
+             )
+
+      refute Enum.any?(lines, &String.match?(&1, ~r/^\[rete\] \{:/))
     end
 
     test "every line is tagged, so trace output is greppable out of a mixed stream" do

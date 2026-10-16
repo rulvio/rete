@@ -15,6 +15,12 @@ defmodule Rete.Memory do
       facts       fact => occurrences                        what it was told
 
       inserters   fact => {node_id, token} => count          `insertions`, reversed
+      query_rows  node_id => token => row                    rows an activation cache gave
+
+  `query_rows` is not a memory either. A query computes its rows when it is read, so a
+  fire with an activation cache keeps the rows that the cache gave, for the read to use.
+  A row goes with its token. It is left out of `dump/1`, because it is not something the
+  session concluded.
 
   `inserters` is not a memory. It is `insertions` indexed by fact, for the readers that ask
   "which matches inserted *this fact*". It stays `nil` until `index_inserters/1` builds it,
@@ -56,6 +62,7 @@ defmodule Rete.Memory do
           insertions: %{node_id() => %{Token.t() => [[term()]]}},
           inserters: %{term() => %{inserter() => pos_integer()}} | nil,
           facts: %{term() => pos_integer()},
+          query_rows: %{node_id() => %{Token.t() => term()}},
           root_seeded?: boolean()
         }
 
@@ -65,6 +72,7 @@ defmodule Rete.Memory do
             insertions: %{},
             inserters: nil,
             facts: %{},
+            query_rows: %{},
             root_seeded?: false
 
   @doc """
@@ -391,6 +399,50 @@ defmodule Rete.Memory do
   end
 
   def index_inserters(%__MODULE__{} = memory), do: memory
+
+  # --- query rows ------------------------------------------------------------------
+
+  @doc """
+  Keeps the row an activation cache gave for one token at a query node.
+  """
+  @spec put_row(t(), node_id(), Token.t(), term()) :: t()
+  def put_row(%__MODULE__{query_rows: rows} = memory, node_id, token, row) do
+    %__MODULE__{
+      memory
+      | query_rows: Map.update(rows, node_id, %{token => row}, &Map.put(&1, token, row))
+    }
+  end
+
+  @doc """
+  Drops the rows of tokens that left a query node.
+
+  An equal token can still be there. It then has no row, and a read runs the body for it.
+  That is correct, and only slower.
+  """
+  @spec drop_rows(t(), node_id(), [Token.t()]) :: t()
+  def drop_rows(%__MODULE__{query_rows: rows} = memory, node_id, tokens) do
+    case Map.fetch(rows, node_id) do
+      {:ok, by_token} ->
+        %__MODULE__{memory | query_rows: store_at(rows, node_id, Map.drop(by_token, tokens))}
+
+      :error ->
+        memory
+    end
+  end
+
+  @doc """
+  The rows a query node holds, or `nil` when it holds none.
+  """
+  @spec rows(t(), node_id()) :: %{Token.t() => term()} | nil
+  def rows(%__MODULE__{query_rows: rows}, node_id), do: Map.get(rows, node_id)
+
+  @doc """
+  The row of one token at a query node. The row itself can be `nil`.
+  """
+  @spec row(t(), node_id(), Token.t()) :: {:ok, term()} | :error
+  def row(%__MODULE__{query_rows: rows}, node_id, token) do
+    with {:ok, by_token} <- Map.fetch(rows, node_id), do: Map.fetch(by_token, token)
+  end
 
   # --- the fact multiset ----------------------------------------------------------
 

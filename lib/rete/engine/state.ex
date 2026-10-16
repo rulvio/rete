@@ -8,6 +8,9 @@ defmodule Rete.Engine.State do
 
   `:listeners` is `[{module, state}]` rather than a map, so listeners see events in
   attachment order and one module can be attached twice with different state.
+
+  `:activation_cache` is `{map, key_fn}` while one `Rete.Engine.fire_rules/2` call runs,
+  and `nil` at every other time. So no session keeps a cache, and no dump carries one.
   """
 
   alias Rete.Agenda
@@ -36,10 +39,20 @@ defmodule Rete.Engine.State do
           queue: :queue.queue(op()),
           order: %{term() => non_neg_integer()},
           fired: non_neg_integer(),
-          listeners: [{module(), term()}]
+          listeners: [{module(), term()}],
+          activation_cache: {map(), (map() -> term())} | nil
         }
 
-  defstruct [:network, :memory, :agenda, :queue, order: %{}, fired: 0, listeners: []]
+  defstruct [
+    :network,
+    :memory,
+    :agenda,
+    :queue,
+    :activation_cache,
+    order: %{},
+    fired: 0,
+    listeners: []
+  ]
 
   @doc """
   A state over a network, with empty memory and nothing pending.

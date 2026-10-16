@@ -24,7 +24,16 @@ defmodule Rete.SnapshotTest do
     Rete.Bucket => [:counts, :dead, :dead_total, :indexed?, :live, :queue],
     Rete.Compiler.BetaGraph => [:backward, :forward, :next_id, :nodes, :shared],
     Rete.Element => [:bindings, :fact],
-    Rete.Engine.State => [:agenda, :fired, :listeners, :memory, :network, :order, :queue],
+    Rete.Engine.State => [
+      :activation_cache,
+      :agenda,
+      :fired,
+      :listeners,
+      :memory,
+      :network,
+      :order,
+      :queue
+    ],
     Rete.IR.Coll => [
       :__ast__,
       :alpha,
@@ -71,6 +80,7 @@ defmodule Rete.SnapshotTest do
       :facts,
       :inserters,
       :insertions,
+      :query_rows,
       :root_seeded?,
       :tokens
     ],
@@ -130,7 +140,7 @@ defmodule Rete.SnapshotTest do
       :rhs,
       :salience
     ],
-    Rete.Network.Node.Query => [:bind, :hash, :head, :id, :module, :name, :params, :rhs],
+    Rete.Network.Node.Query => [:bind, :cache, :hash, :head, :id, :module, :name, :params, :rhs],
     Rete.Network.Node.RootJoin => [:alpha_code, :fact_binding, :id, :new_bind, :type],
     Rete.Network.Node.Test => [:code, :fun, :id],
     Rete.Taxonomy => [:alphas, :fact_type_fn, :index, :taxo],
@@ -1193,9 +1203,10 @@ defmodule Rete.SnapshotTest do
   end
 
   describe "a snapshot from an earlier release" do
-    # Format 1 production nodes had no `:cache`. Such a body still loads, and its rules
-    # do not cache.
-    test "loads without :cache, and its rules read cache: nil" do
+    # A format 1 body from an earlier release has no `:cache` on its terminals, no
+    # `:activation_cache` on its state and no `:query_rows` in its memory. It still loads,
+    # and its rules and queries do not cache.
+    test "loads without the cache fields, and its terminals read cache: nil" do
       session =
         [Orders]
         |> Session.new()
@@ -1210,15 +1221,28 @@ defmodule Rete.SnapshotTest do
       nodes =
         Map.new(graph.nodes, fn
           {id, %Node.Production{} = node} -> {id, Map.delete(node, :cache)}
+          {id, %Node.Query{} = node} -> {id, Map.delete(node, :cache)}
           entry -> entry
         end)
 
-      old = put_in(state.network.graph, %{graph | nodes: nodes})
+      old =
+        state
+        |> put_in([Access.key(:network), Access.key(:graph)], %{graph | nodes: nodes})
+        |> Map.delete(:activation_cache)
+        |> Map.update!(:memory, &Map.delete(&1, :query_rows))
+
       assert {:ok, loaded} = Session.load(forge(%{decoded | state: old}), @key)
 
-      productions = loaded |> Session.network() |> Network.production_nodes()
-      assert productions != []
-      assert Enum.all?(productions, &(&1.cache == nil))
+      terminals =
+        loaded
+        |> Session.network()
+        |> Network.beta_nodes()
+        |> Enum.filter(&match?(%{cache: _}, &1))
+
+      assert Enum.any?(terminals, &match?(%Node.Query{}, &1))
+      assert Enum.all?(terminals, &(&1.cache == nil))
+      assert loaded.state.activation_cache == nil
+      assert loaded.state.memory.query_rows == %{}
 
       assert Orders.flagged_for(Session.fire_rules(loaded), 1) ==
                Orders.flagged_for(Session.fire_rules(session), 1)

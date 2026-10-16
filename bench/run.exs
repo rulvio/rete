@@ -1560,5 +1560,86 @@ Bench.scenario(
   note: "the dump carries the tombstones that the retractions left"
 )
 
+defmodule Bench.Silent do
+  @moduledoc false
+  use Rete.Ruleset
+
+  # A rule that concludes nothing. Every firing still leaves a record, so truth maintenance
+  # and the activation cache can see it.
+  defrule check({:cust, id}, {:order, id, amt}) do
+    _ = amt
+    nil
+  end
+end
+
+defmodule Bench.Cached do
+  @moduledoc false
+  use Rete.Ruleset, default_rule_opts: %{cache: true}
+
+  defrule total({:cust, id}, {:order, id, amt}), do: {:total, id, amt}
+
+  defquery totals({:total, id, amt}), do: {id, amt}
+
+  # n customers, each with one order. A fire of these gives n activations of the rule, and
+  # then n rows of the query.
+  def facts(n), do: for(i <- 1..n, fact <- [{:cust, i}, {:order, i, i}], do: fact)
+
+  # The fired session and the cache built from it, read without copying, for the reason
+  # `Bench.Explain.put/1` gives.
+  def put(n) do
+    session = [__MODULE__] |> Rete.Session.new() |> Rete.Session.insert(facts(n))
+    fired = Rete.Session.fire_rules(session)
+    cache = Rete.ActivationCache.from_session(fired)
+    hit = Rete.Session.fire_rules(session, activation_cache: cache)
+
+    :persistent_term.put({__MODULE__, n}, {session, fired, cache, hit})
+  end
+
+  def get(n), do: :persistent_term.get({__MODULE__, n})
+end
+
+silent = Bench.network(Bench.Silent)
+cache_sizes = [500, 1_000, 2_000, 4_000]
+
+for n <- cache_sizes, do: Bench.Cached.put(n)
+
+IO.puts("\n\e[1m\e[4mactivation cache\e[0m")
+
+Bench.scenario(
+  "fire n matches of a rule that concludes nothing",
+  [1_000, 2_000, 4_000],
+  fn n ->
+    silent
+    |> Bench.session()
+    |> Rete.Session.insert(Bench.Cached.facts(n))
+    |> Rete.Session.fire_rules()
+  end,
+  note: "each firing records an empty batch against its match"
+)
+
+Bench.scenario(
+  "fire n matches, each one a cache hit",
+  cache_sizes,
+  fn n ->
+    {session, _fired, cache, _hit} = Bench.Cached.get(n)
+    Rete.Session.fire_rules(session, activation_cache: cache)
+  end,
+  note: "the key build, two map lookups and the check of the cached facts, per activation"
+)
+
+Bench.scenario(
+  "build a cache from a session of n matches",
+  cache_sizes,
+  fn n -> n |> Bench.Cached.get() |> elem(1) |> Rete.ActivationCache.from_session() end,
+  note: "one pass over the records of the rule, and one body run per row of the query"
+)
+
+Bench.scenario(
+  "read n query rows that a cache gave",
+  cache_sizes,
+  fn n -> n |> Bench.Cached.get() |> elem(3) |> Bench.Cached.totals() end,
+  note: "a map lookup per row, in place of the body"
+)
+
 # Last, because it sets the exit status of the run.
 Bench.finish()

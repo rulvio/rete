@@ -339,20 +339,43 @@ defmodule Rete.DSL.Parser do
   @doc """
   Checks a set of default rule options, and returns them as a keyword list.
 
-  `source` names where the defaults were given, for the error. The defaults take a map or
-  a keyword list. They take `:salience`, `:cache` and `:meta`, and no other key.
+  `source` names where the defaults were given, and `written` is the defaults as the user
+  wrote them. Both are for the error. The defaults take a map or a keyword list, with
+  atom keys, each one time. They take `:salience`, `:cache` and `:meta`, and no other key.
   """
-  @spec check_default_rule_opts!(String.t(), term()) :: keyword()
-  def check_default_rule_opts!(source, opts) when is_map(opts) do
-    check_default_rule_opts!(source, Map.to_list(opts))
+  @spec check_default_rule_opts!(String.t(), term(), String.t()) :: keyword()
+  def check_default_rule_opts!(source, opts, written) when is_map(opts) do
+    check_default_rule_opts!(source, Map.to_list(opts), written)
   end
 
-  def check_default_rule_opts!(source, opts) when is_list(opts) do
-    if not Keyword.keyword?(opts) do
-      raise ArgumentError,
-            "#{source} must be a map or a keyword list, got: #{inspect(opts)}"
+  def check_default_rule_opts!(source, opts, written) when is_list(opts) do
+    if not Enum.all?(opts, &match?({_key, _value}, &1)) do
+      raise ArgumentError, "#{source} must be a map or a keyword list, got: #{written}"
     end
 
+    keys = Enum.map(opts, &elem(&1, 0))
+
+    case {Enum.reject(keys, &is_atom/1), Enum.uniq(keys -- Enum.uniq(keys))} do
+      {[_ | _] = not_atoms, _} ->
+        raise ArgumentError,
+              "#{source} takes atom keys, and #{written} has #{inspect(not_atoms)}. " <>
+                "Write the keys as atoms, such as `cache: true`."
+
+      {[], [_ | _] = repeated} ->
+        raise ArgumentError,
+              "#{source} sets #{inspect(repeated)} more than once, in #{written}. " <>
+                "Give each key one time."
+
+      {[], []} ->
+        check_default_keys!(source, opts)
+    end
+  end
+
+  def check_default_rule_opts!(source, _opts, written) do
+    raise ArgumentError, "#{source} must be a map or a keyword list, got: #{written}"
+  end
+
+  defp check_default_keys!(source, opts) do
     case Keyword.keys(opts) -- @default_opts do
       [] ->
         opts
@@ -362,10 +385,6 @@ defmodule Rete.DSL.Parser do
               "#{source} sets #{inspect(unknown)}, which a default cannot set. " <>
                 "The defaults take #{inspect(@default_opts)}."
     end
-  end
-
-  def check_default_rule_opts!(source, opts) do
-    raise ArgumentError, "#{source} must be a map or a keyword list, got: #{inspect(opts)}"
   end
 
   # Splits the optional leading options map off the declaration arguments. A leading map

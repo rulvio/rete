@@ -153,13 +153,14 @@ defmodule Rete.Session do
       never overlaps another.
     * `:timeout` — milliseconds the engine waits for one returned task, or `:infinity`, the
       default. A task that takes longer is shut down, and the call raises.
-    * `:activation_cache` — a map from `Rete.ActivationCache.from_session/2`, or `nil`, the
-      default. A rule can set `:cache` to a value other than `nil` or `false`. It then
-      takes what the cache holds for an equal activation, and its body does not run. The
-      option applies to this call only.
+    * `:activation_cache` — a plain map from `Rete.ActivationCache.from_session/2`, or
+      `nil`, the default. Any other value raises, a session included. A rule or a query can
+      set `:cache` to a value other than `nil` or `false`. It then takes what the cache
+      holds for an equal activation, and its body does not run. The option applies to
+      this call only.
     * `:activation_cache_key_fn` — an arity-1 function that gives the key of an
-      activation, or `nil` to run it without the cache. It gets
-      `%{rule: {module, name}, hash: hash, cache: cache, token: token}`.
+      activation. It gets `%{rule: {module, name}, hash: hash, cache: cache, token: token}`.
+      When it returns `nil`, that activation runs without the cache.
       `Rete.ActivationCache.key/1` by default. Give the same function that built the cache.
 
   Start a returned task in the body itself, because only its owner can await it. It is an
@@ -180,21 +181,7 @@ defmodule Rete.Session do
       [{1, 250}]
   """
   @spec fire_rules(t(), keyword()) :: t()
-  def fire_rules(session, opts \\ []) do
-    check_cache!(Keyword.get(opts, :activation_cache))
-
-    update(session, &Engine.fire_rules(&1, opts))
-  end
-
-  # A session is a map, so the engine alone would take it for a cache, and find no hits.
-  # Giving the session is the likely mistake, so name the call that builds the cache.
-  defp check_cache!(%__MODULE__{}) do
-    raise ArgumentError,
-          ":activation_cache takes a cache, not a session. Build the cache with " <>
-            "`Rete.ActivationCache.from_session(session)`, and give that."
-  end
-
-  defp check_cache!(_cache), do: :ok
+  def fire_rules(session, opts \\ []), do: update(session, &Engine.fire_rules(&1, opts))
 
   @doc """
   Whether the session has no work waiting for `fire_rules/2`.
