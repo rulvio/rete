@@ -9,7 +9,10 @@ defmodule Rete.SnapshotTest do
 
   use ExUnit.Case, async: true
 
+  alias Rete.Doc.Orders
   alias Rete.Listener.Collect
+  alias Rete.Network
+  alias Rete.Network.Node
   alias Rete.Session
 
   @key "rete-snapshot-test"
@@ -117,6 +120,7 @@ defmodule Rete.SnapshotTest do
     Rete.Network.Node.Production => [
       :args,
       :bind,
+      :cache,
       :generated?,
       :hash,
       :id,
@@ -1163,6 +1167,8 @@ defmodule Rete.SnapshotTest do
 
     # A snapshot holds these structs as they are. A body from another shape still decodes,
     # and it fails later inside the engine. Only a new `@format` makes `load/2` refuse it.
+    # A new field with a default that changes nothing is the exception. The load fills it
+    # in, so the format stays. Add it to @shapes, and to the test below.
     test "the structs a snapshot holds have the shape of this format" do
       {:ok, modules} = :application.get_key(:rete, :modules)
 
@@ -1183,6 +1189,39 @@ defmodule Rete.SnapshotTest do
       A struct that a snapshot holds changed shape. Increase @format in Rete.Snapshot, \
       then update @shapes and the format in this test.\
       """
+    end
+  end
+
+  describe "a snapshot from an earlier release" do
+    # Format 1 production nodes had no `:cache`. Such a body still loads, and its rules
+    # do not cache.
+    test "loads without :cache, and its rules read cache: nil" do
+      session =
+        [Orders]
+        |> Session.new()
+        |> Session.insert([{:customer, 1}, {:order, 1, 250}])
+
+      {:rete_session, 1, _signature, body} =
+        session |> Session.dump!(@key) |> :erlang.binary_to_term()
+
+      %{state: state} = decoded = :erlang.binary_to_term(body)
+      graph = state.network.graph
+
+      nodes =
+        Map.new(graph.nodes, fn
+          {id, %Node.Production{} = node} -> {id, Map.delete(node, :cache)}
+          entry -> entry
+        end)
+
+      old = put_in(state.network.graph, %{graph | nodes: nodes})
+      assert {:ok, loaded} = Session.load(forge(%{decoded | state: old}), @key)
+
+      productions = loaded |> Session.network() |> Network.production_nodes()
+      assert productions != []
+      assert Enum.all?(productions, &(&1.cache == nil))
+
+      assert Orders.flagged_for(Session.fire_rules(loaded), 1) ==
+               Orders.flagged_for(Session.fire_rules(session), 1)
     end
   end
 

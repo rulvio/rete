@@ -34,7 +34,9 @@ defmodule Rete.Listener do
   | `{:activation_fired, source, token, facts}` | a rule ran and returned `facts` |
 
   `source` is `%{node: node_id, rule: {module, name}}`. It is a map, so a field can be
-  added later without changing the shape every listener matches on. `{:propagated, ...}`
+  added later without changing the shape every listener matches on. An `:activation_fired`
+  that an activation cache answered has `cached: true` in its source. The body did not run.
+  See `Rete.ActivationCache`. `{:propagated, ...}`
   is the exception, and it carries the bare id, because a join has no user-facing name.
   `origin` is a `{module, name}` pair. `{Rete.Session, :insert}` and
   `{Rete.Session, :retract}` mean your own call. Any other pair names the rule whose match
@@ -46,7 +48,11 @@ defmodule Rete.Listener do
   @type state :: term()
 
   @typedoc "Which terminal an event came from: its node id and its `{module, name}`."
-  @type source :: %{node: term(), rule: {module(), atom()}}
+  @type source :: %{
+          required(:node) => term(),
+          required(:rule) => {module(), atom()},
+          optional(:cached) => true
+        }
 
   @typedoc "Where a fact came from, or what took it away: your own call, or a rule."
   @type origin :: {module(), atom()}
@@ -156,6 +162,9 @@ defmodule Rete.Listener.Trace do
 
   defp describe({:activation_removed, source, token}),
     do: "  cancel #{rule(source)} #{inspect(token.bindings)}"
+
+  defp describe({:activation_fired, %{cached: true} = source, token, facts}),
+    do: "  cached #{rule(source)} #{inspect(token.bindings)} -> #{inspect(facts)}"
 
   defp describe({:activation_fired, source, token, facts}),
     do: "  fire   #{rule(source)} #{inspect(token.bindings)} -> #{inspect(facts)}"

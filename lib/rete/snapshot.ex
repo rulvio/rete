@@ -6,9 +6,11 @@ defmodule Rete.Snapshot do
   to carry. `Rete.Image` holds the images. See `docs/design/snapshot.md` §3 and §4.
   """
 
+  alias Rete.Compiler.BetaGraph
   alias Rete.Engine.State
   alias Rete.Image
   alias Rete.Network
+  alias Rete.Network.Node
 
   # Increase this when an engine struct changes. The struct-shape test in `snapshot_test.exs`
   # fails until it does. Increase it also when the contract of `Negation.marker/2`,
@@ -64,6 +66,7 @@ defmodule Rete.Snapshot do
          :ok <- verify(format, signature, body, secret),
          :ok <- check_format(format),
          {:ok, %{images: images, state: state}} <- decode(body),
+         state = fill_defaults(state),
          # A refused load keeps these images. Another session can need them.
          :ok <- Image.load(images),
          [] <- Image.missing(state, images) do
@@ -141,6 +144,20 @@ defmodule Rete.Snapshot do
   defp shape(value) when is_integer(value), do: "an integer"
   defp shape(value) when is_map(value), do: "a map"
   defp shape(_value), do: "a value of another type"
+
+  # A field that a release adds, with a default that changes nothing, does not need a new
+  # format. A body from an earlier release lacks it, so the load fills it in. The engine
+  # then sees one shape, and a read of the field cannot raise. A field with no such default
+  # needs a new `@format` instead.
+  defp fill_defaults(%State{network: %Network{graph: %BetaGraph{nodes: nodes} = graph}} = state) do
+    nodes =
+      Map.new(nodes, fn
+        {id, %Node.Production{} = node} -> {id, Map.put_new(node, :cache, nil)}
+        entry -> entry
+      end)
+
+    %State{state | network: %Network{state.network | graph: %BetaGraph{graph | nodes: nodes}}}
+  end
 
   # The network without its taxonomy. The taxonomy can hold a `:fact_type_fn`, which is not
   # part of any rule. It keeps its captures, so it always runs the version of the node, as a

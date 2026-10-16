@@ -172,7 +172,8 @@ them, and `Rete.Session.facts/1` looked right while a query answered short.
 
 **`insertions` is the provenance graph.** "This match at this production inserted these
 facts" — read backwards, this is exactly the edge that `Rete.Inspect.explain/1,2` walks. No
-separate bookkeeping exists for explanation.
+separate bookkeeping exists for explanation. A firing that concluded nothing is an empty
+batch. It is a record of the firing, and it is the edge of no fact.
 
 `inserters` is that same relation indexed the other way, and the one derived thing in here.
 It answers "which matches inserted *this fact*". `Rete.Inspect` asks it per matched fact when
@@ -353,6 +354,42 @@ dispatches, groups by join key, and at a negation or a collection reads back wha
 already holds. Paying that once per fact is what made an unkeyed negation and a live
 collection quadratic. The `{:propagated, op, node_id, count}` event coarsens with it:
 fewer events, larger counts, same shape.
+
+### A cache can stand in for a body
+
+`fire_rules(session, activation_cache: cache)` lets a cache answer for the body of a rule
+whose `:cache` is a value other than `nil` or `false`. `Rete.ActivationCache` holds the
+user contract. This is how the engine does it.
+
+The cache comes from the `insertions` memory of a session that fired (§4). Truth
+maintenance already needs a record of what each activation concluded, so the cache adds no
+store. `Rete.ActivationCache.from_session/2` reads that record in one pass, and it builds
+an index from it. The index is a plain map, so a caller can save it and load it without
+the session. A fire does no pass of its own. Each lookup is one `Map.fetch/2` for the rule
+and one for the key.
+
+The index does not use node ids. Two networks give one rule different ids, and a token
+carries the ids of the nodes it matched. So a rule is found by `{module, name, hash,
+cache}`, and an activation by its key. The default key is the matched facts and the
+bindings. The `:cache` value is in the identity because it acts as a version. A rule that
+had another value, or none, when the cache was built never hits.
+
+The lookup comes before the body, on both paths. A hit becomes `{:cached, facts}`, which
+`conclude/4` treats like a body's result. So a hit is checked, recorded in `insertions`,
+and inserted like any conclusion. Three things follow:
+
+* truth maintenance and `Rete.Inspect` see no difference between a hit and a firing.
+* the new session holds a record of its hits, so it is a cache for the next fire.
+* there is no write step. Nothing can store the result of a body that raised, or of an
+  activation that a conclusion earlier in its group cancelled.
+
+Under concurrency, a hit is not a task. So it leaves the window as soon as it reaches the
+head (§11). `Rete.Agenda.remove/2` still decides whether it applies, as for a body.
+
+A body that concluded nothing is recorded too, as an empty batch in `insertions`. So the
+cache answers for it as for any other. The cost is one entry for each firing that
+concludes nothing, in every session, cached or not. The same record lets `Rete.Inspect`
+report that firing.
 
 ## 8. Truth maintenance
 

@@ -305,11 +305,10 @@ defmodule Rete.ObservabilityTest do
       assert %{rule: :flag, activations: []} = Inspect.explain(session([]), {Rules, :flag})
     end
 
-    # The documented limit of reading truth maintenance. A body returning `nil` concludes
-    # nothing, so no match rests on a conclusion, and a production keeps no tokens of its
-    # own. The firing leaves nothing in memory to report. A listener is what sees it, so
-    # this pins both halves: what `explain` cannot say, and what does say it.
-    test "a rule that fired and concluded nothing is indistinguishable from one that did not" do
+    # A body returning `nil` concludes nothing, but the engine still records that it fired.
+    # So `explain` reports the firing with no asserts, and tells it apart from a rule that
+    # never matched. `why_not` counts it, and retracting its match takes the record back.
+    test "a rule that fired and concluded nothing reports the firing, with no asserts" do
       defmodule Silent do
         use Rete.Ruleset
 
@@ -321,24 +320,20 @@ defmodule Rete.ObservabilityTest do
         defrule loud({:ping, id}), do: {:pong, id}
       end
 
-      session =
-        [Silent]
-        |> Session.new()
-        |> Session.with_listener(Listener.Collect, [])
-        |> Session.insert({:ping, 1})
-        |> Session.fire_rules()
+      session = [Silent] |> Session.new() |> Session.insert({:ping, 1}) |> Session.fire_rules()
 
-      assert %{activations: []} = Inspect.explain(session, {Silent, :quiet})
-      assert %{activations: [_]} = Inspect.explain(session, {Silent, :loud})
+      assert %{activations: [%{asserts: [], bindings: %{id: 1}}]} =
+               Inspect.explain(session, {Silent, :quiet})
 
-      # It did fire, and the listener is the thing that knows.
-      fired =
-        session
-        |> Listener.Collect.by_tag(:activation_fired)
-        |> Enum.map(fn {:activation_fired, source, _token, facts} -> {source.rule, facts} end)
+      assert %{activations: [%{asserts: [{:pong, 1}]}]} =
+               Inspect.explain(session, {Silent, :loud})
 
-      assert {{Silent, :quiet}, []} in fired
-      assert {{Silent, :loud}, [{:pong, 1}]} in fired
+      %{chain: steps} = Inspect.why_not(session, {Silent, :quiet})
+      assert List.last(steps).activations == 1
+
+      retracted = session |> Session.retract({:ping, 1}) |> Session.fire_rules()
+      assert %{activations: []} = Inspect.explain(retracted, {Silent, :quiet})
+      assert retracted.state.memory.insertions == %{}
     end
 
     test "a retracted conclusion stops being reported" do
@@ -418,7 +413,7 @@ defmodule Rete.ObservabilityTest do
       assert negation.elements == 0, "and no order suppressed it"
     end
 
-    test "a terminal reports how many matches it concluded from" do
+    test "a terminal reports how many matches it fired on" do
       %{chain: steps} = Inspect.why_not(session(), {Rules, :flag})
       terminal = List.last(steps)
 

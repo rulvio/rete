@@ -70,6 +70,9 @@ defmodule Rete.Session do
   With `target_images: true`, raises `ArgumentError` if the image of a ruleset module did
   not compile or does not load. See `Rete.Compiler.build/2`.
 
+  `default_rule_opts: %{cache: true}` gives every rule these options. The defaults of a
+  ruleset module, and the options map of a rule, both win over it.
+
       iex> Rete.Session.new([Rete.Doc.Orders]) |> Rete.Session.facts()
       []
   """
@@ -150,6 +153,14 @@ defmodule Rete.Session do
       never overlaps another.
     * `:timeout` — milliseconds the engine waits for one returned task, or `:infinity`, the
       default. A task that takes longer is shut down, and the call raises.
+    * `:activation_cache` — a map from `Rete.ActivationCache.from_session/2`, or `nil`, the
+      default. A rule can set `:cache` to a value other than `nil` or `false`. It then
+      takes what the cache holds for an equal activation, and its body does not run. The
+      option applies to this call only.
+    * `:activation_cache_key_fn` — an arity-1 function that gives the key of an
+      activation, or `nil` to run it without the cache. It gets
+      `%{rule: {module, name}, hash: hash, cache: cache, token: token}`.
+      `Rete.ActivationCache.key/1` by default. Give the same function that built the cache.
 
   Start a returned task in the body itself, because only its owner can await it. It is an
   ordinary `Task`. When the engine sees it exit, the call raises an error that names the
@@ -169,7 +180,21 @@ defmodule Rete.Session do
       [{1, 250}]
   """
   @spec fire_rules(t(), keyword()) :: t()
-  def fire_rules(session, opts \\ []), do: update(session, &Engine.fire_rules(&1, opts))
+  def fire_rules(session, opts \\ []) do
+    check_cache!(Keyword.get(opts, :activation_cache))
+
+    update(session, &Engine.fire_rules(&1, opts))
+  end
+
+  # A session is a map, so the engine alone would take it for a cache, and find no hits.
+  # Giving the session is the likely mistake, so name the call that builds the cache.
+  defp check_cache!(%__MODULE__{}) do
+    raise ArgumentError,
+          ":activation_cache takes a cache, not a session. Build the cache with " <>
+            "`Rete.ActivationCache.from_session(session)`, and give that."
+  end
+
+  defp check_cache!(_cache), do: :ok
 
   @doc """
   Whether the session has no work waiting for `fire_rules/2`.

@@ -316,7 +316,11 @@ defmodule Rete.DSL.Parser do
   # `:meta` is the one key the engine never reads or validates. It is a deliberate
   # pass-through for the ruleset author's own data, kept in `opts` for `get_rule_data/0`
   # to hand back unchanged.
-  @known_opts [:salience, :internal_salience, :generated, :meta]
+  @known_opts [:salience, :internal_salience, :generated, :meta, :cache]
+
+  # The keys a default may set. The two reserved keys mark a generated helper, so a
+  # default that set them would mark every rule of a module as one.
+  @default_opts [:salience, :cache, :meta]
 
   defp check_opts!(name, opts) do
     case Keyword.keys(opts) -- @known_opts do
@@ -330,6 +334,38 @@ defmodule Rete.DSL.Parser do
                 "pattern rather than the options map, declare its type: " <>
                 "`%{__type__: :some_type, ...}`."
     end
+  end
+
+  @doc """
+  Checks a set of default rule options, and returns them as a keyword list.
+
+  `source` names where the defaults were given, for the error. The defaults take a map or
+  a keyword list. They take `:salience`, `:cache` and `:meta`, and no other key.
+  """
+  @spec check_default_rule_opts!(String.t(), term()) :: keyword()
+  def check_default_rule_opts!(source, opts) when is_map(opts) do
+    check_default_rule_opts!(source, Map.to_list(opts))
+  end
+
+  def check_default_rule_opts!(source, opts) when is_list(opts) do
+    if not Keyword.keyword?(opts) do
+      raise ArgumentError,
+            "#{source} must be a map or a keyword list, got: #{inspect(opts)}"
+    end
+
+    case Keyword.keys(opts) -- @default_opts do
+      [] ->
+        opts
+
+      unknown ->
+        raise ArgumentError,
+              "#{source} sets #{inspect(unknown)}, which a default cannot set. " <>
+                "The defaults take #{inspect(@default_opts)}."
+    end
+  end
+
+  def check_default_rule_opts!(source, opts) do
+    raise ArgumentError, "#{source} must be a map or a keyword list, got: #{inspect(opts)}"
   end
 
   # Splits the optional leading options map off the declaration arguments. A leading map

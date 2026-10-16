@@ -28,6 +28,11 @@ defmodule Rete.Ruleset do
   `use` whose `@before_compile` hook defines a helper, or the image cannot see it.
   `config :rete, compile_timeout: ms` changes the two-minute limit on an image compile.
 
+  `use Rete.Ruleset, default_rule_opts: %{cache: true}` gives every rule of the module
+  these options. A rule's own options map wins over them. A query does not get them. The
+  defaults take `:salience`, `:cache` and `:meta`. See "Default rule options" in
+  `docs/dsl.md`.
+
   Every `defrule` and `defquery` expands by running the front end pipeline:
 
       Rete.DSL.Parser      parse the quoted declaration into Rete.IR
@@ -48,7 +53,11 @@ defmodule Rete.Ruleset do
   alias Rete.IR
 
   @doc false
-  defmacro __using__(_opts) do
+  defmacro __using__(opts) do
+    # Put at expansion, not in the quote. A module body expands in full before any of it
+    # runs, so a `defrule` below could not read an attribute that the quote sets.
+    Module.put_attribute(__CALLER__.module, :rete_default_rule_opts, module_defaults(opts))
+
     quote do
       import Rete.Ruleset
 
@@ -152,11 +161,40 @@ defmodule Rete.Ruleset do
     Map.new(bind, fn var -> {var, Map.get(parsed, var) || {var, [], nil}} end)
   end
 
+  # The values stay AST, as the values of a rule's own options map do. `Rete.IR.escape/1`
+  # evaluates them in the module scope. Only the keys must be literal, so that a key can be
+  # checked here.
+  defp module_defaults(opts) do
+    case Keyword.get(opts, :default_rule_opts, []) do
+      {:%{}, _meta, pairs} when is_list(pairs) ->
+        Parser.check_default_rule_opts!(":default_rule_opts", pairs)
+
+      pairs when is_list(pairs) ->
+        Parser.check_default_rule_opts!(":default_rule_opts", pairs)
+
+      other ->
+        raise ArgumentError,
+              ":default_rule_opts must be a literal map or keyword list, got: " <>
+                Macro.to_string(other)
+    end
+  end
+
+  # The rule's own options come last, so they win. A query takes no defaults, because
+  # salience and caching mean nothing to a production that never fires.
+  defp with_module_defaults(%IR.Production{type: :rule, opts: opts} = production, env) do
+    case Module.get_attribute(env.module, :rete_default_rule_opts) do
+      defaults when defaults in [nil, []] -> production
+      defaults -> %IR.Production{production | opts: Keyword.merge(defaults, opts)}
+    end
+  end
+
+  defp with_module_defaults(production, _env), do: production
+
   # The name check is spliced in ahead of the codegen. So the first thing to fail on a
   # repeated name is the check that can explain it. Two queries of one name would
   # otherwise collide as two definitions of the same function.
   defp defproduction(env, decl, body, type) do
-    production = build(env, decl, body, type)
+    production = env |> build(decl, body, type) |> with_module_defaults(env)
 
     quote do
       unquote(name_check(env, production.name, type))

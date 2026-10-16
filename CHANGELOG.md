@@ -4,6 +4,40 @@ All notable changes to `rete` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+* An activation cache. A rule opts in when its `:cache` option is a value other than `nil`
+  or `false`, such as `%{cache: true}` or `%{cache: 2}`.
+  `Rete.ActivationCache.from_session/2` builds a cache from a session that fired.
+  `Rete.Session.fire_rules(session, activation_cache: cache)` then takes the conclusion of
+  an equal activation from the cache, and the body does not run. The cache is a plain map,
+  so you can save it with `:erlang.term_to_binary/1` and load it without the session. Load
+  a cache only from storage you trust, because it inserts facts that no rule checks. A hit
+  is recorded like a firing, so a cache from the new session holds the hits too. Two
+  activations are equal when their rule and their key are equal. The rule is its module,
+  its name, the hash of its source, and its `:cache` value. A new `:cache` value is a new
+  version, so every entry made under the old value misses. The key is the matched facts
+  and the bindings. `:key_fn` on `from_session/2` and `:activation_cache_key_fn` on
+  `fire_rules/2` replace the key, and both must be the same function. See
+  `Rete.ActivationCache`.
+* A hit emits `:activation_fired` with `cached: true` in its source.
+* `default_rule_opts` gives options to many rules at once. `use Rete.Ruleset,
+  default_rule_opts: ...` gives them to the rules of one module. The `:default_rule_opts`
+  build option gives them to every rule of a build. The build default is the weakest, and
+  the options map of a rule wins over both. The defaults take `:salience`, `:cache` and
+  `:meta`. A query gets no defaults.
+* A production node has a new `cache` field. The snapshot format stays 1. `load/2` gives
+  `cache: nil` to the nodes of a snapshot from an earlier release.
+
+### Changed
+
+* A firing that concludes nothing is now recorded. `Rete.Inspect.explain/1,2` reports it
+  as an activation with `asserts: []`, so it is no longer the same as a rule that never
+  matched. The `:activations` count of `why_not/1,2` includes it. Clara records only the
+  matches with an insertion, so rete now differs from Clara here.
+
 ## 1.2.0
 
 ### Changed

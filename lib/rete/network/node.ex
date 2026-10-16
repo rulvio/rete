@@ -205,6 +205,11 @@ defmodule Rete.Network.Node do
     machinery the user did not write. An extracted negation helper has to run before the
     rule that negates its marker. Otherwise, that rule fires once against an absence that
     had merely not been computed yet.
+
+    `:cache` is the rule's `:cache` option. Any value other than `nil` or `false` lets a
+    cache, given to `fire_rules/2` as `:activation_cache`, stand in for the body.
+    The value is part of the identity of the rule in the cache, so a new value is a new
+    version. A generated helper never sets it. See `Rete.ActivationCache`.
     """
     @type t :: %__MODULE__{
             id: non_neg_integer() | nil,
@@ -216,7 +221,8 @@ defmodule Rete.Network.Node do
             bind: [atom()],
             salience: integer(),
             internal_salience: integer(),
-            generated?: boolean()
+            generated?: boolean(),
+            cache: term()
           }
     defstruct [
       :id,
@@ -226,6 +232,7 @@ defmodule Rete.Network.Node do
       :rhs,
       :args,
       :bind,
+      :cache,
       salience: 0,
       internal_salience: 0,
       generated?: false

@@ -35,6 +35,7 @@ defmodule Rete.Compiler do
 
   alias Rete.Compiler.BetaGraph
   alias Rete.Compiler.Negation
+  alias Rete.DSL.Parser
   alias Rete.Image
   alias Rete.IR
   alias Rete.Network
@@ -49,6 +50,9 @@ defmodule Rete.Compiler do
     * `:target_images` is `false` by default. The network then calls the ruleset modules.
       With `true`, it runs the image of each ruleset module, so it keeps its rules after a
       hot upgrade of the module. `config :rete, target_images: true` changes the default.
+    * `:default_rule_opts` gives every rule these options, as a map or a keyword list. It
+      takes `:salience`, `:cache` and `:meta`. The defaults of a module, and the options
+      map of a rule, both win over it. A query does not get it.
 
   `config :rete, compile_timeout: ms` limits each image compile. It acts when a ruleset
   module compiles, so no build option can change it.
@@ -81,12 +85,35 @@ defmodule Rete.Compiler do
   def build_productions(productions, taxo_data \\ [], opts \\ []) do
     validate_names!(productions)
 
-    productions = productions |> Enum.flat_map(&extract/1) |> disambiguate_codes()
+    productions =
+      productions
+      |> with_defaults(Keyword.get(opts, :default_rule_opts, []))
+      |> Enum.flat_map(&extract/1)
+      |> disambiguate_codes()
 
     {productions, built} =
       if target_images?(opts), do: run_images(productions), else: {productions, %{}}
 
     Network.new(productions, taxo_data, Keyword.put(opts, :built_images, built))
+  end
+
+  # Before extraction, so every production here is one the user wrote, and a negation
+  # helper inherits a default salience as it inherits a written one. It never inherits
+  # `:cache`. See `Rete.Compiler.Negation`.
+  defp with_defaults(productions, defaults) do
+    case Parser.check_default_rule_opts!(":default_rule_opts", defaults) do
+      [] ->
+        productions
+
+      defaults ->
+        Enum.map(productions, fn
+          %IR.Production{type: :rule} = production ->
+            %IR.Production{production | opts: Keyword.merge(defaults, production.opts)}
+
+          production ->
+            production
+        end)
+    end
   end
 
   defp target_images?(opts),

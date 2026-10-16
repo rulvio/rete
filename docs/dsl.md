@@ -596,6 +596,7 @@ end
 | key | meaning |
 |---|---|
 | `:salience` | firing priority, default `0`. Higher fires first. |
+| `:cache` | any value other than `nil` or `false` lets an activation cache answer for the body. Default `nil`. See [The activation cache](#the-activation-cache). |
 
 Activations fire in `salience` order, descending. Ties break on the order the rules were
 defined in.
@@ -607,7 +608,7 @@ as a general control-flow mechanism.
 
 `:internal_salience` is reserved. The compiler uses it to make an extracted negation
 helper run before the rule that negates its marker. Setting `:internal_salience` yourself
-raises an error. Any other key raises an error too, except `:meta`, below.
+raises an error. Any other key raises an error too, except `:cache` and `:meta`.
 
 ### Attaching your own data: `:meta`
 
@@ -628,6 +629,40 @@ query:
 iex> Rete.get_rule_data([MyRuleset]) |> Enum.map(&{&1.name, Keyword.get(&1.opts, :meta)})
 [urgent: %{owner: "billing", ticket: "OPS-42"}]
 ```
+
+### Default rule options
+
+A ruleset module can give options to all of its rules:
+
+```elixir
+defmodule MyRuleset do
+  use Rete.Ruleset, default_rule_opts: %{cache: true}
+
+  defrule enrich({:customer, cid}), do: {:profile, cid}
+  defrule live(%{cache: false}, {:tick, t}), do: {:seen, t}
+end
+```
+
+A build can give them too, to every rule of every module in it:
+
+```elixir
+Rete.Session.new([MyRuleset, OtherRuleset], default_rule_opts: %{cache: true})
+```
+
+The defaults take `:salience`, `:cache` and `:meta`. Any other key raises an error. A map
+and a keyword list both work. In the module, write the map literally.
+
+When two levels set one key, the more specific level wins. The build default is the
+weakest. The module default wins over it. The options map of the rule wins over both. So
+`live` above stays uncached under either default.
+
+A default merges key by key. A `:meta` in a rule replaces a default `:meta` as a whole. A
+change to a default `:cache` value makes every cached rule of that level miss. A query gets
+no defaults. A negation helper that the compiler generates gets a default
+salience, as it gets a written one. It never gets `:cache`.
+
+`Rete.get_rule_data/1` shows the options of a rule after the module defaults. The build
+defaults are not in it, because they belong to the build.
 
 ## Queries
 
@@ -1039,6 +1074,87 @@ tell which one belongs to the occurrence that left. The counts stay right, and t
 still drains to empty. But `Rete.Inspect.explain/1,2` names the wrong match for the fact.
 Read a clock or a counter **before** firing, and insert the value as a fact the rule
 matches on.
+
+### The activation cache
+
+A rule can take its conclusion from a cache, instead of running its body. It opts in when
+its `:cache` option is a value other than `nil` or `false`, such as `%{cache: true}` or
+`%{cache: 2}`. Build the cache from a session that fired, and give it to `fire_rules/2`:
+
+```elixir
+prior = session |> Session.insert(facts) |> Session.fire_rules()
+cache = Rete.ActivationCache.from_session(prior)
+
+next =
+  fresh
+  |> Session.insert(facts)
+  |> Session.fire_rules(activation_cache: cache)
+```
+
+For each activation of a rule that opted in, the engine looks for an equal activation in
+the cache. If it finds one, it inserts what the cache holds for it, and the body does not
+run. If it does not, the body runs as usual. Use this for a body that is slow, such as one
+that calls a service.
+
+**The cache is a plain map.** Save it in the way that suits you, and load it before the
+fire. You do not need the session that built it, unless you want to inspect that session.
+
+```elixir
+File.write!(path, :erlang.term_to_binary(cache))
+
+cache = path |> File.read!() |> :erlang.binary_to_term([:safe])
+```
+
+`[:safe]` refuses an atom that the node does not know, so load the ruleset modules first.
+**A cache inserts facts, and no rule checks them. Load a cache only from storage you
+trust.**
+
+`from_session/2` reads the record that truth maintenance keeps of what each activation
+concluded. So there is nothing to fill. Some results of this:
+
+* a hit is recorded like a firing. So `from_session(next)` holds the hits too, and a chain
+  of fires works.
+* the cache holds only what is still true in the session it came from. A conclusion that
+  lost its support there is not in it.
+* a session from `Rete.Session.load/2` gives a cache too.
+* the option applies to one call. `next` does not keep the cache.
+
+Two activations are equal when the rule and the key are equal. The rule is its module, its
+name, a hash of its source, and its `:cache` value. The hash covers the left hand side, the
+options map and the body. So an edit to the rule makes a miss. A new `:cache` value makes a
+miss too, also when a default gives it. So the value acts as a version. The key is the facts
+that the activation matched, and its bindings. The cache and the session can come from
+different builds, or from different sets of modules. Only the rules that both have can hit.
+A body that returned `nil` or `[]` hits too, and the engine inserts nothing.
+
+A body still runs in these cases:
+
+* the cache has no equal activation.
+* the rule did not opt in, or it had another `:cache` value when the cache was built.
+
+The hash does not see the code of a function that the body calls. It does not see the value
+of a module attribute either, only its name. So a change to either one still hits, and
+replays the old conclusion. When you make such a change, give `:cache` a new value, for
+example `2` in place of `1`. Or give a key function that adds what the body depends on:
+
+```elixir
+key_fn = fn activation -> {Rete.ActivationCache.key(activation), MyApp.version()} end
+
+cache = Rete.ActivationCache.from_session(prior, key_fn: key_fn)
+Session.fire_rules(next, activation_cache: cache, activation_cache_key_fn: key_fn)
+```
+
+The key function gets `%{rule: {module, name}, hash: hash, cache: cache, token: token}`.
+`from_session/2` uses it to key the cache, and `fire_rules/2` uses it to key each
+activation. Give both the same function, or nothing hits. A key of `nil` leaves that one
+activation out of the cache.
+
+A hit emits `{:activation_fired, source, token, facts}`, as a firing does. Its `source` has
+`cached: true`. The source of a firing does not have the key.
+
+The cache is sound because of the rule above: the return value follows from the bindings.
+A body that breaks it also breaks the cache, because a hit replays a value that the body
+would no longer return.
 
 ## Condition order
 

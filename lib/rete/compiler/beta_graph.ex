@@ -371,7 +371,8 @@ defmodule Rete.Compiler.BetaGraph do
       bind: production.bind || [],
       salience: Keyword.get(opts, :salience, 0),
       internal_salience: internal_salience!(production, opts, generated?),
-      generated?: generated?
+      generated?: generated?,
+      cache: if(generated?, do: nil, else: Keyword.get(opts, :cache))
     }
   end
 

@@ -255,6 +255,9 @@ defmodule Rete.Memory do
   @doc """
   Records the facts one activation of a production inserted.
 
+  The batch can be `[]`. That records a firing that concluded nothing. It adds nothing to
+  `inserters`, and `take_insertion/3` takes it back with the match.
+
   This is stored as a list of lists. The same token can activate a production more than
   once, and each activation owns its own batch. Two equal facts do that on one fire: they
   are two occurrences, so they make two matches that this store cannot tell apart.
@@ -285,9 +288,9 @@ defmodule Rete.Memory do
   @doc """
   Takes back the newest batch of facts a token's activation inserted.
 
-  Returns `{memory, facts}`, or `{memory, []}` when the token never inserted anything.
-  That case is a production retracted before it fired, or one whose body returned
-  nothing. See `add_insertion/4` for why the newest is as good as any.
+  Returns `{memory, facts}`. `facts` is `[]` in two cases. The token never fired, and
+  there is no record. Or it fired and concluded nothing, and this removes that record. See
+  `add_insertion/4` for why the newest is as good as any.
   """
   @spec take_insertion(t(), node_id(), Token.t()) :: {t(), [term()]}
   def take_insertion(%__MODULE__{} = memory, node_id, token) do
