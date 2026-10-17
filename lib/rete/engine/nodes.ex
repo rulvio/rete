@@ -412,6 +412,10 @@ defmodule Rete.Engine.Nodes do
 
   # A query computes its rows when it is read, after the fire and its cache are gone. So a
   # hit is kept here, as the token arrives, for the read to use.
+  #
+  # A key function that raises or throws here leaves the fire unchanged, as it does for a
+  # rule. This runs in propagation, after the conclusions ahead of it are applied, so the
+  # error comes in the same order. `Rete.Engine.fire_rules/2` cancels the tasks of the fire.
   defp cached_rows(memory, _node, _tokens, nil), do: memory
 
   defp cached_rows(memory, node, tokens, cache) do

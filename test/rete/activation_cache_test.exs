@@ -121,6 +121,57 @@ defmodule Rete.ActivationCacheTest do
     defquery bs({:b, x}), do: x
   end
 
+  defmodule QueryDefaults do
+    use Rete.Ruleset, default_rule_opts: %{cache: true, salience: 5}
+
+    defquery rows({:item, n}) do
+      send(self(), {:ran, :rows, n})
+      {:row, n}
+    end
+
+    defquery own_off(%{cache: false}, {:item, n}) do
+      send(self(), {:ran, :own_off, n})
+      n
+    end
+
+    defquery own_two(%{cache: 2}, {:item, n}), do: n
+  end
+
+  defmodule BareQueries do
+    use Rete.Ruleset
+
+    defquery rows({:item, n}) do
+      send(self(), {:ran, :rows, n})
+      {:row, n}
+    end
+
+    defquery off(%{cache: false}, {:item, n}) do
+      send(self(), {:ran, :off, n})
+      n
+    end
+  end
+
+  # `quick` concludes the fact a cached query reads, while `slow` keeps a task in flight.
+  # So a key function that raises for the query does so with a task still running.
+  defmodule QueryBehindTask do
+    use Rete.Ruleset
+
+    defrule quick({:customer, cid}) when is_integer(cid) do
+      Task.async(fn ->
+        Process.sleep(20)
+        {:source, cid}
+      end)
+    end
+
+    defrule slow({:customer, test}) when is_pid(test) do
+      task = Task.async(fn -> Process.sleep(:infinity) end)
+      send(test, {:pid, :slow, task.pid})
+      task
+    end
+
+    defquery sourced(%{cache: true}, {:source, cid}), do: {:row, cid}
+  end
+
   defmodule NoDefaults do
     use Rete.Ruleset
 
@@ -765,6 +816,176 @@ defmodule Rete.ActivationCacheTest do
       """)
 
       assert cache_flags(Session.new([Rete.ActivationCacheTest.Versioned])) == %{r: {:v, 7}}
+    end
+  end
+
+  describe "defaults on a query" do
+    defp query_cache(module, name), do: module |> query_node(name, []) |> Map.fetch!(:cache)
+
+    defp query_node(module, name, build_opts) do
+      [module] |> Session.new(build_opts) |> Session.network() |> Network.query({module, name})
+    end
+
+    defp fire_with(modules, build_opts, facts, fire_opts \\ []) do
+      modules |> Session.new(build_opts) |> Session.insert(facts) |> Session.fire_rules(fire_opts)
+    end
+
+    test "a module default caches a query that sets no option" do
+      prior = fire([QueryDefaults], [{:item, 1}, {:item, 2}])
+      assert Enum.sort(QueryDefaults.rows(prior)) == [{:row, 1}, {:row, 2}]
+      cache = cache(prior)
+      ran()
+
+      next = fire([QueryDefaults], [{:item, 1}, {:item, 2}], activation_cache: cache)
+
+      assert Enum.sort(QueryDefaults.rows(next)) == [{:row, 1}, {:row, 2}]
+      assert ran() == []
+    end
+
+    test "a build default caches a query that sets no option" do
+      opts = [default_rule_opts: %{cache: true}]
+      cache = [BareQueries] |> fire_with(opts, [{:item, 1}]) |> cache()
+      ran()
+
+      next = fire_with([BareQueries], opts, [{:item, 1}], activation_cache: cache)
+
+      assert BareQueries.rows(next) == [{:row, 1}]
+      assert ran() == []
+    end
+
+    test "a query's own cache: false opts out of either default" do
+      module_next =
+        fire([QueryDefaults], [{:item, 1}],
+          activation_cache: [QueryDefaults] |> fire([{:item, 1}]) |> cache()
+        )
+
+      ran()
+      assert QueryDefaults.own_off(module_next) == [1]
+      assert ran() == [own_off: 1]
+
+      opts = [default_rule_opts: %{cache: true}]
+      cache = [BareQueries] |> fire_with(opts, [{:item, 1}]) |> cache()
+      build_next = fire_with([BareQueries], opts, [{:item, 1}], activation_cache: cache)
+
+      ran()
+      assert BareQueries.off(build_next) == [1]
+      assert ran() == [off: 1]
+    end
+
+    test "on a query, the build default is beneath the module and the query's own map" do
+      build = [default_rule_opts: %{cache: 7}]
+
+      assert query_node(QueryDefaults, :rows, build).cache == true
+      assert query_node(QueryDefaults, :own_two, build).cache == 2
+      assert query_node(BareQueries, :rows, build).cache == 7
+      assert query_node(BareQueries, :off, build).cache == false
+      assert query_cache(BareQueries, :rows) == nil
+    end
+
+    test "a default salience on a query is accepted, and changes nothing" do
+      with_salience = fire([QueryDefaults], [{:item, 1}])
+      without = fire_with([BareQueries], [], [{:item, 1}])
+
+      assert QueryDefaults.rows(with_salience) == BareQueries.rows(without)
+    end
+
+    test "the cache value is part of a query's identity" do
+      cache =
+        [BareQueries] |> fire_with([default_rule_opts: %{cache: 2}], [{:item, 1}]) |> cache()
+
+      next =
+        fire_with([BareQueries], [default_rule_opts: %{cache: 3}], [{:item, 1}],
+          activation_cache: cache
+        )
+
+      ran()
+      assert BareQueries.rows(next) == [{:row, 1}]
+      assert ran() == [rows: 1]
+    end
+  end
+
+  describe "a key function that fails on a query" do
+    defp raise_for_profile do
+      fn
+        %{rule: {_, :profile}} -> raise "key boom"
+        activation -> ActivationCache.key(activation)
+      end
+    end
+
+    test "raises its own error, as it does for a rule" do
+      cache = [Queried] |> fire([{:customer, 1}]) |> cache()
+
+      for concurrency <- [1, 2] do
+        assert_raise RuntimeError, "key boom", fn ->
+          fire([Queried], [{:customer, 1}],
+            concurrency: concurrency,
+            activation_cache: cache,
+            activation_cache_key_fn: raise_for_profile()
+          )
+        end
+      end
+    end
+
+    test "a throw stays a throw, for a rule and for a query" do
+      thrower = fn _activation -> throw(:key_thrown) end
+      rule_cache = [Cached] |> fire([{:customer, 1}]) |> cache()
+      query_cache = [Queried] |> fire([{:customer, 1}]) |> cache()
+
+      assert :key_thrown ==
+               catch_throw(
+                 fire([Cached], [{:customer, 1}],
+                   activation_cache: rule_cache,
+                   activation_cache_key_fn: thrower
+                 )
+               )
+
+      assert :key_thrown ==
+               catch_throw(
+                 fire([Queried], [{:customer, 1}],
+                   activation_cache: query_cache,
+                   activation_cache_key_fn: thrower
+                 )
+               )
+    end
+
+    test "under concurrency, cancels the tasks still in flight, and leaves no registry" do
+      cache = handmade([QueryBehindTask], :sourced, %{%{cid: 1} => {:row, 1}})
+
+      boom = fn
+        %{rule: {_, :sourced}} -> raise "key boom"
+        activation -> ActivationCache.key(activation)
+      end
+
+      assert_raise RuntimeError, "key boom", fn ->
+        fire([QueryBehindTask], [{:customer, 1}, {:customer, self()}],
+          concurrency: 2,
+          activation_cache: cache,
+          activation_cache_key_fn: boom
+        )
+      end
+
+      assert_receive {:pid, :slow, pid}
+      ref = Process.monitor(pid)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 500
+
+      assert [] == for({{Rete.Engine, :tasks, _}, _} = entry <- Process.get(), do: entry)
+    end
+
+    test "raises unchanged in from_session, as it does for a rule" do
+      prior = fire([Queried, Cached], [{:customer, 1}])
+
+      assert_raise RuntimeError, "key boom", fn ->
+        ActivationCache.from_session(prior, key_fn: raise_for_profile())
+      end
+
+      rule_boom = fn
+        %{rule: {_, :enrich}} -> raise "rule key boom"
+        activation -> ActivationCache.key(activation)
+      end
+
+      assert_raise RuntimeError, "rule key boom", fn ->
+        ActivationCache.from_session(prior, key_fn: rule_boom)
+      end
     end
   end
 
