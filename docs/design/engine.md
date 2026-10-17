@@ -657,7 +657,7 @@ it.
 A returned task can fail in ways a body cannot. Each of these raises an error that names
 the rule and its bindings:
 
-* the task takes longer than `:timeout`. The engine shuts it down and raises a
+* the task takes longer than `:task_timeout`. The engine shuts it down and raises a
   `RuntimeError`.
 * the task exits. The engine raises a `RuntimeError` with the exit reason.
 * another process started the task. The engine cannot await it, and raises an
@@ -665,12 +665,41 @@ the rule and its bindings:
 * a `%Task{}` arrives inside a list of facts, or as the result of a task. The engine awaits
   only a bare task, and raises an `ArgumentError`.
 
-When an error leaves the window, the tasks behind it are still running. Nothing would ever
-await them. So the engine shuts each one down before the error goes on.
+The engine shuts down the task of an activation that `Rete.Agenda.remove/2` reports as
+`:missing`. It does not await that task. So a task that fails cannot raise for a match that
+no longer holds.
 
-The engine also shuts down the task of an activation that `Rete.Agenda.remove/2` reports
-as `:missing`. It does not await that task. So a task that fails cannot raise for a match
-that no longer holds.
+### Cancellation
+
+When a fire raises, for any reason, the engine cancels every task that it started and that
+still runs. The tasks behind an error in the window are the common case. Nothing would
+ever await them.
+
+One catch in `fire/2` does this, for every path that can raise. A raise discards the state,
+so the fire keeps its tasks in the process dictionary, under a key of its own. A body that
+fires another session gets another key, so the two fires do not cancel each other's tasks.
+The engine tracks a task when it first sees it, and it stops when it settles the task:
+
+* a task that a body returns.
+* a task inside a list of facts, which is an error.
+* a task that a task returns, which is an error. Its owner is the outer task.
+* a task that another process owns, which is an error.
+
+The engine cancels a task of its own process with `Task.shutdown/2`, which also flushes the
+reply. It kills any other task only if the `$callers` of that task lead back to the
+firing process. That covers a task started inside a task that the fire started. A task
+that another process started for its own reasons is left alone.
+
+Two things are out of reach. A process that a body starts and never returns is not seen.
+A task with no `$callers` link to the fire is not this fire's to kill.
+
+### The time budget
+
+`:max_duration` limits the whole call, where `:task_timeout` limits one wait. The engine
+checks the budget before each cycle, when work is pending. It also waits for a task no
+longer than the time left. A fire past its budget raises, and the catch above cancels its
+tasks. The
+check cannot stop a body that blocks without returning a task, or one long propagation.
 
 ---
 

@@ -39,8 +39,18 @@ All notable changes to `rete` are recorded here. The format follows
   fields for the cache too. The snapshot format stays 1. `load/2` fills these fields in
   for a snapshot from an earlier release.
 
+* `:max_duration` on `fire_rules/2` limits the whole call, in milliseconds. A call that
+  runs past it raises. The engine checks it before each cycle, and it waits for a task no
+  longer than the time left.
+
 ### Changed
 
+* `:timeout` on `fire_rules/2` is now `:task_timeout`, because it limits the wait for one
+  task. The old name raises an error, and the error names the new one.
+* When `fire_rules/2` raises, for any reason, the engine now cancels every task that it
+  started and that still runs. Before, it shut down only the tasks behind an error in the
+  window. A task inside a list of facts, a task that a task returned, and a task started
+  inside a task that the fire started kept running. See `docs/design/engine.md` §11.
 * A firing that concludes nothing is now recorded. `Rete.Inspect.explain/1,2` reports it
   as an activation with `asserts: []`, so it is no longer the same as a rule that never
   matched. The `:activations` count of `why_not/1,2` includes it. Clara records only the

@@ -153,7 +153,8 @@ any activation at a lower one. See
 
 ### Fire
 
-`fire_rules/2` also takes `:max_cycles`, `:concurrency`, and `:timeout`. A rule body that
+`fire_rules/2` also takes `:max_cycles`, `:max_duration`, `:concurrency`, and
+`:task_timeout`. A rule body that
 waits on I/O can return a `Task`, and the result of the task is its facts. `:concurrency`
 says how many of those tasks run at once. See its own doc and
 [docs/design/engine.md](docs/design/engine.md) §11 for more.
@@ -435,7 +436,7 @@ docs under `docs/design/` record why.
 * **Firing is a blocking call.** `fire_rules/2` runs to quiescence in the calling process,
   and it returns the settled session. There is no async variant that hands back a `Task`.
   Every rule body runs in the calling process too. A body *can* return a `Task`. Pass
-  `:concurrency`, and optionally `:timeout`, to `fire_rules/2` to await the tasks of one
+  `:concurrency`, and optionally `:task_timeout`, to `fire_rules/2` to await the tasks of one
   activation group together. A body that blocks without a task never overlaps another — see
   [docs/design/engine.md](docs/design/engine.md) §11.
 * **Snapshots carry rules, not data migrations.** `Rete.Session.dump/2` and `load/2` move

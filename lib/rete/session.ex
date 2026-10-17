@@ -151,8 +151,11 @@ defmodule Rete.Session do
       up to this many of their tasks together. It applies their conclusions in group
       order. Every body runs in the calling process. So a body that blocks without a task
       never overlaps another.
-    * `:timeout` — milliseconds the engine waits for one returned task, or `:infinity`, the
-      default. A task that takes longer is shut down, and the call raises.
+    * `:task_timeout` — milliseconds the engine waits for one returned task, or
+      `:infinity`, the default. A task that takes longer is shut down, and the call raises.
+    * `:max_duration` — milliseconds the whole call may run, or `:infinity`, the default. The
+      engine checks it before each cycle, and it bounds each wait for a task. A call that
+      runs past it raises. It cannot stop a body that blocks without returning a task.
     * `:activation_cache` — a plain map from `Rete.ActivationCache.from_session/2`, or
       `nil`, the default. Any other value raises, a session included. A rule or a query can
       set `:cache` to a value other than `nil` or `false`. It then takes what the cache
@@ -165,7 +168,8 @@ defmodule Rete.Session do
 
   Start a returned task in the body itself, because only its owner can await it. It is an
   ordinary `Task`. When the engine sees it exit, the call raises an error that names the
-  rule.
+  rule. When the call raises, for any reason, the engine cancels every task that it started
+  and that still runs.
 
   **This is the only call that propagates.** `insert/2` and `retract/2` queue work. Firing
   drains that queue, matches everything waiting, runs the rules that match, and returns at

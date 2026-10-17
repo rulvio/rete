@@ -1054,8 +1054,8 @@ end
 Every body runs in the process that calls `fire_rules/2`. A returned task is the only work
 that runs in parallel. At the default `concurrency: 1`, the engine awaits each task before
 the next body runs. Above `1`, it awaits up to that many tasks of one activation group
-together. A body that blocks without a task never overlaps another. `:timeout` limits how
-long the engine waits for one task.
+together. A body that blocks without a task never overlaps another. `:task_timeout` limits
+how long the engine waits for one task.
 
 Start the task in the body itself, because only its owner can await it. The task is an
 ordinary `Task`, and the usual process rules apply to it. When the engine sees it exit, it
@@ -1063,6 +1063,12 @@ raises an error that names the rule. See `docs/design/engine.md` §11.
 
 Return one bare task. A task inside a list, or a task that returns a task, raises an
 error.
+
+When `fire_rules/2` raises, for any reason, the engine cancels every task that it started
+and that still runs. A task that a timeout or an error leaves behind does not keep running.
+`:max_duration` limits the whole call, in milliseconds. A call that runs past it raises, and
+cancels its tasks in the same way. The engine cannot see a process that a body starts and
+does not return, so it cannot cancel that one.
 
 ### The return value must follow from the bindings
 
