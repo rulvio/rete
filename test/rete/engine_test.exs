@@ -3394,6 +3394,7 @@ defmodule Rete.EngineTest do
       defquery early(%{salience: 20}, {:order, n}), do: n
 
       defquery fetched({:job, id}), do: Task.async(fn -> {:fetched, id} end)
+      defquery known({:known, id}), do: Task.completed({:known, id})
     end
 
     defp ran do
@@ -3458,6 +3459,14 @@ defmodule Rete.EngineTest do
     test "a returned task is awaited, and its reply is the row" do
       assert QueryFiring.fetched(fire([{:job, 7}])) == [{:fetched, 7}]
       assert QueryFiring.fetched(fire([{:job, 7}], concurrency: 2)) == [{:fetched, 7}]
+    end
+
+    test "a task from Task.completed/1 gives its result, and leaves no registry entry" do
+      for concurrency <- [1, 2] do
+        session = fire([{:known, 1}, {:known, 2}], concurrency: concurrency)
+        assert Enum.sort(QueryFiring.known(session)) == [known: 1, known: 2]
+        assert registry_keys() == []
+      end
     end
 
     test ":activation_fired carries the row" do

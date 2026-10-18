@@ -820,6 +820,10 @@ defmodule Rete.Engine do
 
   # Every task the fire has seen and not yet settled, by pid. `fire/2` cancels what is left
   # here when the call raises, and deletes the entry when it returns.
+  #
+  # A task from `Task.completed/1` has no process, so there is nothing to cancel.
+  defp track(_cfg, %Task{pid: nil} = task), do: task
+
   defp track(cfg, %Task{pid: pid} = task) do
     Process.put(cfg.tasks, Map.put(Process.get(cfg.tasks, %{}), pid, task))
     task
