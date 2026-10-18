@@ -1153,9 +1153,9 @@ defmodule Rete.SnapshotTest do
   end
 
   describe "what a snapshot holds" do
-    # The withdrawn customer travels too, with the tombstones its retraction left, so the
-    # equality covers it. A session with target images runs its images already, so even its
-    # network is equal.
+    # The withdrawn customer travels too, with the tombstones its retraction left. The
+    # exact equality of the states below covers them. A session with target images runs its
+    # images already, so even its network is equal.
     # Any other session differs only in its network, because the dump points its rules at
     # the images.
     test "a loaded session is in exactly the state that was dumped" do
@@ -1173,7 +1173,6 @@ defmodule Rete.SnapshotTest do
           |> Session.insert({:order, 2, 900})
 
         snapshot = Session.dump!(session, @key)
-        assert snapshot |> body_state() |> inspect(limit: :infinity) =~ "777123456"
 
         {:ok, loaded} = Session.load(snapshot, @key)
         fired = Session.fire_rules(session)
@@ -1595,12 +1594,6 @@ defmodule Rete.SnapshotTest do
     :code.purge(module)
     :code.delete(module)
     :code.purge(module)
-  end
-
-  defp body_state(snapshot) do
-    {:rete_session, _format, _signature, body} = :erlang.binary_to_term(snapshot)
-    %{state: state} = :erlang.binary_to_term(body)
-    state
   end
 
   # The three parts of a real snapshot, for a test that forges one of them.

@@ -53,8 +53,8 @@ reach a listener, which follows from the two loops rather than from the list.
 Only one of them reaches a listener outside a fire. `insert/2` emits `:fact_inserted`,
 because it updates working memory at once. One event per occurrence: a fact inserted twice
 emits two. Everything else happens inside `fire_rules/2`, which is the only call that
-propagates. A `:fact_retracted` is one of these, because only truth maintenance retracts. That covers every `:propagated`
-event and every `:activation_*` one. See `engine.md` §2.
+propagates. A `:fact_retracted` is one of these, because only truth maintenance retracts.
+That covers every `:propagated` event and every `:activation_*` one. See `engine.md` §2.
 
 That is what lets a listener see a whole settle. Attach it to a fresh session. No matching
 has happened yet, so the listener misses nothing.

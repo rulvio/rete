@@ -114,8 +114,9 @@ defmodule Rete.Engine do
   #
   # Safe over the whole queue only here: a fire drains to empty, so the queue holds nothing
   # but `{direction, node, items}` at this point. `coalesce/1` re-checks rather than trust
-  # that. It is also the call that needs the merge window, because a queue built by several
-  # calls carries both directions for one node. See `docs/design/engine.md` §2.
+  # that. A caller now queues one direction only, so the merge window never closes here. It
+  # stays because the merge cannot see what the rest of the engine queues. See
+  # `docs/design/engine.md` §2.
   defp coalesce_queue(%State{queue: queue} = state) do
     %State{state | queue: queue |> :queue.to_list() |> coalesce() |> :queue.from_list()}
   end
@@ -1090,9 +1091,9 @@ defmodule Rete.Engine do
 
   # A value with no type is not a marker. `Taxonomy.default_fact_type/1` raises
   # `ArgumentError` for one. An insert of it raises later, where the type is read for the
-  # alpha nodes. Any other error comes from a user
-  # `:fact_type_fn`, and surfaces here. The type is read twice only when the network has
-  # reserved types, because `Network.reserved?/2` checks that first.
+  # alpha nodes. Any other error comes from a user `:fact_type_fn`, and surfaces here. The
+  # type is read twice only when the network has reserved types, because
+  # `Network.reserved?/2` checks that first.
   defp reserved?(network, fact) do
     Network.reserved?(network, fact)
   rescue

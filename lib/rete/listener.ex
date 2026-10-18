@@ -39,8 +39,8 @@ defmodule Rete.Listener do
 
   `origin` is a `{module, name}` pair. `{Rete.Session, :insert}` means your own call. Any
   other pair names the rule whose match added or lost the fact. A retraction always names
-  a rule, because only truth maintenance retracts. This is what lets a listener reconstruct provenance, without
-  reading memory. See `docs/design/observability.md` §1.
+  a rule, because only truth maintenance retracts. This is what lets a listener reconstruct
+  provenance, without reading memory. See `docs/design/observability.md` §1.
 
   An activation cache can answer for the body of a rule. See `Rete.ActivationCache`. Its
   `:activation_fired` then has `cached: true` in its source, and the body did not run.

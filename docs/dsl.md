@@ -948,8 +948,8 @@ These measurements insert 4,000 matches and fire them. The fire runs each body o
 A parameter with a low cardinality costs very little. The added work is one `Map.take/2`
 for each row, and the buckets hold the same rows in a different arrangement. A parameter on
 a unique field uses approximately 53% more memory, because each bucket has its own
-structure, and there is now one bucket for each row. Retraction does not vary with the
-head by more than the noise of the measurement.
+structure, and there is now one bucket for each row. A retraction takes the match out of
+the bucket that it keys, as an insert puts it in.
 
 ### How much a parameter saves
 
@@ -1104,9 +1104,10 @@ make two equal matches, so this is ordinary rather than rare.
 defrule audit({:order, id}), do: {:audit, id, System.unique_integer()}   # do not do this
 ```
 
-Retracting one occurrence then takes back one of the two records, and the engine cannot
-tell which one belongs to the occurrence that left. The counts stay right, and the session
-still drains to empty. But `Rete.Inspect.explain/1,2` names the wrong match for the fact.
+When one occurrence loses its match, truth maintenance takes back one of the two records.
+The engine cannot tell which one belongs to the occurrence that left. The counts stay right,
+and every conclusion still goes when its match goes. But `Rete.Inspect.explain/1,2` names
+the wrong match for the fact.
 Read a clock or a counter **before** firing, and insert the value as a fact the rule
 matches on.
 

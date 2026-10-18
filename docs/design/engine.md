@@ -56,8 +56,8 @@ fire_rules        ->  drain, then: pop the most salient activation, run it,
 queues the work. `new/1` queues the root token the same way. So a state nobody has fired
 holds facts, and no matches, tokens or activations.
 
-Two things follow. A caller may batch any number of inserts for the cost of one settle. And a query reads propagated state, so it answers **as of the most recent
-fire**. On a session that never fired that is `[]`. On one that fired and then received an
+Two things follow. A caller may batch any number of inserts for the cost of one settle.
+And a query reads propagated state, so it answers **as of the most recent fire**. On a session that never fired that is `[]`. On one that fired and then received an
 insert, it is the previous answer, which is stale rather than empty. The stale case is the
 one that catches people out, because an empty result at least looks wrong.
 
@@ -416,9 +416,9 @@ This is why the right hand side inserts, and never retracts. A rule says what fo
 a match. Keeping that true, as facts change, is the engine's job. With no unconditional
 insert, there is no way to leave behind a conclusion whose support is gone.
 
-The session has no retract either. A fact the caller inserts
-stays for the life of the session. To withdraw a conclusion, the caller inserts a fact that
-the rule reads under a negation. That breaks the match, and truth maintenance does the rest.
+The session has no retract either. A fact the caller inserts stays for the life of the
+session. To withdraw a conclusion, the caller inserts a fact that the rule reads under a
+negation. That breaks the match, and truth maintenance does the rest.
 
 A session retract shared one multiset of facts with truth maintenance. It removed an
 occurrence by value, so it could not say which occurrence it meant. Reviews found cases
@@ -644,7 +644,7 @@ Discarding rather than applying is the whole reason the group is peeked, instead
 popped. Taking the group off the agenda up front would leave a later retraction nothing to
 cancel. The conclusion would then be inserted against a token that no longer existed, and
 no retraction could ever take it back. `Rete.EngineTest` checks both halves: the
-activation does not fire, and the session still drains to empty.
+activation does not fire, and withdrawing its facts leaves nothing behind.
 
 ### What a task runs in
 
@@ -836,9 +836,9 @@ nobody has a baseline for.
 
 The first pass found three quadratics in the size of one join key's bucket. `Rete.Agenda`
 became buckets by sort key instead of one sorted list. Each bucket became an ordered
-multiset instead of a list. `insert/3` and the retract of that release stopped appending to
-their op accumulator once per fact. Inserting 4,000 facts under one key went from 250 ms to under
-10 ms.
+multiset instead of a list. `insert/3`, and the session retract that existed then, stopped
+appending to their op accumulator once per fact. Inserting 4,000 facts under one key went
+from 250 ms to under 10 ms.
 
 The second pass added the scenarios the first could not see, and found five more:
 

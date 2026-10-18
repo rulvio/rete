@@ -366,7 +366,7 @@ Every operation returns a new session and changes nothing:
 
 ```elixir
 quiet = Rete.Session.new([Retail]) |> Rete.Session.insert({:customer, 1, "Ada"})
-busy = quiet |> Rete.Session.insert({:order, 1, 250}) |> Rete.Session.fire_rules()
+busy = quiet |> Rete.Session.insert({:placed, 1, 250}) |> Rete.Session.fire_rules()
 # `quiet` is untouched. Reuse it as a checkpoint.
 ```
 

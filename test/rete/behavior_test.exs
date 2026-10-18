@@ -109,9 +109,14 @@ defmodule Rete.BehaviorTest do
       assert [] == Feed.facts(session)
       assert [] == Collect.by_tag(session, :activation_fired)
 
-      # Both facts really did propagate. Otherwise, this test would pass on an
-      # engine that simply ignores the inserts.
-      assert [_, _ | _] = Collect.by_tag(session, :propagated)
+      # The inserts really did propagate. Root seeding sends only `:left` work, so a
+      # `:right` op proves the engine did not ignore them.
+      assert Enum.any?(Collect.by_tag(session, :propagated), &match?({_, :right, _, _}, &1))
+
+      refute Enum.any?(
+               Collect.by_tag(session, :activation_added),
+               &match?({_, %{rule: {Feed, :feed}}, _}, &1)
+             )
     end
 
     test "the same session with no withdrawal does fire, as a control" do
@@ -887,10 +892,10 @@ defmodule Rete.BehaviorTest do
     end
 
     # clara test_accumulation/test-accumulator-with-test-join-retract-accumulated-use-new-result.
-    # Withdrawing and re-adding within one fire exercises the intermediate
-    # memory state: the group is reduced, emptied, and reduced again before
-    # anything downstream ever sees it.
-    test "a member withdrawn and re-added in one fire gives the final result" do
+    # The member leaves, and an equal one arrives in the same later fire. The
+    # group is emptied and reduced again, and downstream ends on the final result
+    # with one support.
+    test "a member withdrawn while an equal one arrives gives the final result" do
       session =
         [CollThreshold, Feed]
         |> Session.new()
@@ -1155,10 +1160,9 @@ defmodule Rete.BehaviorTest do
       assert %{{:cw, 10, 10} => 1, {:cold, 10} => 1} == Feed.counts(session)
     end
 
-    # Through `Rete.Memory.dump/1`, not the struct. The second occurrence really
-    # was stored and really was taken back, so the bucket that held it carries a
-    # tombstone until it compacts. That is derived state, invisible in what the
-    # session holds, and the dump is the view that means something.
+    # The second occurrence really was stored and really was taken back. So the
+    # support counts and the truth maintenance records of the rule must equal those
+    # from before it arrived.
     test "an equal fact arriving and leaving after the rule fired changes nothing" do
       base = [Downstream, Feed] |> Session.new() |> Session.insert({:cw, 10, 10})
       base = Session.fire_rules(base)
