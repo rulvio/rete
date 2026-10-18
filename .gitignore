@@ -25,7 +25,7 @@ rete-*.tar
 # Dialyzer's persistent lookup tables.
 /priv/plts/
 
-# The raw output of the comparison bench. RESULTS.md is the part worth keeping.
+# The raw output of the comparison bench. The RESULTS-<chip>.md files are the part worth keeping.
 /bench/compare/results/
 
 # Where the Clojure CLI caches the classpath of the comparison bench.

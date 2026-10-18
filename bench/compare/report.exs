@@ -1,17 +1,20 @@
-# Joins the result files and writes RESULTS.md. `elixir bench/compare/report.exs`
+# Joins the result files and writes the results of this machine to RESULTS-<chip>.md.
+# `elixir bench/compare/report.exs`
 #
 # Both sides write the number of matches their counting query holds. Two engines that
 # report different counts for one scenario ran two different workloads, and a ratio between
 # those is worse than no ratio at all. So a mismatch fails the run.
 #
 # With `--smoke` it checks the counts and prints the table, and writes nothing. A smoke run
-# times nothing, so a RESULTS.md written from it would hold no result.
+# times nothing, so a file written from it would hold no result.
+#
+# One file for each chip, because a table of milliseconds compares only with a table from
+# the same machine. A run replaces the file of its own machine and leaves the others.
 
 defmodule Report do
   @moduledoc false
 
   @results "bench/compare/results"
-  @out "bench/compare/RESULTS.md"
 
   @variants ["clara-record", "clara-map"]
 
@@ -35,9 +38,12 @@ defmodule Report do
       IO.puts(IO.iodata_to_binary(table))
       IO.puts("counts agree")
     else
-      File.write!(@out, IO.iodata_to_binary([preamble(), environment(), "## Results\n\n", table]))
+      machine = machine()
+      out = "bench/compare/RESULTS-#{slug(machine)}.md"
+      body = [preamble(), environment(machine), "## Results\n\n", table]
+      File.write!(out, IO.iodata_to_binary(body))
       IO.puts(IO.iodata_to_binary(table))
-      IO.puts("wrote #{@out}")
+      IO.puts("wrote #{out}")
     end
   end
 
@@ -151,14 +157,14 @@ defmodule Report do
     """
   end
 
-  defp environment do
+  defp environment(machine) do
     """
     ## The machine
 
     | | |
     |---|---|
     | date | #{Date.utc_today()} |
-    #{machine_rows()}
+    #{machine_rows(machine)}
     ## What ran
 
     | | |
@@ -184,9 +190,17 @@ defmodule Report do
     end
   end
 
-  defp machine_rows do
-    machine()
-    |> Enum.map_join(fn {key, value} -> "| #{key} | #{value} |\n" end)
+  defp machine_rows(machine),
+    do: Enum.map_join(machine, fn {key, value} -> "| #{key} | #{value} |\n" end)
+
+  # "Apple M3 Max" gives "apple-m3-max". A machine that hides its chip shares "unknown".
+  defp slug(machine) do
+    chip = machine |> List.keyfind("chip", 0, {"chip", "unknown"}) |> elem(1)
+
+    case chip |> String.downcase() |> String.replace(~r/[^a-z0-9]+/, "-") |> String.trim("-") do
+      "" -> "unknown"
+      slug -> slug
+    end
   end
 
   defp machine do

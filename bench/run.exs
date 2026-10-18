@@ -383,9 +383,10 @@ defmodule Bench do
   def network(module), do: Rete.Compiler.build([module])
   def session(network), do: Rete.Session.from_network(network)
 
-  # How many buckets the token store of a query holds. This is the cardinality of its head
-  # over the facts it was given, which is what a parameter costs. `Rete.Network` keys
-  # `:queries` on `{module, name}` and gives the node id.
+  # How many buckets the store of a query holds. The store keeps `{token, row}` for each
+  # match, under the head. So this is the cardinality of its head over the facts it was
+  # given, which is what a parameter costs. `Rete.Network` keys `:queries` on
+  # `{module, name}` and gives the node id.
   def query_buckets(session, ref) do
     state = session.state
     id = Map.fetch!(state.network.queries, ref)
@@ -1256,7 +1257,7 @@ IO.puts("")
 # reason above: each variant loads 4,000 matches, and the memory column reads the live
 # structure rather than timing it.
 #
-# The four rows are the four head shapes. A head keys the token store, so the store holds
+# The four rows are the four head shapes. A head keys the store of the query, so it holds
 # one bucket per distinct value of what the head names. That count is the cost, and the
 # ruleset cannot decide it — the facts do. So `Bench.WideQuery` appears twice, once fed a
 # field with 4 values and once fed a unique one.
@@ -1313,7 +1314,7 @@ IO.puts("")
      "what a head costs: 4,000 matches inserted, then all of them retracted",
      ["insert", "retract", "memory", "buckets"],
      rows,
-     note: "the cost of a head is the cardinality of what it names, not the head itself"
+     note: "insert includes the fire, which runs each body once. A head costs its cardinality"
    )
 
    :ok
@@ -1586,9 +1587,8 @@ defmodule Bench.Cached do
     session = [__MODULE__] |> Rete.Session.new() |> Rete.Session.insert(facts(n))
     fired = Rete.Session.fire_rules(session)
     cache = Rete.ActivationCache.from_session(fired)
-    hit = Rete.Session.fire_rules(session, activation_cache: cache)
 
-    :persistent_term.put({__MODULE__, n}, {session, fired, cache, hit})
+    :persistent_term.put({__MODULE__, n}, {session, fired, cache})
   end
 
   def get(n), do: :persistent_term.get({__MODULE__, n})
@@ -1617,10 +1617,10 @@ Bench.scenario(
   "fire n matches, each one a cache hit",
   cache_sizes,
   fn n ->
-    {session, _fired, cache, _hit} = Bench.Cached.get(n)
+    {session, _fired, cache} = Bench.Cached.get(n)
     Rete.Session.fire_rules(session, activation_cache: cache)
   end,
-  note: "the key build, two map lookups and the check of the cached facts, per activation"
+  note: "per hit of the rule or the query: the key, two lookups, and a fact check for the rule"
 )
 
 Bench.scenario(
@@ -1628,13 +1628,6 @@ Bench.scenario(
   cache_sizes,
   fn n -> n |> Bench.Cached.get() |> elem(1) |> Rete.ActivationCache.from_session() end,
   note: "one pass over the records of the rule and of the query, and no body runs"
-)
-
-Bench.scenario(
-  "read n query rows that a cache gave",
-  cache_sizes,
-  fn n -> n |> Bench.Cached.get() |> elem(3) |> Bench.Cached.totals() end,
-  note: "a read of kept rows. A hit gave them, and no body ran"
 )
 
 # Last, because it sets the exit status of the run.

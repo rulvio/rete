@@ -1054,10 +1054,9 @@ See `ir.md` §2.
 | no parameters, filtered in Elixir | 35 ms |
 | `defquery rows(cid)(...)` | **0.03 ms** |
 
-One read is thus 0.15 µs. Clara takes 0.5 µs on the same test. The time does not change
-with the match count. To read every row and then filter is linear in the match count. The
-scaling scenario in `bench/run.exs` stays at 0.03 ms for 500, 1,000, 2,000 and 4,000
-matches.
+One read is thus 0.15 µs. The time does not change with the match count. To read every
+row and then filter is linear in the match count. The scaling scenario in `bench/run.exs`
+stays at 0.03 ms for 500, 1,000, 2,000 and 4,000 matches.
 
 A query with no parameters keys every row on `%{}`. This is one bucket, and it holds its
 rows in the order that they fired. So a query with no head pays nothing for the keying.
