@@ -77,6 +77,8 @@ defmodule Cmp.Negation do
   @moduledoc false
   use Rete.Ruleset
 
+  # An order holds until it is cancelled, so a cancellation releases the negation below.
+  defrule order({:placed, cid, amt}, {:not, [{:cancelled, cid}]}), do: {:order, cid, amt}
   defrule dormant({:customer, cid, _name}, {:not, [{:order, cid, _amt}]}), do: {:dormant, cid}
   defquery matches({:dormant, _cid}), do: :ok
 end
@@ -85,7 +87,7 @@ defmodule Cmp.Chain do
   @moduledoc false
   use Rete.Ruleset
 
-  defrule b({:a, x}), do: {:b, x}
+  defrule b({:a, x}, {:not, [{:gone, x}]}), do: {:b, x}
   defrule c({:b, x}), do: {:c, x}
   defrule d({:c, x}), do: {:d, x}
   defquery matches({:d, _x}), do: :ok
@@ -248,7 +250,8 @@ scenarios = [
     prepare: fn ->
       session = Cmp.Bench.session(Cmp.Negation)
       customers = for i <- 0..1_999, do: {:customer, i, "c"}
-      orders = for i <- 0..1_999, do: {:order, i, 250}
+      placed = for i <- 0..1_999, do: {:placed, i, 250}
+      cancelled = for i <- 0..1_999, do: {:cancelled, i}
 
       # n conclusions suppressed and then released, which is the cost a negation node
       # exists to pay.
@@ -256,26 +259,27 @@ scenarios = [
         session
         |> Rete.Session.insert(customers)
         |> Rete.Session.fire_rules()
-        |> Rete.Session.insert(orders)
+        |> Rete.Session.insert(placed)
         |> Rete.Session.fire_rules()
-        |> Rete.Session.retract(orders)
+        |> Rete.Session.insert(cancelled)
         |> Rete.Session.fire_rules()
       end
     end,
     tally: &Cmp.Bench.tally(&1, Cmp.Negation)
   },
   %{
-    id: "tms-retract",
+    id: "tms-withdraw",
     n: 2_000,
     prepare: fn ->
       session = Cmp.Bench.session(Cmp.Chain)
       facts = for i <- 0..1_999, do: {:a, i}
+      gone = for i <- 0..1_999, do: {:gone, i}
 
       fn ->
         session
         |> Rete.Session.insert(facts)
         |> Rete.Session.fire_rules()
-        |> Rete.Session.retract(facts)
+        |> Rete.Session.insert(gone)
         |> Rete.Session.fire_rules()
       end
     end,

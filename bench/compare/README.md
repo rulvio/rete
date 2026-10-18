@@ -5,6 +5,10 @@ its own file of results, named after its chip, such as `RESULTS-apple-m3-max.md`
 replaces the file of the machine it ran on, and leaves the files of other machines. A table
 compares only with a table from the same machine.
 
+The `RESULTS-*.md` files in this directory predate the removal of `Rete.Session.retract/2`.
+Their `negation` and `tms-retract` rows measured a session retract, and the next run on each
+machine replaces them.
+
 It is not `bench/run.exs`. That one measures shape, asserts on exponents, and gates CI.
 This one measures milliseconds at one size, compares two engines, and gates nothing. No
 figure from here belongs in `README.md`, `docs/**` or `CHANGELOG.md`, because those figures
@@ -72,8 +76,8 @@ activation for each counted match, and the clara columns do not.
 | `join-keyed` | customer and order joined on id, n of each | 5,000 |
 | `join-one-key` | one customer and n orders, every match under one join key | 5,000 |
 | `collection` | n customers, 4 orders each, one sum per customer | 1,000 |
-| `negation` | n customers with no order, then n orders in, then out again | 2,000 |
-| `tms-retract` | a chain of three rules, insert n and fire, retract n and fire | 2,000 |
+| `negation` | n customers with no order, then n orders placed, then n cancelled | 2,000 |
+| `tms-withdraw` | a chain of three rules, insert n and fire, then insert n facts that its first rule negates, and fire | 2,000 |
 | `cascade` | one activation at a time, each concluding the next, n deep | 2,000 |
 | `query-param` | 20,000 reads of one row out of n matches, by parameter | 4,000 |
 | `rule-count` | r rules over r fact types, one match each | 512 |

@@ -104,7 +104,7 @@ hand side, if order matters to you.
 
 The engine gathers in **reverse arrival order**: a member is prepended, and nothing is
 sorted. So the same facts fed in a different order produce a different list, and a member
-retracted and re-inserted comes back at the front rather than where it was.
+that leaves and comes back arrives at the front rather than where it was.
 
 The engine used to insert members in term order instead, so that a collection's order was
 a function of its fact set. **That was a mistake**, and it was an expensive one. Finding an
@@ -119,8 +119,8 @@ other rule in the session paid for them. `mix bench` puts the bill at 31 ms agai
 filling one collection of 1,000 members.
 
 What was never in question: the *membership* of a collection is a function of its fact set.
-Two feeds agree on what a collection holds, and a retract-and-reinsert round trip restores
-it. Only the sequence moves, and the sequence was never promised.
+Two feeds agree on what a collection holds, and a member that leaves and comes back
+restores it. Only the sequence moves, and the sequence was never promised.
 
 ---
 
@@ -215,7 +215,7 @@ Three properties make this correct:
 The marker's *type* is the generated name, so the alpha index routes it to exactly one
 place. Every alpha matches a fact of any type, and the marker alpha does too. It does not
 check the tag. So the engine keeps every other fact away from the generated name. It
-refuses a user insert or retract of a fact of that type. This also covers a
+refuses a user insert of a fact of that type. This also covers a
 `:fact_type_fn` that returns the name. It refuses a fact of that type that a user rule
 concludes. `Rete.Network.new/3` refuses a `derive` that names it on either side.
 
@@ -233,8 +233,9 @@ and a closure does not. See `snapshot.md`.
   `Rete.Network.production_nodes/1` already returns nodes in that order. Ignoring
   `:internal_salience` breaks extracted negations.
 * **Only logical inserts.** A production's `:rhs` returns facts to insert, and the engine
-  truth-maintains them. There is no unconditional insert, and no RHS retract.
-  Session-level retract exists, and TMS cascades from it.
+  truth-maintains them. There is no unconditional insert, no RHS retract, and no
+  session retract. A retraction comes only from a match that goes, and TMS cascades
+  from it.
 * **Taxonomy is the index's job.** Never re-check a fact's type inside an alpha.
 * **`:propagates_empty?`** decides whether an accumulate node emits `[]`.
 * A `Test` node has no fact input. So it neither joins nor binds.

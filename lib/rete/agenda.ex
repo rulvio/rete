@@ -19,7 +19,7 @@ defmodule Rete.Agenda do
 
   What makes the bucket half of `remove/2` O(1) is the bucket's index, and a bucket builds
   that only when something is first taken from it. An agenda that is only ever added to and
-  drained — a session that never retracts — never builds one.
+  drained — a session where no match loses its support — never builds one.
 
       iex> alias Rete.{Activation, Agenda}
       iex> urgent = %Activation{node_id: :n1, salience: 10}

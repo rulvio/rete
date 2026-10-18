@@ -20,7 +20,11 @@ defmodule Rete.ReadmeTest do
   defmodule Retail do
     use Rete.Ruleset
 
-    derive :online_order, :order
+    derive :online_order, :placed
+
+    defrule live({:placed, cid, amt}, {:not, [{:cancelled, cid, amt}]}) do
+      {:order, cid, amt}
+    end
 
     defrule large_order({:threshold, limit}, {:order, cid, amt} when amt > limit) do
       {:large_order, cid, amt}
@@ -43,8 +47,8 @@ defmodule Rete.ReadmeTest do
     {:threshold, 100},
     {:customer, 1, "Ada"},
     {:customer, 2, "Bo"},
-    {:order, 1, 250},
-    {:order, 1, 40},
+    {:placed, 1, 250},
+    {:placed, 1, 40},
     {:online_order, 2, 30}
   ]
 
@@ -56,7 +60,7 @@ defmodule Rete.ReadmeTest do
       assert [] == Retail.large_orders(inserted(), 1)
     end
 
-    test "firing concludes the large order, both spends, and no dormancy" do
+    test "firing concludes the orders, the large order, both spends, and no dormancy" do
       assert [
                {:threshold, 100},
                {:customer, 1, "Ada"},
@@ -65,6 +69,9 @@ defmodule Rete.ReadmeTest do
                {:online_order, 2, 30},
                {:order, 1, 40},
                {:order, 1, 250},
+               {:order, 2, 30},
+               {:placed, 1, 40},
+               {:placed, 1, 250},
                {:spend, "Ada", 290},
                {:spend, "Bo", 30}
              ] == fired() |> Session.facts() |> Enum.sort()
@@ -77,27 +84,37 @@ defmodule Rete.ReadmeTest do
       assert [{1, 250}] == Session.query(session, {Retail, :large_orders}, cid: 1)
     end
 
-    test "retracting the large order withdraws it and re-sums the collection" do
-      session = fired() |> Session.retract({:order, 1, 250}) |> Session.fire_rules()
+    test "cancelling the large order withdraws it and re-sums the collection" do
+      session = cancelled_one()
 
       assert [
                {:threshold, 100},
+               {:cancelled, 1, 250},
                {:customer, 1, "Ada"},
                {:customer, 2, "Bo"},
                {:online_order, 2, 30},
                {:order, 1, 40},
+               {:order, 2, 30},
+               {:placed, 1, 40},
+               {:placed, 1, 250},
                {:spend, "Ada", 40},
                {:spend, "Bo", 30}
              ] == session |> Session.facts() |> Enum.sort()
     end
 
-    test "retracting the rest makes both customers dormant, and spend fires empty" do
+    test "cancelling the rest makes both customers dormant, and spend fires empty" do
       assert [
                {:dormant, "Ada"},
                {:dormant, "Bo"},
                {:threshold, 100},
+               {:cancelled, 1, 40},
+               {:cancelled, 1, 250},
+               {:cancelled, 2, 30},
                {:customer, 1, "Ada"},
                {:customer, 2, "Bo"},
+               {:online_order, 2, 30},
+               {:placed, 1, 40},
+               {:placed, 1, 250},
                {:spend, "Ada", 0},
                {:spend, "Bo", 0}
              ] == emptied() |> Session.facts() |> Enum.sort()
@@ -132,11 +149,11 @@ defmodule Rete.ReadmeTest do
     end
   end
 
+  defp cancelled_one, do: fired() |> Session.insert({:cancelled, 1, 250}) |> Session.fire_rules()
+
   defp emptied do
-    fired()
-    |> Session.retract({:order, 1, 250})
-    |> Session.fire_rules()
-    |> Session.retract([{:order, 1, 40}, {:online_order, 2, 30}])
+    cancelled_one()
+    |> Session.insert([{:cancelled, 1, 40}, {:cancelled, 2, 30}])
     |> Session.fire_rules()
   end
 end

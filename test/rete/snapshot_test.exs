@@ -11,6 +11,7 @@ defmodule Rete.SnapshotTest do
 
   alias Rete.Listener.Collect
   alias Rete.Session
+  alias Rete.Test.Feed
 
   @key "rete-snapshot-test"
 
@@ -348,9 +349,10 @@ defmodule Rete.SnapshotTest do
       module = compile(Rete.SnapshotTest.NoImagesDumped, :v1)
 
       session =
-        [module]
+        [module, Feed]
         |> Session.new()
-        |> Session.insert([{:customer, 1}, {:order, 1, 500}])
+        |> Session.insert({:customer, 1})
+        |> Feed.put({:order, 1, 500})
         |> Session.fire_rules()
 
       snapshot = Session.dump!(session, @key)
@@ -363,7 +365,7 @@ defmodule Rete.SnapshotTest do
       assert session.state.network.taxonomy.fact_type_fn ==
                loaded.state.network.taxonomy.fact_type_fn
 
-      retracted = loaded |> Session.retract({:order, 1, 500}) |> Session.fire_rules()
+      retracted = loaded |> Feed.withdraw({:order, 1, 500}) |> Session.fire_rules()
       assert [] == Session.query(retracted, {module, :flagged}, cid: 1)
     end
 
@@ -376,9 +378,10 @@ defmodule Rete.SnapshotTest do
       Code.compile_string(shapes_source(shapes, :v1))
 
       live =
-        [main, shapes]
+        [main, shapes, Feed]
         |> Session.new(target_images: true)
-        |> Session.insert([{:customer, 1}, {:order, 1, 600}, {:cap, 1, 300}, {:premium, 2}])
+        |> Session.insert([{:customer, 1}, {:cap, 1, 300}])
+        |> Feed.put([{:order, 1, 600}, {:premium, 2}])
         |> Session.fire_rules()
 
       snapshot = Session.dump!(live, @key)
@@ -393,8 +396,8 @@ defmodule Rete.SnapshotTest do
 
       steps = [
         &Session.insert(&1, [{:refund, 1}, {:refund, 1, 200}]),
-        &Session.retract(&1, {:order, 1, 600}),
-        &Session.retract(&1, {:premium, 2})
+        &Feed.withdraw(&1, {:order, 1, 600}),
+        &Feed.withdraw(&1, {:premium, 2})
       ]
 
       {live, loaded} =
@@ -866,8 +869,8 @@ defmodule Rete.SnapshotTest do
     end
 
     # A fact is matched by equality, so the dump leaves a capture inside one alone. After the
-    # load, the caller can still retract the fact that it inserted, and a fact inserted again
-    # stays equal to the first copy through a second dump.
+    # load, truth maintenance can still retract the fact, and a fact inserted again stays
+    # equal to the first copy through a second dump.
     test "a fact that holds a capture keeps its identity across a load" do
       source = """
       defmodule Rete.SnapshotTest.CaptureFact2 do
@@ -879,11 +882,11 @@ defmodule Rete.SnapshotTest do
 
       module = compile_source(source, Rete.SnapshotTest.CaptureFact2)
       fact = {:h, Function.capture(module, :f, 1)}
-      fired = [module] |> Session.new() |> Session.insert(fact) |> Session.fire_rules()
+      fired = [module, Feed] |> Session.new() |> Feed.put(:h, fact) |> Session.fire_rules()
 
       loaded = round_trip(fired)
       assert fact in Session.facts(loaded)
-      assert [] == loaded |> Session.retract(fact) |> Session.fire_rules() |> Session.facts()
+      assert [] == loaded |> Feed.withdraw(:h) |> Session.fire_rules() |> Feed.facts()
 
       again = loaded |> Session.insert(fact) |> Session.fire_rules()
       twice = round_trip(again)
@@ -1150,8 +1153,9 @@ defmodule Rete.SnapshotTest do
   end
 
   describe "what a snapshot holds" do
-    # The tombstone of the retracted customer travels too, so the equality covers it. A
-    # session with target images runs its images already, so even its network is equal.
+    # The withdrawn customer travels too, with the tombstones its retraction left, so the
+    # equality covers it. A session with target images runs its images already, so even its
+    # network is equal.
     # Any other session differs only in its network, because the dump points its rules at
     # the images.
     test "a loaded session is in exactly the state that was dumped" do
@@ -1159,13 +1163,13 @@ defmodule Rete.SnapshotTest do
 
       for opts <- [[target_images: true], []] do
         session =
-          [Rete.Doc.Orders]
+          [Rete.Doc.Orders, Feed]
           |> Session.new(opts)
-          |> Session.insert([{:customer, 777_123_456} | others])
+          |> Feed.put([{:customer, 777_123_456} | others])
           |> Session.fire_rules()
-          |> Session.retract({:customer, 777_123_456})
+          |> Feed.withdraw({:customer, 777_123_456})
           |> Session.fire_rules()
-          |> Session.retract({:customer, 1})
+          |> Feed.withdraw({:customer, 1})
           |> Session.insert({:order, 2, 900})
 
         snapshot = Session.dump!(session, @key)

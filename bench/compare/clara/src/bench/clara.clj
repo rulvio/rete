@@ -32,6 +32,9 @@
 (defrecord Limit [limit])
 (defrecord N [i])
 (defrecord Out [rule x])
+(defrecord Gone [x])
+(defrecord Placed [cid amount])
+(defrecord Cancelled [cid])
 
 (defn customer-map [cid name] {:type :customer :cid cid :name name})
 (defn order-map [cid amount] {:type :order :cid cid :amount amount})
@@ -46,6 +49,9 @@
 (defn limit-map [limit] {:type :limit :limit limit})
 (defn n-map [i] {:type :n :i i})
 (defn out-map [rule x] {:type :out :rule rule :x x})
+(defn gone-map [x] {:type :gone :x x})
+(defn placed-map [cid amount] {:type :placed :cid cid :amount amount})
+(defn cancelled-map [cid] {:type :cancelled :cid cid})
 
 ;; --- the generated fact types -------------------------------------------------------
 ;;
@@ -131,8 +137,20 @@
          `(r/insert! (~(ctor v :dormant) ~'?cid)))
    (query "count" [] [(lhs-cond v :dormant '[] [])])])
 
+;; An order holds until it is cancelled, so a cancellation releases the negation. Neither
+;; engine has a session retract in the scenario, so the two do the same work.
+(defn- gated-negation-rules [v]
+  (into [(rule "order"
+               [(lhs-cond v :placed '[cid amount] '[(= ?cid cid) (= ?amt amount)])
+                [:not (lhs-cond v :cancelled '[cid] '[(= ?cid cid)])]]
+               `(r/insert! (~(ctor v :order) ~'?cid ~'?amt)))]
+        (negation-rules v)))
+
 (defn- chain-rules [v]
-  [(rule "b" [(lhs-cond v :a '[x] '[(= ?x x)])] `(r/insert! (~(ctor v :b) ~'?x)))
+  [(rule "b"
+         [(lhs-cond v :a '[x] '[(= ?x x)])
+          [:not (lhs-cond v :gone '[x] '[(= ?x x)])]]
+         `(r/insert! (~(ctor v :b) ~'?x)))
    (rule "c" [(lhs-cond v :b '[x] '[(= ?x x)])] `(r/insert! (~(ctor v :c) ~'?x)))
    (rule "d" [(lhs-cond v :c '[x] '[(= ?x x)])] `(r/insert! (~(ctor v :d) ~'?x)))
    (query "count" [] [(lhs-cond v :d '[] [])])])
@@ -171,20 +189,23 @@
    :session-opts []
    :types {:customer Customer :order Order :flagged Flagged :paired Paired
            :spend Spend :dormant Dormant :a A :b B :c C :d D
-           :limit Limit :n N :out Out}
+           :limit Limit :n N :out Out :gone Gone :placed Placed :cancelled Cancelled}
    :ctors {:flagged `->Flagged :paired `->Paired :spend `->Spend :dormant `->Dormant
-           :b `->B :c `->C :d `->D :n `->N :out `->Out}
-   :facts {:customer ->Customer :order ->Order :a ->A :limit ->Limit :n ->N}})
+           :b `->B :c `->C :d `->D :n `->N :out `->Out :order `->Order}
+   :facts {:customer ->Customer :order ->Order :a ->A :limit ->Limit :n ->N
+           :gone ->Gone :placed ->Placed :cancelled ->Cancelled}})
 
 (def ^:private map-variant
   {:name "clara-map"
    :session-opts [:fact-type-fn :type]
    :types {:customer :customer :order :order :flagged :flagged :paired :paired
            :spend :spend :dormant :dormant :a :a :b :b :c :c :d :d
-           :limit :limit :n :n :out :out}
+           :limit :limit :n :n :out :out :gone :gone :placed :placed :cancelled :cancelled}
    :ctors {:flagged `flagged-map :paired `paired-map :spend `spend-map
-           :dormant `dormant-map :b `b-map :c `c-map :d `d-map :n `n-map :out `out-map}
-   :facts {:customer customer-map :order order-map :a a-map :limit limit-map :n n-map}})
+           :dormant `dormant-map :b `b-map :c `c-map :d `d-map :n `n-map :out `out-map
+           :order `order-map}
+   :facts {:customer customer-map :order order-map :a a-map :limit limit-map :n n-map
+           :gone gone-map :placed placed-map :cancelled cancelled-map}})
 
 ;; A generated type is written `[:generated i]` in a condition, and resolved here, because
 ;; 512 entries would otherwise have to sit in the two maps above.
@@ -309,28 +330,30 @@
 
    {:id "negation" :n 2000
     :prepare (fn [v]
-               (let [session (build v (negation-rules v))
+               (let [session (build v (gated-negation-rules v))
                      customers (vec (for [i (range 2000)] (fact v :customer i "c")))
-                     orders (vec (for [i (range 2000)] (fact v :order i 250)))]
+                     placed (vec (for [i (range 2000)] (fact v :placed i 250)))
+                     cancelled (vec (for [i (range 2000)] (fact v :cancelled i)))]
                  ;; n conclusions suppressed and then released, which is the cost a
                  ;; negation node exists to pay.
                  #(-> session
                       (r/insert-all customers)
                       (r/fire-rules)
-                      (r/insert-all orders)
+                      (r/insert-all placed)
                       (r/fire-rules)
-                      (as-> s (apply r/retract s orders))
+                      (r/insert-all cancelled)
                       (r/fire-rules))))
     :tally tally}
 
-   {:id "tms-retract" :n 2000
+   {:id "tms-withdraw" :n 2000
     :prepare (fn [v]
                (let [session (build v (chain-rules v))
-                     facts (vec (for [i (range 2000)] (fact v :a i)))]
+                     facts (vec (for [i (range 2000)] (fact v :a i)))
+                     gone (vec (for [i (range 2000)] (fact v :gone i)))]
                  #(-> session
                       (r/insert-all facts)
                       (r/fire-rules)
-                      (as-> s (apply r/retract s facts))
+                      (r/insert-all gone)
                       (r/fire-rules))))
     :tally tally}
 

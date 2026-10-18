@@ -19,6 +19,7 @@ defmodule Rete.DisjunctionTest do
 
   alias Rete.Compiler.BetaGraph
   alias Rete.Session
+  alias Rete.Test.Feed
 
   @branches Rete.DSL.Normalize.max_branches()
 
@@ -56,9 +57,12 @@ defmodule Rete.DisjunctionTest do
     name
   end
 
+  # Through `Rete.Test.Feed`, so a test can withdraw a fact by itself as the ref.
   defp run(module, facts) do
-    [module] |> Session.new() |> Session.insert(facts) |> Session.fire_rules()
+    [module, Feed] |> Session.new() |> Feed.put(facts) |> Session.fire_rules()
   end
+
+  defp withdrawn(session, refs), do: session |> Feed.withdraw(refs) |> Session.fire_rules()
 
   defp node_count(module) do
     [module]
@@ -69,7 +73,7 @@ defmodule Rete.DisjunctionTest do
   end
 
   describe "many branches" do
-    test "each matching branch is its own support, and they retract one at a time" do
+    test "each matching branch is its own support, and they leave one at a time" do
       module = wide(Wide64, 64)
 
       # Three branches match `x = 1`, one matches `x = 2`.
@@ -79,13 +83,10 @@ defmodule Rete.DisjunctionTest do
                Map.take(session.state.memory.facts, [{:hit, 1}, {:hit, 2}])
 
       # Dropping one branch leaves the other two holding it up.
-      session = session |> Session.retract({:t7, 1}) |> Session.fire_rules()
+      session = withdrawn(session, {:t7, 1})
       assert %{{:hit, 1} => 2} = Map.take(session.state.memory.facts, [{:hit, 1}])
 
-      session =
-        session
-        |> Session.retract([{:t1, 1}, {:t64, 1}])
-        |> Session.fire_rules()
+      session = withdrawn(session, [{:t1, 1}, {:t64, 1}])
 
       refute Map.has_key?(session.state.memory.facts, {:hit, 1})
       assert Map.has_key?(session.state.memory.facts, {:hit, 2})
@@ -122,7 +123,7 @@ defmodule Rete.DisjunctionTest do
       assert %{{:hit, 1} => 8} = Map.take(session.state.memory.facts, [{:hit, 1}])
 
       # Removing one branch of the first disjunction halves it.
-      session = session |> Session.retract({:t1_1, 1}) |> Session.fire_rules()
+      session = withdrawn(session, {:t1_1, 1})
       assert %{{:hit, 1} => 4} = Map.take(session.state.memory.facts, [{:hit, 1}])
     end
   end

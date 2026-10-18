@@ -54,8 +54,7 @@ defmodule Rete.Inspect do
   `:sources` says how the fact got into working memory. `{Rete.Session, :insert}` means you
   inserted it. Any other pair names a rule that concluded it. It is a **list**, because a
   fact can rest on more than one independent support. A fact you inserted and a rule also
-  concluded names both, unless you retracted it after the rule concluded it. `:sources` is
-  `[]` only on a collection.
+  concluded names both. `:sources` is `[]` only on a collection.
 
   `:members` is `nil`, except on a collection. There `:fact` is the gathered list, which is
   what the rule received, and `:members` describes each fact in it.

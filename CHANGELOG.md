@@ -4,6 +4,41 @@ All notable changes to `rete` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Removed
+
+* **`Rete.Session.retract/2`.** A session has no retract. A fact you insert stays for the
+  life of the session, and only a concluded fact leaves. A retraction now comes from one
+  source: a match that goes.
+
+  A session retract shared one multiset of facts with truth maintenance. It took an
+  occurrence by value, so it could not say which occurrence it meant. Reviews found cases
+  where its cascade did not match what the rules concluded.
+
+  To withdraw a conclusion, insert a fact that says so, and read it under a negation:
+
+  ```elixir
+  defrule live({:placed, cid, amt}, {:not, [{:cancelled, cid, amt}]}) do
+    {:order, cid, amt}
+  end
+  ```
+
+  Inserting `{:cancelled, 1, 250}` breaks the match, and truth maintenance retracts the
+  order and everything concluded from it. `docs/dsl.md` has a section on this pattern. The
+  worked example in `README.md` now cancels orders instead of retracting them.
+
+* The `{Rete.Session, :retract}` origin. A `:fact_retracted` event always names the rule
+  whose match lost the fact, and it arrives only during `fire_rules/2`.
+
+### Changed
+
+* `bench/run.exs` drops the two scenarios that retracted from either end of a bucket. Four
+  more now withdraw through a negation: the cancelled activations, the chain, and the two
+  negations that flip. "What a head costs" has no retract column. The dump after half the
+  customers leave runs over a ruleset that closes them. The Clara comparison renames
+  `tms-retract` to `tms-withdraw`, and both engines do the same work through a negation.
+
 ## 1.3.0
 
 ### Added

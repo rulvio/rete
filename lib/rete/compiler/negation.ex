@@ -248,7 +248,7 @@ defmodule Rete.Compiler.Negation do
 
   It does not check the marker's name. The alpha index already routes a fact by its type,
   and the type of a marker is its name. The engine refuses every other fact of that type:
-  a user insert or retract, and a conclusion of a user rule. `Rete.Network.new/3` refuses a
+  a user insert, and a conclusion of a user rule. `Rete.Network.new/3` refuses a
   `derive` that names the type. See `docs/design/network.md` §6.
   """
   @spec marker_alpha(term()) :: map() | nil

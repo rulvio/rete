@@ -32,8 +32,8 @@ defmodule Rete.Snapshot do
     state = %State{state | listeners: []}
 
     # Only the rules of the network are targeted at their images. A fact is matched by
-    # equality, so a changed capture inside one would make a retract of that fact miss after
-    # the load.
+    # equality, so a changed capture inside one would make a retraction of that fact miss
+    # after the load.
     # Only a module that the rules still capture counts. A loaded session captures images,
     # so the module of this node does not matter to it.
     network = state.network

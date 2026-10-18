@@ -4,6 +4,7 @@ defmodule Rete.ObservabilityTest do
   alias Rete.Inspect
   alias Rete.Listener
   alias Rete.Session
+  alias Rete.Test.Feed
 
   doctest Rete.Inspect
 
@@ -144,13 +145,17 @@ defmodule Rete.ObservabilityTest do
 
     test "a retraction cascade names the rule of each support it removes" do
       retracted =
-        observed()
-        |> Session.retract({:order, 1, 250})
+        [Rules, Feed]
+        |> Session.new()
+        |> Session.with_listener(Listener.Collect, [])
+        |> Feed.put({:order, 1, 250})
+        |> Session.fire_rules()
+        |> Feed.withdraw({:order, 1, 250})
         |> Session.fire_rules()
         |> Listener.Collect.by_tag(:fact_retracted)
         |> Map.new(fn {:fact_retracted, fact, origin} -> {fact, origin} end)
 
-      assert {Session, :retract} == retracted[{:order, 1, 250}]
+      assert {Feed, :feed} == retracted[{:order, 1, 250}]
       assert {Rules, :flag} == retracted[{:flagged, 1}]
       assert {Rules, :escalate} == retracted[{:escalated, 1}]
     end
@@ -179,18 +184,23 @@ defmodule Rete.ObservabilityTest do
     defp flagged?({:activation_fired, _source, _token, facts}), do: {:flagged, 1} in facts
 
     # A pending activation cancelled before it fires never runs, and that is
-    # observable rather than merely invisible.
+    # observable rather than merely invisible. `clean` is queued before the helper of its
+    # compound negation fires, and the marker that the helper concludes cancels it.
     test "an activation cancelled before firing is reported as removed, not fired" do
       session =
         [Rules]
         |> Session.new()
         |> Session.with_listener(Listener.Collect, [])
-        |> Session.insert({:order, 1, 250})
-        |> Session.retract({:order, 1, 250})
+        |> Session.insert([{:cust, 1}, {:order, 1, 50}, {:refund, 1}])
         |> Session.fire_rules()
 
-      assert [] == Listener.Collect.by_tag(session, :activation_fired)
-      assert [_ | _] = Listener.Collect.by_tag(session, :activation_removed)
+      removed = Listener.Collect.by_tag(session, :activation_removed)
+      assert [{:activation_removed, %{rule: {Rules, :clean}}, _token}] = removed
+
+      refute Enum.any?(
+               Listener.Collect.by_tag(session, :activation_fired),
+               &match?({:activation_fired, %{rule: {Rules, :clean}}, _, _}, &1)
+             )
     end
 
     test "several listeners each keep their own state" do
@@ -221,9 +231,7 @@ defmodule Rete.ObservabilityTest do
         [Rules]
         |> Session.new()
         |> Session.with_listener(Listener.Collect, [])
-        |> Session.insert({:order, 1, 250})
-        |> Session.retract({:order, 1, 250})
-        |> Session.insert({:order, 2, 900})
+        |> Session.insert([{:cust, 1}, {:order, 1, 50}, {:refund, 1}, {:order, 2, 900}])
         |> Session.fire_rules()
 
       for tag <- [:activation_added, :activation_removed, :activation_fired] do
@@ -234,6 +242,7 @@ defmodule Rete.ObservabilityTest do
           assert %{node: node, rule: {Rules, name}} = elem(event, 1)
           assert is_integer(node), "the node id is kept alongside the rule"
 
+          # The helper of a compound negation fires under a generated name.
           assert name in [
                    :flag,
                    :escalate,
@@ -242,7 +251,7 @@ defmodule Rete.ObservabilityTest do
                    :dormant,
                    :clean,
                    :flagged_rows
-                 ]
+                 ] or to_string(name) =~ "__neg_"
         end
       end
     end
@@ -286,11 +295,21 @@ defmodule Rete.ObservabilityTest do
 
       assert %{activations: [%{matches: [match]}]} = Inspect.explain(session, {Rules, :escalate})
       assert [{Session, :insert}, {Rules, :flag}] == match.sources
+    end
 
-      session = session |> Session.retract({:flagged, 1}) |> Session.fire_rules()
+    # Truth maintenance takes back the occurrence the rule concluded. Your own stays.
+    test "a fact you inserted outlives the rule that also concluded it" do
+      session =
+        [Rules, Feed]
+        |> Session.new()
+        |> Session.insert({:flagged, 1})
+        |> Feed.put({:order, 1, 250})
+        |> Session.fire_rules()
+        |> Feed.withdraw({:order, 1, 250})
+        |> Session.fire_rules()
 
       assert %{activations: [%{matches: [match]}]} = Inspect.explain(session, {Rules, :escalate})
-      assert [{Rules, :flag}] == match.sources
+      assert [{Session, :insert}] == match.sources
     end
 
     # The case a lookup returning the *first* support gets wrong, and the reason `:sources`
@@ -316,7 +335,7 @@ defmodule Rete.ObservabilityTest do
 
     # A body returning `nil` concludes nothing, but the engine still records that it fired.
     # So `explain` reports the firing with no asserts, and tells it apart from a rule that
-    # never matched. `why_not` counts it, and retracting its match takes the record back.
+    # never matched. `why_not` counts it, and withdrawing its match takes the record back.
     test "a rule that fired and concluded nothing reports the firing, with no asserts" do
       defmodule Silent do
         use Rete.Ruleset
@@ -329,7 +348,7 @@ defmodule Rete.ObservabilityTest do
         defrule loud({:ping, id}), do: {:pong, id}
       end
 
-      session = [Silent] |> Session.new() |> Session.insert({:ping, 1}) |> Session.fire_rules()
+      session = [Silent, Feed] |> Session.new() |> Feed.put({:ping, 1}) |> Session.fire_rules()
 
       assert %{activations: [%{asserts: [], bindings: %{id: 1}}]} =
                Inspect.explain(session, {Silent, :quiet})
@@ -340,13 +359,19 @@ defmodule Rete.ObservabilityTest do
       %{chain: steps} = Inspect.why_not(session, {Silent, :quiet})
       assert List.last(steps).activations == 1
 
-      retracted = session |> Session.retract({:ping, 1}) |> Session.fire_rules()
+      retracted = session |> Feed.withdraw({:ping, 1}) |> Session.fire_rules()
       assert %{activations: []} = Inspect.explain(retracted, {Silent, :quiet})
       assert retracted.state.memory.insertions == %{}
     end
 
     test "a retracted conclusion stops being reported" do
-      session = session() |> Session.retract({:order, 1, 250}) |> Session.fire_rules()
+      session =
+        [Rules, Feed]
+        |> Session.new()
+        |> Feed.put({:order, 1, 250})
+        |> Session.fire_rules()
+        |> Feed.withdraw({:order, 1, 250})
+        |> Session.fire_rules()
 
       assert %{activations: []} = Inspect.explain(session, {Rules, :flag})
     end

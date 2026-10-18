@@ -106,8 +106,9 @@ does not apply. Pass `:fact_type_fn` to `Rete.Session.new/2` if your facts use s
 typing scheme.
 
 Facts form a **multiset**, and every occurrence matches. Inserting the same fact twice
-gives the rules two matches of it, and it takes two retractions to remove it. A collection
-gathers two members, and a rule that reads the fact fires twice.
+gives the rules two matches of it. A collection gathers two members, and a rule that reads
+the fact fires twice. A fact you insert stays for the life of the session, because a
+session has no retract. See [Withdrawing a conclusion](#withdrawing-a-conclusion).
 
 This applies to what a rule concludes as well. Two matches that conclude the same value
 conclude it twice, so a query over that fact returns two rows. Write the values that tell
@@ -216,10 +217,9 @@ end
 Such a rule is true of the empty session. It fires on the first `fire_rules/2`, with
 nothing inserted. It never fires again, however much you insert afterward.
 
-Its conclusion rests on the root token instead of on a fact. So retracting everything you
-inserted leaves the conclusion in place. This is the one conclusion
-`Rete.Session.retract/2` cannot reach. `Rete.Inspect.explain/2` reports one activation for
-the rule, with no matches behind it.
+Its conclusion rests on the root token instead of on a fact. So no negation can withdraw
+it, and it stays when every other match goes. `Rete.Inspect.explain/2` reports one
+activation for the rule, with no matches behind it.
 
 Salience applies as usual. So a rule with no conditions can run before the rest of the
 ruleset, and seed a fact the other rules match on.
@@ -368,8 +368,8 @@ Two consequences:
   hand side that mentions a variable only a negation names fails to compile, with
   `undefined variable`.
 * **a negation is not a filter you can run once.** Inserting a matching fact later
-  retracts whatever the rule concluded. Retracting the last matching fact lets the rule
-  fire again.
+  retracts whatever the rule concluded. When the last matching fact goes, the rule fires
+  again. Only a concluded fact can go, because a fact you insert stays.
 
 Negating a **conjunction** is supported: `{:nand, [{:order, x}, {:refund, x}]}` means "no
 `x` has both". This is not the same as negating each conjunct separately.
@@ -405,12 +405,11 @@ defrule wrong({:cust, cid}, {:not, [{:not, [{:order, cid, _a}]}]}) do
 end
 ```
 
-With two orders, that conclusion has **two** supports instead of one. It then takes two
-retractions to remove.
+With two orders, that conclusion has **two** supports instead of one. Both must go before
+it does.
 
-The fact list hides this difference completely, because equal conclusions collapse into
-one entry. You can only see the difference in the support count, or when something is
-retracted and refuses to disappear.
+The fact list shows this as two equal entries, which is easy to miss. You can see the
+difference in the support count, or when one order goes and the conclusion stays.
 
 This rewrite is sound as propositional logic, but wrong for existence. It is the same
 family of mistake as applying De Morgan's law over a conjunction — see
@@ -528,8 +527,8 @@ right hand side. This yields one fact holding a map, instead of one activation p
 hand side, if order matters to you.
 
 This is a real warning, not a formality. A collection gathers in **reverse arrival order**.
-The same facts in a different order thus produce a different list. A member that you retract
-and insert again comes back at the front. A rule that reduces its collection to something
+The same facts in a different order thus produce a different list. A member that leaves
+and comes back arrives at the front. A rule that reduces its collection to something
 order-insensitive — `length`, a sum, a set — is unaffected. A rule that puts the list itself
 into a fact, or reads `hd/1`, is not:
 
@@ -1009,7 +1008,7 @@ Two consequences surprise people:
 
 * **a conclusion cannot hold itself up.** Every fact a rule concludes rests on the
   occurrence the match read, and that occurrence rests on the one before it. The chain ends
-  at what you inserted, so retracting what you inserted really does empty the session. A
+  at what you inserted. So when a negation breaks the first match, the whole chain goes. A
   rule with **no conditions** is the one exception: its support is the root token rather
   than a fact, so its conclusion stays.
 * **a rule that concludes something its own left hand side matches on will loop.** The
@@ -1022,13 +1021,33 @@ The body may read only the variables the left hand side binds, on the path that 
 it. It runs inside the ruleset module, so it may call that module's functions. Nothing
 orders it against any other rule, except salience.
 
+### Withdrawing a conclusion
+
+A session has no retract. A fact you insert stays, and only a concluded fact leaves. To
+take something back, insert a fact that says so, and read it under a negation:
+
+```elixir
+defrule live({:placed, cid, amt}, {:not, [{:cancelled, cid, amt}]}) do
+  {:order, cid, amt}
+end
+```
+
+Rules that read `{:order, ...}` see an order while it holds. Insert
+`{:cancelled, 1, 250}`, and the match of `live` goes. The engine retracts `{:order, 1, 250}`
+and everything concluded from it. The placed order and the cancellation both stay, so the
+session keeps the history.
+
+A session retract would share one multiset of facts with truth maintenance. It would take
+an occurrence by value, and it could take the one that a rule concluded. A negation has no
+such case, because the loss of a match is the only thing that retracts.
+
 ### A body may run more than once
 
 The engine truth-maintains the body's **return value**. It does not truth-maintain a
 **side effect**. A side effect can happen more often than the conclusions suggest, in two
 ways:
 
-* retracting and reinserting the facts behind a match runs the body again, for that match.
+* a match that goes and comes back runs the body again, for that match.
 * under `fire_rules(session, concurrency: n)`, a body can run while the tasks of earlier
   bodies in its activation group are still in flight. So a body may run for a match that
   an earlier activation then invalidates. That activation does not fire, and
@@ -1131,8 +1150,7 @@ concluded. So there is nothing to fill. Some results of this:
 * a hit is recorded like a firing. So `from_session(next)` holds the hits too, and a chain
   of fires works.
 * the cache holds what each match concluded, for every match that still holds in the
-  session it came from. A conclusion that lost its support there is not in it. A fact that
-  you retract yourself stays in it while its match holds.
+  session it came from. A conclusion that lost its support there is not in it.
 * a session from `Rete.Session.load/2` gives a cache too.
 * the option applies to one call. `next` does not keep the cache.
 
@@ -1297,7 +1315,7 @@ Rete.Session.facts(session)  #=> just the order; no conclusions
 MyRuleset.orders(session)    #=> [] — nothing has matched yet
 ```
 
-`insert/2` and `retract/2` record facts and queue the work. **`fire_rules/2` is the only
+`insert/2` records facts and queues the work. **`fire_rules/2` is the only
 call that matches anything.** It propagates everything waiting, runs the rules that match,
 and returns once the session settles.
 

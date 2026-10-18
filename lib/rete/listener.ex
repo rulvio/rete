@@ -37,9 +37,9 @@ defmodule Rete.Listener do
   added later without changing the shape every listener matches on. `{:propagated, ...}`
   is the exception, and it carries the bare id, because a join has no user-facing name.
 
-  `origin` is a `{module, name}` pair. `{Rete.Session, :insert}` and
-  `{Rete.Session, :retract}` mean your own call. Any other pair names the rule whose match
-  added or lost the fact. This is what lets a listener reconstruct provenance, without
+  `origin` is a `{module, name}` pair. `{Rete.Session, :insert}` means your own call. Any
+  other pair names the rule whose match added or lost the fact. A retraction always names
+  a rule, because only truth maintenance retracts. This is what lets a listener reconstruct provenance, without
   reading memory. See `docs/design/observability.md` §1.
 
   An activation cache can answer for the body of a rule. See `Rete.ActivationCache`. Its
@@ -62,8 +62,8 @@ defmodule Rete.Listener do
         }
 
   @typedoc """
-  Where a fact came from, or what took it away: your own call, or a rule. An insertion
-  that an activation cache answered for adds `:cached`. A retraction never does.
+  Where a fact came from, your own call or a rule, or the rule whose match lost it. An
+  insertion that an activation cache answered for adds `:cached`. A retraction never does.
   """
   @type origin :: {module(), atom()} | {module(), atom(), :cached}
 
@@ -170,8 +170,6 @@ defmodule Rete.Listener.Trace do
 
   defp describe({:fact_inserted, fact, origin}),
     do: "  + #{inspect(fact)} (from #{rule(origin)})"
-
-  defp describe({:fact_retracted, fact, {Rete.Session, :retract}}), do: "  - #{inspect(fact)}"
 
   defp describe({:fact_retracted, fact, origin}),
     do: "  - #{inspect(fact)} (support from #{rule(origin)} gone)"

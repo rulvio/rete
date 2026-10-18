@@ -13,6 +13,7 @@ defmodule Rete.QueryParamsTest do
   use ExUnitProperties
 
   alias Rete.Session
+  alias Rete.Test.Feed
 
   defmodule Plain do
     use Rete.Ruleset
@@ -104,16 +105,22 @@ defmodule Rete.QueryParamsTest do
       end
     end
 
-    test "and keeps agreeing after retraction" do
+    test "and keeps agreeing after withdrawal" do
       facts = facts_for(30)
       dropped = Enum.take_every(facts, 3)
 
-      drop = fn session ->
-        session |> Session.retract(dropped) |> Session.fire_rules()
+      # Through `Rete.Test.Feed`, because a session has no retract.
+      fed_then_dropped = fn module ->
+        [module, Feed]
+        |> Session.new()
+        |> Feed.put(facts)
+        |> Session.fire_rules()
+        |> Feed.withdraw(dropped)
+        |> Session.fire_rules()
       end
 
-      plain = Plain |> run(facts) |> drop.()
-      keyed = Keyed |> run(facts) |> drop.()
+      plain = fed_then_dropped.(Plain)
+      keyed = fed_then_dropped.(Keyed)
 
       for cid <- 0..4 do
         assert expected(plain, cid: cid) == Keyed.by_cid(keyed, cid),

@@ -18,6 +18,10 @@ defmodule Rete.BehaviorTest do
     * **Unconditional insert and RHS retract** (`insert-unconditional!`,
       `retract!`, `duplicate-reasons-for-retraction-test`). This engine has
       logical inserts only, so there is nothing to test.
+    * **Session retract** (`test-noop-retraction`, the insertion and retraction
+      ordering cases). A session has no retract. A test that needs a fact to
+      leave puts it through `Rete.Test.Feed` and withdraws it, so truth
+      maintenance takes it back.
     * **`:no-loop`** and Clara's `:cancelling` fire mode. Neither exists here.
     * **ClojureScript, Java interop, durability, session/compiler caching,
       loading rules from namespaces or EDN.** All out of scope.
@@ -39,10 +43,21 @@ defmodule Rete.BehaviorTest do
   alias Rete.Listener.Collect
   alias Rete.Session
   alias Rete.Test.Canon
+  alias Rete.Test.Feed
 
   defp run(mod, facts) do
     [mod] |> Session.new() |> Session.insert(facts) |> Session.fire_rules()
   end
+
+  # Puts each fact through `Rete.Test.Feed`, so a test can take it back.
+  defp fed(mod, facts) do
+    [mod, Feed] |> Session.new() |> Feed.put(facts) |> Session.fire_rules()
+  end
+
+  defp withdrawn(session, refs), do: session |> Feed.withdraw(refs) |> Session.fire_rules()
+
+  # Holds the feed's own facts and nothing else, as `Rete.Test.Canon` sees it.
+  defp drained?(session), do: Canon.dump(Feed.residue(session)) == Canon.dump(session)
 
   defp tagged(session, tag) do
     session
@@ -59,16 +74,12 @@ defmodule Rete.BehaviorTest do
     |> Enum.map(fn {:activation_fired, _source, _token, facts} -> facts end)
   end
 
-  # Retract everything one fact at a time, the way a caller would.
-  defp drain(session, facts) do
-    Enum.reduce(facts, session, fn fact, s ->
-      s |> Session.retract(fact) |> Session.fire_rules()
-    end)
-  end
+  # Withdraws every fact one at a time.
+  defp drain(session, facts), do: Enum.reduce(facts, session, &withdrawn(&2, &1))
 
   # --- the fact lifecycle -------------------------------------------------------------
 
-  describe "insert and retract" do
+  describe "the fact lifecycle" do
     defmodule Lifecycle do
       use Rete.Ruleset
 
@@ -81,46 +92,29 @@ defmodule Rete.BehaviorTest do
       end
     end
 
-    # clara test_simple_rules/test-noop-retraction. Retracting something the
-    # session never held must not disturb what it does hold. In particular, it
-    # must not decrement a *different* fact that happens to share a join key.
-    test "retracting a fact that was never inserted changes nothing" do
-      session =
-        [Lifecycle]
-        |> Session.new()
-        |> Session.insert({:temp, 10, "MCI"})
-        |> Session.retract({:temp, 15, "MCI"})
-        |> Session.fire_rules()
-
-      assert [10] == Lifecycle.cold_q(session)
-      assert %{{:temp, 10, "MCI"} => 1, {:cold, 10} => 1} == session.state.memory.facts
-    end
-
     # clara test_truth_maintenance/test-cancelled-activation. A net-zero pair of
     # operations before `fire_rules/2` must leave no trace: not a fact, and not
     # a firing. Checking facts alone cannot see the difference between "never
-    # fired" and "fired and was taken back".
-    test "insert then retract before firing means the rule never runs at all" do
+    # fired" and "fired and was taken back". The withdrawal reaches the negation
+    # before the token does, so the feed never even queues an activation.
+    test "a put and a withdrawal before firing mean the rule never runs at all" do
       session =
-        [Lifecycle]
+        [Lifecycle, Feed]
         |> Session.new()
         |> Session.with_listener(Collect, [])
-        |> Session.insert({:temp, 10, "MCI"})
-        |> Session.retract({:temp, 10, "MCI"})
+        |> Feed.put({:temp, 10, "MCI"})
+        |> Feed.withdraw({:temp, 10, "MCI"})
         |> Session.fire_rules()
 
-      assert [] == Session.facts(session)
+      assert [] == Feed.facts(session)
       assert [] == Collect.by_tag(session, :activation_fired)
 
-      # The activation really was queued, then cancelled — it was not simply
-      # never created. Otherwise, this test would pass on an engine that
-      # simply ignores the insert.
-      tags = session |> Collect.events() |> Enum.map(&elem(&1, 0))
-      assert :activation_added in tags
-      assert :activation_removed in tags
+      # Both facts really did propagate. Otherwise, this test would pass on an
+      # engine that simply ignores the inserts.
+      assert [_, _ | _] = Collect.by_tag(session, :propagated)
     end
 
-    test "the same session with no retraction does fire, as a control" do
+    test "the same session with no withdrawal does fire, as a control" do
       session =
         [Lifecycle]
         |> Session.new()
@@ -134,59 +128,6 @@ defmodule Rete.BehaviorTest do
                  {:activation_fired, source, _token, _facts} <- Collect.events(session),
                  do: source.rule
                )
-    end
-
-    # clara test_rules/test-stored-insertion-retraction-ordering. Operations
-    # queued before a fire are applied in the order they were given, so a
-    # retraction of an absent fact followed by its insertion leaves the fact
-    # present. An engine that sorted retractions ahead of insertions — an
-    # attractive optimization — would silently swallow it.
-    test "a retraction before the matching insertion does not cancel it" do
-      retract_first =
-        [Lifecycle]
-        |> Session.new()
-        |> Session.retract({:temp, 10, "MCI"})
-        |> Session.insert({:temp, 10, "MCI"})
-        |> Session.fire_rules()
-
-      insert_first =
-        [Lifecycle]
-        |> Session.new()
-        |> Session.insert({:temp, 10, "MCI"})
-        |> Session.retract({:temp, 10, "MCI"})
-        |> Session.fire_rules()
-
-      assert [10] == Lifecycle.cold_q(retract_first)
-      assert [] == Lifecycle.cold_q(insert_first)
-    end
-
-    # The same, with two distinct facts interleaved in one batch: whichever was
-    # inserted last is the one that survives, per fact rather than per batch.
-    test "insertions and retractions of different facts do not interfere" do
-      session =
-        [Lifecycle]
-        |> Session.new()
-        |> Session.insert({:temp, -10, "MCI"})
-        |> Session.retract({:temp, 10, "MCI"})
-        |> Session.insert({:temp, 10, "MCI"})
-        |> Session.retract({:temp, -10, "MCI"})
-        |> Session.fire_rules()
-
-      assert [10] == Lifecycle.cold_q(session)
-    end
-
-    # clara test_rules/test-multi-insert-retract. A duplicate inserted and then
-    # retracted within one batch nets to the original single occurrence.
-    test "a duplicate inserted and retracted in one batch leaves one occurrence" do
-      session =
-        [Lifecycle]
-        |> Session.new()
-        |> Session.insert({:temp, 10, "MCI"})
-        |> Session.insert({:temp, 10, "MCI"})
-        |> Session.retract({:temp, 10, "MCI"})
-        |> Session.fire_rules()
-
-      assert %{{:temp, 10, "MCI"} => 1, {:cold, 10} => 1} == session.state.memory.facts
     end
   end
 
@@ -362,8 +303,13 @@ defmodule Rete.BehaviorTest do
 
       blocked = fired |> Session.insert({:cold, 1}) |> Session.fire_rules()
       assert [] == QueryRules.no_cold(blocked)
+    end
 
-      released = blocked |> Session.retract({:cold, 1}) |> Session.fire_rules()
+    test "a query answers again once its blocker is withdrawn" do
+      blocked = fed(QueryRules, {:cold, 1})
+      assert [] == QueryRules.no_cold(blocked)
+
+      released = withdrawn(blocked, {:cold, 1})
       assert [:none] == QueryRules.no_cold(released)
     end
 
@@ -384,16 +330,11 @@ defmodule Rete.BehaviorTest do
     # clara test_negation/test-simple-negation, the partial-retraction case.
     # Removing one of two blocking facts must not release the negation.
     test "a negation stays blocked while any matching fact remains" do
-      session =
-        [QueryRules]
-        |> Session.new()
-        |> Session.insert([{:cold, 10}, {:cold, 15}])
-        |> Session.retract({:cold, 10})
-        |> Session.fire_rules()
+      session = QueryRules |> fed([{:cold, 10}, {:cold, 15}]) |> withdrawn({:cold, 10})
 
       assert [] == QueryRules.no_cold(session)
 
-      session = session |> Session.retract({:cold, 15}) |> Session.fire_rules()
+      session = withdrawn(session, {:cold, 15})
       assert [:none] == QueryRules.no_cold(session)
     end
   end
@@ -506,20 +447,20 @@ defmodule Rete.BehaviorTest do
 
     # clara test_negation/test-negation-truth-maintenance. The fact that blocks
     # the negation is itself a conclusion, so the whole loop has to close: an
-    # external insert derives it, which retracts the negation's conclusion. An
-    # external retract undoes the derivation, which releases the negation again.
+    # external insert derives it, which retracts the negation's conclusion. A
+    # withdrawal undoes the derivation, which releases the negation again.
     test "a conclusion that blocks another rule's negation retracts it, and gives it back" do
-      base = [NegTms] |> Session.new() |> Session.fire_rules()
+      base = [NegTms, Feed] |> Session.new() |> Session.fire_rules()
       assert [0] == NegTms.colds(base)
 
-      blocked = base |> Session.insert({:wind, 100}) |> Session.fire_rules()
+      blocked = base |> Feed.put({:wind, 100}) |> Session.fire_rules()
       assert [] == NegTms.colds(blocked)
 
-      released = blocked |> Session.retract({:wind, 100}) |> Session.fire_rules()
+      released = withdrawn(blocked, {:wind, 100})
       assert [0] == NegTms.colds(released)
 
       # And the whole round trip is exact, not merely equivalent in its facts.
-      assert base.state.memory == released.state.memory
+      assert drained?(released)
     end
 
     defmodule Cascade do
@@ -567,13 +508,11 @@ defmodule Rete.BehaviorTest do
     # Clara issue 67. The blocking fact arrives and leaves before any token ever
     # reaches the negation, so the node's element memory has to be genuinely
     # empty afterwards rather than merely marked as changed.
-    test "a fact inserted and retracted before any token exists leaves no residue" do
+    test "a fact that arrives and leaves before any token exists leaves no residue" do
       session =
-        [Issue67]
-        |> Session.new()
-        |> Session.insert({:wind, 30, "MCI"})
-        |> Session.retract({:wind, 30, "MCI"})
-        |> Session.fire_rules()
+        Issue67
+        |> fed({:wind, 30, "MCI"})
+        |> withdrawn({:wind, 30, "MCI"})
         |> Session.insert({:temp, 10})
         |> Session.fire_rules()
 
@@ -601,9 +540,10 @@ defmodule Rete.BehaviorTest do
     # the token was already through — and every one of them has bitten Clara.
     test "a guarded negation gives the same answer whatever order facts arrive in" do
       steps = fn ops ->
-        Enum.reduce(ops, Session.new([NegOrGuard]), fn
+        Enum.reduce(ops, Session.new([NegOrGuard, Feed]), fn
           {:insert, fact}, s -> Session.insert(s, fact)
-          {:retract, fact}, s -> Session.retract(s, fact)
+          {:put, ref, fact}, s -> Feed.put(s, ref, fact)
+          {:withdraw, ref}, s -> Feed.withdraw(s, ref)
           :fire, s -> Session.fire_rules(s)
         end)
         |> NegOrGuard.found()
@@ -624,21 +564,21 @@ defmodule Rete.BehaviorTest do
       # Removing the blocker releases the token.
       assert [10] ==
                steps.([
-                 {:insert, {:cold, 9}},
+                 {:put, :a, {:cold, 9}},
                  {:insert, {:temp, 10}},
                  :fire,
-                 {:retract, {:cold, 9}},
+                 {:withdraw, :a},
                  :fire
                ])
 
       # ...but only when the last occurrence goes.
       assert [] ==
                steps.([
-                 {:insert, {:cold, 9}},
-                 {:insert, {:cold, 9}},
+                 {:put, :a, {:cold, 9}},
+                 {:put, :b, {:cold, 9}},
                  {:insert, {:temp, 10}},
                  :fire,
-                 {:retract, {:cold, 9}},
+                 {:withdraw, :a},
                  :fire
                ])
 
@@ -659,19 +599,19 @@ defmodule Rete.BehaviorTest do
     # as it was: re-sending it would give it a second support, which the fact
     # list cannot show and which no retraction will ever clear.
     test "releasing a suppressed token does not re-send one that was already through" do
-      session = run(NegOrGuard, [{:temp, 10}, {:temp, 5}, {:cold, 9}])
+      session = fed(NegOrGuard, [{:temp, 10}, {:temp, 5}, {:cold, 9}])
 
       # 9 < 10 suppresses the first. 9 < 5 and 9 < 0 are both false, so the
       # second is through already.
       assert [{:found, 5}] == tagged(session, :found)
       assert 1 == session.state.memory.facts[{:found, 5}]
 
-      session = session |> Session.retract({:cold, 9}) |> Session.fire_rules()
+      session = withdrawn(session, {:cold, 9})
       assert [{:found, 5}, {:found, 10}] == tagged(session, :found)
       assert 1 == session.state.memory.facts[{:found, 5}]
 
       # If the second token had been re-sent it would survive this.
-      session = session |> Session.retract({:temp, 5}) |> Session.fire_rules()
+      session = withdrawn(session, {:temp, 5})
       assert [{:found, 10}] == tagged(session, :found)
     end
 
@@ -719,9 +659,9 @@ defmodule Rete.BehaviorTest do
         {:temp, "ORD", 20}
       ]
 
-      emptied = NestedNeg |> run(facts) |> drain(facts)
+      emptied = NestedNeg |> fed(facts) |> drain(facts)
 
-      assert Session.new([NestedNeg]).state.memory == emptied.state.memory
+      assert drained?(emptied)
     end
 
     defmodule GlobalNand do
@@ -816,9 +756,9 @@ defmodule Rete.BehaviorTest do
 
     test "a disjunction of negations drains after that churn" do
       facts = [{:hot, 100}, {:temp, -100}, {:hot, 120}, {:cold, 5}]
-      emptied = OrOfNegations |> run(facts) |> drain(facts)
+      emptied = OrOfNegations |> fed(facts) |> drain(facts)
 
-      assert Session.new([OrOfNegations]).state.memory == emptied.state.memory
+      assert drained?(emptied)
     end
 
     defmodule CollInNegation do
@@ -920,38 +860,15 @@ defmodule Rete.BehaviorTest do
     test "an element retracted before any token exists is not collected" do
       for query <- [:hashed, :filtered] do
         session =
-          [CollJoin]
-          |> Session.new()
-          |> Session.insert({:cold, 10})
-          |> Session.retract({:cold, 10})
+          CollJoin
+          |> fed({:cold, 10})
+          |> withdrawn({:cold, 10})
           |> Session.insert({:temp, 10})
           |> Session.fire_rules()
 
         assert [[]] == Session.query(session, {CollJoin, query}),
                "#{query} collected a retracted candidate"
       end
-    end
-
-    defmodule CollSum do
-      use Rete.Ruleset
-
-      defquery gathered(ts = [{:temp, _v, _loc}]) do
-        ts
-      end
-    end
-
-    # clara test_accumulation/test-retract-fact-never-inserted-from-accum. The
-    # retracted fact was never inserted but lands in the same binding group as
-    # one that was. Removing "the group" rather than "this element" empties it.
-    test "retracting a never inserted fact does not disturb the group it would land in" do
-      session =
-        [CollSum]
-        |> Session.new()
-        |> Session.insert({:temp, 10, "LAX"})
-        |> Session.retract({:temp, 10, "MCI"})
-        |> Session.fire_rules()
-
-      assert [[{:temp, 10, "LAX"}]] == CollSum.gathered(session)
     end
 
     defmodule CollThreshold do
@@ -970,16 +887,18 @@ defmodule Rete.BehaviorTest do
     end
 
     # clara test_accumulation/test-accumulator-with-test-join-retract-accumulated-use-new-result.
-    # Retracting and re-adding within one batch exercises the intermediate
+    # Withdrawing and re-adding within one fire exercises the intermediate
     # memory state: the group is reduced, emptied, and reduced again before
     # anything downstream ever sees it.
-    test "a member retracted and re-added before firing gives the final result" do
+    test "a member withdrawn and re-added in one fire gives the final result" do
       session =
-        [CollThreshold]
+        [CollThreshold, Feed]
         |> Session.new()
-        |> Session.insert([{:threshold, 20}, {:temp, 10, "MCI"}])
-        |> Session.retract({:temp, 10, "MCI"})
-        |> Session.insert({:temp, 10, "MCI"})
+        |> Session.insert({:threshold, 20})
+        |> Feed.put(:a, {:temp, 10, "MCI"})
+        |> Session.fire_rules()
+        |> Feed.withdraw(:a)
+        |> Feed.put(:b, {:temp, 10, "MCI"})
         |> Session.fire_rules()
 
       assert [10] == CollThreshold.cold(session)
@@ -1011,12 +930,12 @@ defmodule Rete.BehaviorTest do
     # the *downstream* rule has to see a retraction and an insertion rather than
     # accumulating both generations.
     test "changing a collection member updates direct and downstream conclusions alike" do
-      base = run(CollDownstream, [{:cw, 10}, {:cw, 20}])
+      base = fed(CollDownstream, [{:cw, 10}, {:cw, 20}])
 
       assert [10, 20] == base |> CollDownstream.colds() |> Enum.sort()
       assert [10, 20] == base |> CollDownstream.temps() |> Enum.sort()
 
-      removed = base |> Session.retract({:cw, 10}) |> Session.fire_rules()
+      removed = withdrawn(base, {:cw, 10})
       assert [20] == CollDownstream.colds(removed)
       assert [20] == CollDownstream.temps(removed)
 
@@ -1081,15 +1000,21 @@ defmodule Rete.BehaviorTest do
         Enum.sort(os)
       end
 
-      session = run(CollDup, [{:o, 1}, {:o, 1}, {:o, 2}])
+      session =
+        [CollDup, Feed]
+        |> Session.new()
+        |> Feed.put(:a, {:o, 1})
+        |> Feed.put(:b, {:o, 1})
+        |> Session.insert({:o, 2})
+        |> Session.fire_rules()
 
       assert [{:o, 1}, {:o, 1}, {:o, 2}] == gathered.(session)
       assert 2 == session.state.memory.facts[{:o, 1}]
 
-      session = session |> Session.retract({:o, 1}) |> Session.fire_rules()
+      session = withdrawn(session, :a)
       assert [{:o, 1}, {:o, 2}] == gathered.(session)
 
-      session = session |> Session.retract({:o, 1}) |> Session.fire_rules()
+      session = withdrawn(session, :b)
       assert [{:o, 2}] == gathered.(session)
     end
 
@@ -1155,15 +1080,15 @@ defmodule Rete.BehaviorTest do
     # supports concluded two colds each, so four. Removing one support must
     # remove exactly its two, even though all four are equal.
     test "equal facts concluded by one match are held and released together" do
-      session = run(TwoEqual, [{:temp, 50, "LAX"}, {:temp, 50, "MCI"}])
+      session = fed(TwoEqual, [{:temp, 50, "LAX"}, {:temp, 50, "MCI"}])
       assert 4 == session.state.memory.facts[{:cold, 50}]
 
-      session = session |> Session.retract({:temp, 50, "MCI"}) |> Session.fire_rules()
+      session = withdrawn(session, {:temp, 50, "MCI"})
       assert 2 == session.state.memory.facts[{:cold, 50}]
 
-      session = session |> Session.retract({:temp, 50, "LAX"}) |> Session.fire_rules()
-      assert [] == Session.facts(session)
-      assert Session.new([TwoEqual]).state.memory == session.state.memory
+      session = withdrawn(session, {:temp, 50, "LAX"})
+      assert [] == Feed.facts(session)
+      assert drained?(session)
     end
 
     defmodule Tiered do
@@ -1184,14 +1109,20 @@ defmodule Rete.BehaviorTest do
     # One retraction takes back exactly the half that rested on the occurrence
     # that left, and the second takes the rest.
     test "a duplicated premise supports its own derivation tier, released with it" do
-      session = run(Tiered, [{:first}, {:first}])
-      assert %{{:first} => 2, {:second} => 4, {:third} => 4} == session.state.memory.facts
+      session =
+        [Tiered, Feed]
+        |> Session.new()
+        |> Feed.put(:a, {:first})
+        |> Feed.put(:b, {:first})
+        |> Session.fire_rules()
 
-      session = session |> Session.retract({:first}) |> Session.fire_rules()
-      assert %{{:first} => 1, {:second} => 2, {:third} => 2} == session.state.memory.facts
+      assert %{{:first} => 2, {:second} => 4, {:third} => 4} == Feed.counts(session)
 
-      session = session |> Session.retract({:first}) |> Session.fire_rules()
-      assert Session.new([Tiered]).state.memory == session.state.memory
+      session = withdrawn(session, :a)
+      assert %{{:first} => 1, {:second} => 2, {:third} => 2} == Feed.counts(session)
+
+      session = withdrawn(session, :b)
+      assert drained?(session)
     end
 
     defmodule Downstream do
@@ -1213,16 +1144,15 @@ defmodule Rete.BehaviorTest do
     # to survive, with its support unchanged.
     test "removing one occurrence of a duplicated premise leaves the conclusion standing" do
       session =
-        [Downstream]
+        [Downstream, Feed]
         |> Session.new()
-        |> Session.insert({:cw, 10, 10})
-        |> Session.insert({:cw, 10, 10})
+        |> Feed.put(:a, {:cw, 10, 10})
+        |> Feed.put(:b, {:cw, 10, 10})
         |> Session.fire_rules()
-        |> Session.retract({:cw, 10, 10})
-        |> Session.fire_rules()
+        |> withdrawn(:a)
 
       assert [10] == Downstream.colds(session)
-      assert %{{:cw, 10, 10} => 1, {:cold, 10} => 1} == session.state.memory.facts
+      assert %{{:cw, 10, 10} => 1, {:cold, 10} => 1} == Feed.counts(session)
     end
 
     # Through `Rete.Memory.dump/1`, not the struct. The second occurrence really
@@ -1230,16 +1160,14 @@ defmodule Rete.BehaviorTest do
     # tombstone until it compacts. That is derived state, invisible in what the
     # session holds, and the dump is the view that means something.
     test "an equal fact arriving and leaving after the rule fired changes nothing" do
-      base = run(Downstream, [{:cw, 10, 10}])
+      base = [Downstream, Feed] |> Session.new() |> Session.insert({:cw, 10, 10})
+      base = Session.fire_rules(base)
 
-      cycled =
-        base
-        |> Session.insert({:cw, 10, 10})
-        |> Session.retract({:cw, 10, 10})
-        |> Session.fire_rules()
+      cycled = base |> Feed.put({:cw, 10, 10}) |> Session.fire_rules() |> withdrawn({:cw, 10, 10})
 
       assert [10] == Downstream.colds(cycled)
-      assert Rete.Memory.dump(base.state.memory) == Rete.Memory.dump(cycled.state.memory)
+      assert Feed.counts(base) == Feed.counts(cycled)
+      assert Feed.rule_insertions(base) == Feed.rule_insertions(cycled)
     end
 
     defmodule Many do
@@ -1260,12 +1188,12 @@ defmodule Rete.BehaviorTest do
     # retractions. This engine's flat work queue is what makes it a non-event,
     # and the point of the test is to keep it that way.
     test "one match may support a thousand facts, and give them all back" do
-      session = run(Many, [{:temp, 10}])
+      session = fed(Many, {:temp, 10})
       assert 1000 == length(Many.colds(session))
 
-      session = session |> Session.retract({:temp, 10}) |> Session.fire_rules()
+      session = withdrawn(session, {:temp, 10})
       assert [] == Many.colds(session)
-      assert Session.new([Many]).state.memory == session.state.memory
+      assert drained?(session)
     end
 
     defmodule Deep do
@@ -1280,13 +1208,13 @@ defmodule Rete.BehaviorTest do
     # supposed to make depth free. A recursive one would be at risk here, and a
     # cascade is exactly what a rules engine does for a living.
     test "a long derivation cascade settles in one fire" do
-      session = run(Deep, [{:n, 0}])
+      session = fed(Deep, {:n, 0})
 
-      assert 201 == length(Session.facts(session))
+      assert 201 == length(Feed.facts(session))
       assert 0 == Rete.Agenda.size(session.state.agenda)
 
-      session = session |> Session.retract({:n, 0}) |> Session.fire_rules()
-      assert Session.new([Deep]).state.memory == session.state.memory
+      session = withdrawn(session, {:n, 0})
+      assert drained?(session)
     end
   end
 
@@ -1366,13 +1294,12 @@ defmodule Rete.BehaviorTest do
       facts = [{:first}, {:fourth}]
 
       for mod <- @orders do
-        emptied = mod |> run(facts) |> drain(facts)
+        emptied = mod |> fed(facts) |> drain(facts)
 
-        # The baseline is a fresh session after a *fire*. Nothing propagates before
-        # a fire, so an unfired session holds no root token. A comparison against
-        # one would not pin "exactly one root token".
-        settled = [mod] |> Session.new() |> Session.fire_rules()
-        assert settled.state.memory == emptied.state.memory, inspect(mod)
+        # The baseline is fired, as `Rete.Test.Feed.residue/1` is. Nothing propagates
+        # before a fire, so an unfired session holds no root token. A comparison
+        # against one would not pin "exactly one root token".
+        assert drained?(emptied), inspect(mod)
       end
     end
 
@@ -1518,18 +1445,22 @@ defmodule Rete.BehaviorTest do
       assert 3 == session |> Session.fire_rules() |> fired() |> length()
     end
 
-    test "retracting and reinserting the premise produces a new activation" do
+    test "withdrawing and restoring the premise produces a new activation" do
       session =
-        [FireOrder]
+        [FireOrder, Feed]
         |> Session.new()
         |> Session.with_listener(Collect, [])
-        |> Session.insert({:cold, 1})
+        |> Feed.put(:a, {:cold, 1})
         |> Session.fire_rules()
-        |> Session.retract({:cold, 1})
-        |> Session.insert({:cold, 1})
+        |> Feed.withdraw(:a)
+        |> Feed.put(:b, {:cold, 1})
         |> Session.fire_rules()
 
-      assert 6 == length(fired(session))
+      assert 6 ==
+               Enum.count(
+                 Collect.by_tag(session, :activation_fired),
+                 &match?({:activation_fired, %{rule: {FireOrder, _}}, _, _}, &1)
+               )
     end
 
     defmodule SalienceOrder do
@@ -1685,21 +1616,18 @@ defmodule Rete.BehaviorTest do
 
     # clara test_rules/test-retract-diff-types-equal-fields-common-ancestor-type.
     # Two facts of different types reach one condition through a shared
-    # ancestor. They are distinct facts, so retracting one — twice, to be sure —
-    # must never touch the other. Clara needed this because the JVM compares
-    # records field-wise. Here the risk is a retraction keyed on the condition
-    # rather than on the fact.
+    # ancestor. They are distinct facts, so retracting one must never touch the
+    # other. Clara needed this because the JVM compares records field-wise. Here
+    # the risk is a retraction keyed on the condition rather than on the fact.
     test "retracting one descendant type does not retract its sibling" do
-      base = run(CommonAncestor, [{:type1}, {:type2}])
+      base = fed(CommonAncestor, [{:type1}, {:type2}])
 
       assert [{:type1}, {:type2}] == base |> CommonAncestor.markers() |> Enum.sort()
 
-      once = base |> Session.retract({:type1}) |> Session.fire_rules()
-      twice = once |> Session.retract({:type1}) |> Session.fire_rules()
+      once = withdrawn(base, {:type1})
 
       assert [{:type2}] == CommonAncestor.markers(once)
-      assert [{:type2}] == CommonAncestor.markers(twice)
-      assert once.state.memory == twice.state.memory
+      assert %{{:type2} => 1} == Feed.counts(once)
     end
   end
 
@@ -1749,6 +1677,7 @@ defmodule Rete.BehaviorTest do
     ]
 
     defp everything, do: run(Everything, @facts)
+    defp fed_everything, do: fed(Everything, @facts)
 
     # A Rete network's conclusions are a function of the facts. This is checked
     # over a ruleset combining a collection, a negation, a compound negation, a
@@ -1807,26 +1736,25 @@ defmodule Rete.BehaviorTest do
 
     # Every fact, not just an added one: an imbalance built while assembling the
     # fixture only shows when the fact that caused it is the one taken away.
-    test "removing and restoring any single fact restores the derived state" do
-      base = everything()
-      expected = base |> Session.facts() |> Enum.sort()
+    test "withdrawing and restoring any single fact restores the derived state" do
+      base = fed_everything()
+      expected = base |> Feed.facts() |> Enum.sort()
 
       for fact <- @facts do
         restored =
           base
-          |> Session.retract(fact)
-          |> Session.fire_rules()
-          |> Session.insert(fact)
+          |> withdrawn(fact)
+          |> Feed.put({:again, fact}, fact)
           |> Session.fire_rules()
 
-        assert expected == restored |> Session.facts() |> Enum.sort(),
+        assert expected == restored |> Feed.facts() |> Enum.sort(),
                "round trip changed the session for #{inspect(fact)}"
 
-        # Not the whole memory: retracting and reinserting a fact moves its
+        # Not the whole memory: withdrawing and restoring a fact moves its
         # token to the end of the arrival-ordered list under its join key, so
         # `memory` is not restored byte for byte even though every match is.
         # Everything that carries meaning is compared.
-        assert base.state.memory.facts == restored.state.memory.facts,
+        assert Feed.counts(base) == Feed.counts(restored),
                "support counts changed for #{inspect(fact)}"
 
         # Sorted: a collection is kept in reverse arrival order, so a member taken
@@ -1834,69 +1762,58 @@ defmodule Rete.BehaviorTest do
         # members have to be the same ones. Where they sit is not a contract.
         # `insertions` needs the same treatment, because it is keyed on the token
         # that carries the collection.
-        canon_base = Canon.dump(base)
-        canon_restored = Canon.dump(restored)
-
-        assert canon_base.accum == canon_restored.accum,
+        assert Canon.dump(base).accum == Canon.dump(restored).accum,
                "collection groups changed for #{inspect(fact)}"
 
-        assert canon_base.insertions == canon_restored.insertions,
+        assert Feed.rule_insertions(base) == Feed.rule_insertions(restored),
                "truth maintenance records changed for #{inspect(fact)}"
       end
     end
 
-    test "adding and removing a fact the fixture never had restores the derived state" do
-      base = everything()
-      expected = base |> Session.facts() |> Enum.sort()
+    test "putting and withdrawing a fact the fixture never had restores the derived state" do
+      base = fed_everything()
+      expected = base |> Feed.facts() |> Enum.sort()
 
       for extra <- [{:order, 3, 5}, {:customer, 3}, {:premium, 4}, {:refund, 2}, {:gold, 2}] do
-        cycled =
-          base
-          |> Session.insert(extra)
-          |> Session.fire_rules()
-          |> Session.retract(extra)
-          |> Session.fire_rules()
+        cycled = base |> Feed.put(extra) |> Session.fire_rules() |> withdrawn(extra)
 
-        assert expected == cycled |> Session.facts() |> Enum.sort(),
+        assert expected == cycled |> Feed.facts() |> Enum.sort(),
                "round trip changed the session for #{inspect(extra)}"
 
-        assert Rete.Memory.dump(base.state.memory) == Rete.Memory.dump(cycled.state.memory),
-               "memory changed for #{inspect(extra)}"
+        assert Feed.counts(base) == Feed.counts(cycled),
+               "support counts changed for #{inspect(extra)}"
+
+        assert Canon.dump(base).accum == Canon.dump(cycled).accum,
+               "collection groups changed for #{inspect(extra)}"
+
+        assert Feed.rule_insertions(base) == Feed.rule_insertions(cycled),
+               "truth maintenance records changed for #{inspect(extra)}"
       end
     end
 
-    # The invariant that catches leaks nothing else can see: a drained session must equal
-    # a fresh one, down to the map entries `facts/1` cannot show.
-    #
-    # The baseline is fired, matching "the doubly blocked chain drains at every salience
-    # arrangement" above. `Everything` keeps no root token in any node's memory, so a
-    # fresh session and a fired one are identical here today. A rule opening with a
-    # negation would keep one, and an unfired baseline would then be wrong.
-    test "retracting everything returns the memory a fresh session starts with" do
-      emptied = everything() |> drain(@facts)
+    # The invariant that catches leaks nothing else can see: a drained session must hold
+    # the feed's own facts and nothing more, down to the map entries `facts/1` cannot show.
+    test "withdrawing everything leaves only the feed's own facts" do
+      emptied = fed_everything() |> drain(@facts)
 
-      assert [] == Session.facts(emptied)
+      assert [] == Feed.facts(emptied)
       assert 0 == Rete.Agenda.size(emptied.state.agenda)
-      assert settled_baseline() == emptied.state.memory
+      assert drained?(emptied)
     end
-
-    # The memory a fired empty session holds, which is what a drained one must return to.
-    defp settled_baseline,
-      do: ([Everything] |> Session.new() |> Session.fire_rules()).state.memory
 
     # Churn, because a leak that costs one map entry per entity is invisible in
     # a single pass and unbounded over a long-lived session.
     test "repeated churn does not grow any memory" do
-      fresh = settled_baseline()
+      Enum.reduce(1..3, Session.new([Everything, Feed]), fn round, session ->
+        refs = for fact <- @facts, do: {round, fact}
 
-      Enum.reduce(1..3, Session.new([Everything]), fn round, session ->
         settled =
-          session
-          |> Session.insert(@facts)
+          refs
+          |> Enum.reduce(session, fn {_round, fact} = ref, s -> Feed.put(s, ref, fact) end)
           |> Session.fire_rules()
-          |> drain(@facts)
+          |> drain(refs)
 
-        assert fresh == settled.state.memory, "memory grew in round #{round}"
+        assert drained?(settled), "memory grew in round #{round}"
         settled
       end)
     end

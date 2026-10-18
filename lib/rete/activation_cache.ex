@@ -21,8 +21,7 @@ defmodule Rete.ActivationCache do
   that record. So there is no store to fill. A hit is concluded in the normal way, and the
   new session records it too. So `from_session(next)` holds the hits as well. A conclusion
   that lost its support is gone from that record, so it is not in the cache. The cache
-  holds what each match concluded, for every match that still holds. A fact that you
-  retract yourself stays in it while its match holds.
+  holds what each match concluded, for every match that still holds.
 
   The cache is a plain map. Save it in the way that suits you, and load it before a fire:
 

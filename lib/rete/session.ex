@@ -7,13 +7,16 @@ defmodule Rete.Session do
   same rules differ only in their working memory. `dump/2` and `load/2` move a session to
   another node.
 
-  Facts you insert stay until you retract them. Facts a *rule* concludes are logical: the
-  engine holds them only while the match behind them holds. That is why a rule's right
-  hand side only inserts. It is also why retracting a fact removes anything concluded from
-  it too, transitively.
+  Facts you insert stay for the life of the session. There is no call that retracts them.
+  Facts a *rule* concludes are logical: the engine holds them only while the match behind
+  them holds. When the match goes, the engine retracts them, and anything concluded from
+  them, transitively.
 
-  `fire_rules/2` is the only call that matches anything. `insert/2` and `retract/2` record
-  facts and queue the work. So a session you have not fired holds facts, and no matches.
+  To withdraw a conclusion, insert a fact that its rule reads under `not`. The match below
+  the `not` goes, and truth maintenance removes the conclusion. See `docs/dsl.md`.
+
+  `fire_rules/2` is the only call that matches anything. `insert/2` records facts and
+  queues the work. So a session you have not fired holds facts, and no matches.
 
   The examples here run against this ruleset:
 
@@ -93,7 +96,7 @@ defmodule Rete.Session do
   Inserts one fact or a list of them, returning a new session.
 
   Facts are a multiset, and every occurrence matches. Inserting a fact equal to one already
-  present gives the rules a second match of it, and it takes a second retraction to remove.
+  present gives the rules a second match of it.
 
   Inserting does not match anything. It records the fact and queues the work.
   `fire_rules/2` is what matches, and until you call it no rule has seen the fact.
@@ -108,29 +111,6 @@ defmodule Rete.Session do
   """
   @spec insert(t(), term() | [term()]) :: t()
   def insert(session, facts), do: update(session, &Engine.insert(&1, List.wrap(facts)))
-
-  @doc """
-  Retracts one fact or a list of them, returning a new session.
-
-  Anything concluded from them is retracted too, transitively. Retracting a fact that is
-  not present does nothing. A fact whose type a compound negation generated raises
-  `ArgumentError`, as in `insert/2`.
-
-  Like `insert/2`, this queues the work rather than doing it. The fact leaves at once, and
-  the conclusions that rested on it leave when `fire_rules/2` drains the queue.
-
-      iex> alias Rete.Session
-      iex> session =
-      ...>   Session.new([Rete.Doc.Orders])
-      ...>   |> Session.insert([{:customer, 1}, {:order, 1, 250}])
-      ...>   |> Session.fire_rules()
-      ...>   |> Session.retract({:customer, 1})
-      ...>   |> Session.fire_rules()
-      iex> Session.facts(session)
-      [{:order, 1, 250}]
-  """
-  @spec retract(t(), term() | [term()]) :: t()
-  def retract(session, facts), do: update(session, &Engine.retract(&1, List.wrap(facts)))
 
   @doc """
   Fires rules until the agenda is empty, returning a new session.
@@ -173,7 +153,7 @@ defmodule Rete.Session do
   rule. When the call raises, for any reason, the engine cancels every task that it started
   and that still runs.
 
-  **This is the only call that propagates.** `insert/2` and `retract/2` queue work. Firing
+  **This is the only call that propagates.** `insert/2` queues work. Firing
   drains that queue, matches everything waiting, runs the rules that match, and returns at
   quiescence. So a session you have not fired holds facts but no matches.
 
@@ -192,7 +172,7 @@ defmodule Rete.Session do
   @doc """
   Whether the session has no work waiting for `fire_rules/2`.
 
-  `false` means `insert/2` or `retract/2` recorded a fact that no rule has seen yet. A
+  `false` means `insert/2` recorded a fact that no rule has seen yet. A
   query on such a session answers as though the fact never arrived, so this is the check
   to make when you did not write the `insert/2` yourself.
 
@@ -278,11 +258,11 @@ defmodule Rete.Session do
   Unordered. A session is a multiset of facts, not a sequence. A fact held twice appears
   twice here, whether two inserts put it there or two matches concluded it.
 
-  The two halves answer on different clocks. `insert/2` and `retract/2` update working
-  memory at once, so an inserted fact appears here before anything matches it. A concluded
-  fact is as of the most recent fire, because concluding one is what `fire_rules/2` does.
-  So a session with a queued retract shows the conclusions that rested on the fact it took
-  out. `settled?/1` reports whether a fire is owed.
+  The two halves answer on different clocks. `insert/2` updates working memory at once, so
+  an inserted fact appears here before anything matches it. A concluded fact is as of the
+  most recent fire, because concluding one is what `fire_rules/2` does. So a session with
+  a queued insert of a negated fact still shows the conclusions that the fact will
+  withdraw. `settled?/1` reports whether a fire is owed.
   """
   @spec facts(t()) :: [term()]
   def facts(%__MODULE__{state: state}), do: Engine.facts(state)
@@ -358,10 +338,10 @@ defmodule Rete.Session do
   `:crypto.strong_rand_bytes(32)`, and keep it in your secret store.
 
   **A snapshot is signed, not encrypted.** Anyone who has the binary can read every fact in
-  it. That can include a fact that was retracted, because the session keeps it internally
+  it. That can include a conclusion that was retracted, because the session keeps it internally
   for a time. A loaded session is in exactly the state that was dumped, apart from the
   network. A dump points the rules of a session built without target images at the images.
-  Work that `fire_rules/2` has not done yet travels too, such as a pending retract.
+  Work that `fire_rules/2` has not done yet travels too, such as a pending insert.
 
   Listeners do not travel. Attach them again with `with_listener/3` after `load/2`.
 

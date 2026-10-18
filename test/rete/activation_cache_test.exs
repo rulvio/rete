@@ -13,6 +13,7 @@ defmodule Rete.ActivationCacheTest do
   alias Rete.Listener.Collect
   alias Rete.Network
   alias Rete.Session
+  alias Rete.Test.Feed
 
   defmodule Cached do
     use Rete.Ruleset
@@ -208,6 +209,13 @@ defmodule Rete.ActivationCacheTest do
     modules |> Session.new() |> Session.insert(facts) |> Session.fire_rules(opts)
   end
 
+  # Puts the facts through `Rete.Test.Feed`, so a test can withdraw them.
+  defp fed_fire(modules, facts, opts \\ []) do
+    (modules ++ [Feed]) |> Session.new() |> Feed.put(facts) |> Session.fire_rules(opts)
+  end
+
+  defp withdrawn(session, refs), do: session |> Feed.withdraw(refs) |> Session.fire_rules()
+
   defp cache(session), do: ActivationCache.from_session(session)
 
   # A cache written by hand, for a test that needs one no session would produce.
@@ -248,11 +256,11 @@ defmodule Rete.ActivationCacheTest do
       prior = fire([Cached], [{:customer, 1}])
       ran()
 
-      next = fire([Cached], [{:customer, 1}], activation_cache: cache(prior))
+      next = fed_fire([Cached], [{:customer, 1}], activation_cache: cache(prior))
       assert {:profile, 1} in Session.facts(next)
 
-      emptied = next |> Session.retract({:customer, 1}) |> Session.fire_rules()
-      assert Session.facts(emptied) == []
+      emptied = withdrawn(next, {:customer, 1})
+      assert Feed.facts(emptied) == []
     end
 
     test "makes the new session a cache for the next fire" do
@@ -334,11 +342,10 @@ defmodule Rete.ActivationCacheTest do
 
       drained =
         [Cached]
-        |> fire([{:order, 1, 5}], activation_cache: cache(prior))
-        |> Session.retract({:order, 1, 5})
-        |> Session.fire_rules()
+        |> fed_fire([{:order, 1, 5}], activation_cache: cache(prior))
+        |> withdrawn({:order, 1, 5})
 
-      assert Session.facts(drained) == []
+      assert Feed.facts(drained) == []
       assert drained.state.memory.insertions == %{}
     end
 
@@ -492,10 +499,10 @@ defmodule Rete.ActivationCacheTest do
 
     test "drops the row of a token that leaves, and keeps no row in a drained session" do
       cache = [Queried] |> fire([{:customer, 1}]) |> cache()
-      next = fire([Queried], [{:customer, 1}], activation_cache: cache)
+      next = fed_fire([Queried], [{:customer, 1}], activation_cache: cache)
       assert next.state.memory.query_rows != %{}
 
-      drained = next |> Session.retract({:customer, 1}) |> Session.fire_rules()
+      drained = withdrawn(next, {:customer, 1})
 
       assert Queried.profile(drained) == []
       assert drained.state.memory.query_rows == %{}
@@ -662,11 +669,7 @@ defmodule Rete.ActivationCacheTest do
     end
 
     test "runs a body whose conclusion lost its support before the cache was built" do
-      prior =
-        [Cached]
-        |> fire([{:customer, 1}])
-        |> Session.retract({:customer, 1})
-        |> Session.fire_rules()
+      prior = [Cached] |> fed_fire([{:customer, 1}]) |> withdrawn({:customer, 1})
 
       ran()
 
