@@ -70,6 +70,9 @@ defmodule Rete.Session do
   With `target_images: true`, raises `ArgumentError` if the image of a ruleset module did
   not compile or does not load. See `Rete.Compiler.build/2`.
 
+  `default_rule_opts: %{cache: true}` gives every rule these options. The defaults of a
+  ruleset module, and the options map of a rule, both win over it.
+
       iex> Rete.Session.new([Rete.Doc.Orders]) |> Rete.Session.facts()
       []
   """
@@ -148,12 +151,27 @@ defmodule Rete.Session do
       up to this many of their tasks together. It applies their conclusions in group
       order. Every body runs in the calling process. So a body that blocks without a task
       never overlaps another.
-    * `:timeout` — milliseconds the engine waits for one returned task, or `:infinity`, the
-      default. A task that takes longer is shut down, and the call raises.
+    * `:task_timeout` — milliseconds the engine waits for one returned task, or
+      `:infinity`, the default. The wait starts when the task reaches its turn in group
+      order. A task that is not done when the wait ends is shut down, and the call raises.
+    * `:max_duration` — milliseconds the whole call may run, or `:infinity`, the default. The
+      engine checks it before each cycle while work is pending, and it bounds each wait for
+      a task. A call that is past it at a check raises. A call that settles in its last
+      cycle returns. It cannot stop a body that blocks without returning a task.
+    * `:activation_cache` — a plain map from `Rete.ActivationCache.from_session/2`, or
+      `nil`, the default. Any other value raises, a session included. A rule or a query can
+      set `:cache` to a value other than `nil` or `false`. It then takes what the cache
+      holds for an equal activation, and its body does not run. The option applies to
+      this call only.
+    * `:activation_cache_key_fn` — an arity-1 function that gives the key of an
+      activation. It gets `%{rule: {module, name}, hash: hash, cache: cache, token: token}`.
+      When it returns `nil`, that activation runs without the cache.
+      `Rete.ActivationCache.key/1` by default. Give the same function that built the cache.
 
   Start a returned task in the body itself, because only its owner can await it. It is an
   ordinary `Task`. When the engine sees it exit, the call raises an error that names the
-  rule.
+  rule. When the call raises, for any reason, the engine cancels every task that it started
+  and that still runs.
 
   **This is the only call that propagates.** `insert/2` and `retract/2` queue work. Firing
   drains that queue, matches everything waiting, runs the rules that match, and returns at
@@ -192,7 +210,8 @@ defmodule Rete.Session do
   def settled?(%__MODULE__{state: state}), do: Engine.settled?(state)
 
   @doc """
-  Runs a query by `{module, name}`: one result per match, computed by its body.
+  Reads a query by `{module, name}`: one row per match. The body of the query ran during
+  `fire_rules/2`, and this runs no body.
 
   **Usually you would not write this.** `defquery flagged_for(...)` defines
   `flagged_for/2` in its own module, so the same call reads
@@ -217,7 +236,7 @@ defmodule Rete.Session do
   not raise, where `Rete.Inspect.why_not/2` does. Call `settled?/1` to tell the two cases
   apart.
 
-  Row order is **unspecified**. Rows come back in the order the facts arrived, so the same
+  Row order is **unspecified**. Rows come back in the order the matches fired, so the same
   facts fed in a different order answer in a different order. The *set* of rows never
   varies. Sort the result yourself if order matters to you.
 
@@ -349,8 +368,8 @@ defmodule Rete.Session do
   Returns `{:ok, binary}`, or `{:error, reason}`:
 
     * `{:not_portable, fun}` — the session holds an anonymous function, such as an
-      anonymous `:fact_type_fn`. Only a remote capture, `&Mod.fun/arity`, works on another
-      node.
+      anonymous `:fact_type_fn`, or a query row that holds one. Only a remote capture,
+      `&Mod.fun/arity`, works on another node.
     * `{:no_image, module, detail}` — the image of a ruleset module did not compile.
       `detail` is the cause that the compile gave.
     * `{:no_beam, image}` — the session runs an image that this node never compiled or

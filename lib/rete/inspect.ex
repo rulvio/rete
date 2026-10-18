@@ -118,10 +118,10 @@ defmodule Rete.Inspect do
   Each activation is one match the rule fired on. `:bindings` is what that match bound,
   `:matches` is the facts behind it, and `:asserts` is what the rule concluded from it.
 
-  `activations: []` means the rule concluded nothing. That is usually a rule that never
-  matched, and `why_not/2` then says where it stopped. A rule whose body returns `nil` or
-  `[]` reports the same, because nothing in memory records a match no conclusion rests on.
-  `Rete.Listener` sees that firing where this cannot.
+  `activations: []` means the rule fired on no match that still holds. That is usually a
+  rule that never matched, and `why_not/2` then says where it stopped. A rule whose body
+  returned `nil` or `[]` still reports the matches it fired on, with `asserts: []`. Two
+  equal matches of a rule report as one. A query reports one activation for each row.
 
   Each entry of `:matches` says where its fact came from. `:sources` names the rules that
   concluded it, so you read a chain by following that pair to its own entry in the same
@@ -188,8 +188,8 @@ defmodule Rete.Inspect do
 
   This answers "why did this not fire?". Each entry of `:chain` reports what one node on
   the chain of the rule holds. `:elements` are the facts that matched this condition alone.
-  `:tokens` are partial matches from the left. `:activations`, on terminals only, is the
-  number of matches that it concluded from.
+  `:tokens` are partial matches from the left. `:activations`, on rule terminals only, is
+  the number of matches that it fired on.
 
   ```
   %{rule: :large_order, module: MyRuleset,
@@ -243,7 +243,7 @@ defmodule Rete.Inspect do
   # A production's activations come from truth maintenance: `insertions` is
   # `node_id => token => [[fact]]`, which is "this match at this production inserted these
   # facts". One token is one match, so its batches are concatenated rather than reported
-  # apart. A query inserts nothing, so its activations are the tokens it holds.
+  # apart. A query inserts nothing, so its activations are its tokens, once for each row.
   defp activations(state, %Node.Production{} = node) do
     state.memory.insertions
     |> Map.get(node.id, %{})
@@ -254,8 +254,7 @@ defmodule Rete.Inspect do
   end
 
   defp activations(state, %Node.Query{} = node) do
-    state.memory
-    |> Memory.all_tokens(node.id)
+    for({token, rows} <- Memory.rows(state.memory, node.id), _row <- rows, do: token)
     |> Enum.map(&activation(state, &1, []))
     |> sort_activations()
   end

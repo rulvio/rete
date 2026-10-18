@@ -586,7 +586,7 @@ defmodule Rete.NetworkTest do
       error = assert_raise ArgumentError, fn -> Code.compile_string(source) end
 
       assert error.message =~ "sets [:params]"
-      assert error.message =~ "takes [:salience, :internal_salience, :generated, :meta]"
+      assert error.message =~ "takes [:salience, :internal_salience, :generated, :meta, :cache]"
     end
   end
 

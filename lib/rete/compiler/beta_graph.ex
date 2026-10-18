@@ -347,14 +347,20 @@ defmodule Rete.Compiler.BetaGraph do
   defp propagates_empty?(%IR.Coll{new_bind: new_bind}), do: (new_bind || []) == []
 
   defp terminal(%IR.Production{type: :query} = production) do
+    opts = production.opts || []
+
     %Node.Query{
       name: production.name,
       module: production.module,
       hash: production.hash,
       rhs: production.rhs,
+      args: production.args || production.hash,
       bind: production.bind || [],
       params: production.params || [],
-      head: production.head || []
+      head: production.head || [],
+      salience: Keyword.get(opts, :salience, 0),
+      internal_salience: internal_salience!(production, opts, false),
+      cache: Keyword.get(opts, :cache)
     }
   end
 
@@ -371,7 +377,8 @@ defmodule Rete.Compiler.BetaGraph do
       bind: production.bind || [],
       salience: Keyword.get(opts, :salience, 0),
       internal_salience: internal_salience!(production, opts, generated?),
-      generated?: generated?
+      generated?: generated?,
+      cache: if(generated?, do: nil, else: Keyword.get(opts, :cache))
     }
   end
 

@@ -24,36 +24,52 @@ defmodule Rete.Listener do
 
   | event | when |
   |---|---|
-  | `{:fire_started, opts}` | `fire_rules/2` begins |
-  | `{:fire_finished, fired}` | the agenda is empty; `fired` is how many activations ran |
+  | `{:fire_started}` | `fire_rules/2` begins |
+  | `{:fire_finished, fired}` | the agenda is empty. `fired` is how many cycles ran, as `:max_cycles` counts them |
   | `{:fact_inserted, fact, origin}` | one occurrence of a fact is added to working memory |
   | `{:fact_retracted, fact, origin}` | one occurrence of a fact leaves working memory |
   | `{:propagated, op, node_id, count}` | a node consumed `count` items |
   | `{:activation_added, source, token}` | a production's LHS became satisfied |
   | `{:activation_removed, source, token}` | a pending activation was cancelled |
-  | `{:activation_fired, source, token, facts}` | a rule ran and returned `facts` |
+  | `{:activation_fired, source, token, facts}` | a rule fired and concluded `facts`, or an activation cache answered for it |
 
   `source` is `%{node: node_id, rule: {module, name}}`. It is a map, so a field can be
   added later without changing the shape every listener matches on. `{:propagated, ...}`
   is the exception, and it carries the bare id, because a join has no user-facing name.
+
   `origin` is a `{module, name}` pair. `{Rete.Session, :insert}` and
   `{Rete.Session, :retract}` mean your own call. Any other pair names the rule whose match
   added or lost the fact. This is what lets a listener reconstruct provenance, without
   reading memory. See `docs/design/observability.md` §1.
+
+  An activation cache can answer for the body of a rule. See `Rete.ActivationCache`. Its
+  `:activation_fired` then has `cached: true` in its source, and the body did not run.
+  Each fact that the hit inserts has the origin `{module, name, :cached}`. A retraction of
+  that fact has the origin `{module, name}`, because it names the rule whose match lost
+  the fact. To pair the two events, compare the first two elements. The hit takes its
+  place in a cycle as a firing does. A query fires as a rule does. Its `facts` is a list
+  that holds its one row.
   """
 
   @typedoc "Anything a listener chooses to carry between events."
   @type state :: term()
 
   @typedoc "Which terminal an event came from: its node id and its `{module, name}`."
-  @type source :: %{node: term(), rule: {module(), atom()}}
+  @type source :: %{
+          required(:node) => term(),
+          required(:rule) => {module(), atom()},
+          optional(:cached) => true
+        }
 
-  @typedoc "Where a fact came from, or what took it away: your own call, or a rule."
-  @type origin :: {module(), atom()}
+  @typedoc """
+  Where a fact came from, or what took it away: your own call, or a rule. An insertion
+  that an activation cache answered for adds `:cached`. A retraction never does.
+  """
+  @type origin :: {module(), atom()} | {module(), atom(), :cached}
 
   @typedoc "An engine event. Match the ones you care about and ignore the rest."
   @type event ::
-          {:fire_started, keyword()}
+          {:fire_started}
           | {:fire_finished, non_neg_integer()}
           | {:fact_inserted, term(), origin()}
           | {:fact_retracted, term(), origin()}
@@ -105,7 +121,10 @@ defmodule Rete.Listener.Collect do
       ...> |> Session.fire_rules()
       ...> |> Collect.by_tag(:activation_fired)
       ...> |> Enum.map(fn {_tag, source, _token, facts} -> {source.rule, facts} end)
-      [{{Rete.Doc.Orders, :large_order}, [{:flagged, 1, 250}]}]
+      [
+        {{Rete.Doc.Orders, :large_order}, [{:flagged, 1, 250}]},
+        {{Rete.Doc.Orders, :flagged_for}, [{1, 250}]}
+      ]
   """
   @spec by_tag(Rete.Session.t(), atom()) :: [Rete.Listener.event()]
   def by_tag(session, tag), do: session |> events() |> Enum.filter(&(elem(&1, 0) == tag))
@@ -117,6 +136,9 @@ defmodule Rete.Listener.Trace do
 
   Attach it to watch a session work. Options are `:device`, which defaults to `:stdio`,
   and `:verbose`, which adds the noisy propagation events.
+
+  A firing that an activation cache answered reads `cached` in place of `fire`. A fact it
+  inserted reads `(cached from Rule)` in place of `(from Rule)`.
 
       Rete.Session.with_listener(session, Rete.Listener.Trace, verbose: true)
   """
@@ -139,9 +161,12 @@ defmodule Rete.Listener.Trace do
     IO.puts(device, "[rete] " <> describe(event))
   end
 
-  defp describe({:fire_started, _opts}), do: "fire"
-  defp describe({:fire_finished, fired}), do: "settled after #{fired} activations"
+  defp describe({:fire_started}), do: "fire"
+  defp describe({:fire_finished, fired}), do: "settled after #{fired} cycles"
   defp describe({:fact_inserted, fact, {Rete.Session, :insert}}), do: "  + #{inspect(fact)}"
+
+  defp describe({:fact_inserted, fact, {module, name, :cached}}),
+    do: "  + #{inspect(fact)} (cached from #{rule({module, name})})"
 
   defp describe({:fact_inserted, fact, origin}),
     do: "  + #{inspect(fact)} (from #{rule(origin)})"
@@ -156,6 +181,9 @@ defmodule Rete.Listener.Trace do
 
   defp describe({:activation_removed, source, token}),
     do: "  cancel #{rule(source)} #{inspect(token.bindings)}"
+
+  defp describe({:activation_fired, %{cached: true} = source, token, facts}),
+    do: "  cached #{rule(source)} #{inspect(token.bindings)} -> #{inspect(facts)}"
 
   defp describe({:activation_fired, source, token, facts}),
     do: "  fire   #{rule(source)} #{inspect(token.bindings)} -> #{inspect(facts)}"

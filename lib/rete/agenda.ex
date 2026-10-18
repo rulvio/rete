@@ -84,8 +84,8 @@ defmodule Rete.Agenda do
 
   Returns `{agenda, :removed}` when the activation was still pending. Returns `{agenda,
   :missing}` when it had already fired. The caller must tell the two apart. An activation
-  that never fired inserted nothing, so there is nothing to retract. One that fired has
-  facts that truth maintenance must take back.
+  that never fired inserted nothing, so there is nothing to retract. One that fired has a
+  record that truth maintenance must take back, which may hold no facts.
 
       iex> alias Rete.{Activation, Agenda}
       iex> pending = %Activation{node_id: :n1}

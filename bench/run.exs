@@ -383,9 +383,10 @@ defmodule Bench do
   def network(module), do: Rete.Compiler.build([module])
   def session(network), do: Rete.Session.from_network(network)
 
-  # How many buckets the token store of a query holds. This is the cardinality of its head
-  # over the facts it was given, which is what a parameter costs. `Rete.Network` keys
-  # `:queries` on `{module, name}` and gives the node id.
+  # How many buckets the store of a query holds. The store keeps `{token, row}` for each
+  # match, under the head. So this is the cardinality of its head over the facts it was
+  # given, which is what a parameter costs. `Rete.Network` keys `:queries` on
+  # `{module, name}` and gives the node id.
   def query_buckets(session, ref) do
     state = session.state
     id = Map.fetch!(state.network.queries, ref)
@@ -685,9 +686,8 @@ defmodule Bench.ThreeKeyQuery do
   defquery rows(a, b, c)({:rec, a, b, c}), do: {a, b, c}
 end
 
-# A body that does enough work to be worth skipping. The point of a head is that the body
-# runs for the rows it returns and not for the rows it passes over, and a body returning a
-# tuple of what it already has is too cheap to show that.
+# A body that builds a larger row. The body runs once for each match during the fire, so a
+# read does not run it. A larger row shows what a filter on the result costs to scan.
 defmodule Bench.FatQuery do
   @moduledoc false
   use Rete.Ruleset
@@ -1257,7 +1257,7 @@ IO.puts("")
 # reason above: each variant loads 4,000 matches, and the memory column reads the live
 # structure rather than timing it.
 #
-# The four rows are the four head shapes. A head keys the token store, so the store holds
+# The four rows are the four head shapes. A head keys the store of the query, so it holds
 # one bucket per distinct value of what the head names. That count is the cost, and the
 # ruleset cannot decide it — the facts do. So `Bench.WideQuery` appears twice, once fed a
 # field with 4 values and once fed a unique one.
@@ -1314,7 +1314,7 @@ IO.puts("")
      "what a head costs: 4,000 matches inserted, then all of them retracted",
      ["insert", "retract", "memory", "buckets"],
      rows,
-     note: "the cost of a head is the cardinality of what it names, not the head itself"
+     note: "insert includes the fire, which runs each body once. A head costs its cardinality"
    )
 
    :ok
@@ -1352,7 +1352,7 @@ IO.puts("")
 
        parameter =
          Bench.time(fn ->
-           for _ <- 1..200, do: Bench.WideQuery.rows(keyed_session, a: 0)
+           for _ <- 1..200, do: Bench.WideQuery.rows(keyed_session, 0)
          end)
 
        {to_string(cardinality),
@@ -1374,11 +1374,8 @@ IO.puts("")
    :ok
  end).()
 
-# The same comparison with a body that does work. The sweep above uses a body that returns
-# what it already holds, which understates the difference: a filter on the result runs the
-# body for every match and then discards most of the rows, and a head never runs it for a
-# row it does not return. So the gap widens with the cost of the body, and this is the
-# shape that shows it.
+# The same comparison with a larger row. A read runs no body, so both sides read kept
+# rows. A filter on the result scans every row, and a head reads one bucket.
 (fn ->
    n = 4_000
    facts = for i <- 1..n, do: {:rec, i, i, i}
@@ -1406,7 +1403,7 @@ IO.puts("")
        :keyed ->
          for _ <- 1..50, do: Bench.FatKeyedQuery.rows(keyed, 1)
      end,
-     note: "50 reads. The filter runs the body 4,000 times per read, and the head runs it once"
+     note: "50 reads. The filter scans 4,000 kept rows per read, and the head reads one bucket"
    )
 
    :ok
@@ -1558,6 +1555,79 @@ Bench.scenario(
   fn n -> n |> Bench.Snapshot.get() |> elem(2) |> Rete.Session.dump!("bench") end,
   isolate: true,
   note: "the dump carries the tombstones that the retractions left"
+)
+
+defmodule Bench.Silent do
+  @moduledoc false
+  use Rete.Ruleset
+
+  # A rule that concludes nothing. Every firing still leaves a record, so truth maintenance
+  # and the activation cache can see it.
+  defrule check({:cust, id}, {:order, id, amt}) do
+    _ = amt
+    nil
+  end
+end
+
+defmodule Bench.Cached do
+  @moduledoc false
+  use Rete.Ruleset, default_rule_opts: %{cache: true}
+
+  defrule total({:cust, id}, {:order, id, amt}), do: {:total, id, amt}
+
+  defquery totals({:total, id, amt}), do: {id, amt}
+
+  # n customers, each with one order. A fire of these gives n activations of the rule, and
+  # then n rows of the query.
+  def facts(n), do: for(i <- 1..n, fact <- [{:cust, i}, {:order, i, i}], do: fact)
+
+  # The fired session and the cache built from it, read without copying, for the reason
+  # `Bench.Explain.put/1` gives.
+  def put(n) do
+    session = [__MODULE__] |> Rete.Session.new() |> Rete.Session.insert(facts(n))
+    fired = Rete.Session.fire_rules(session)
+    cache = Rete.ActivationCache.from_session(fired)
+
+    :persistent_term.put({__MODULE__, n}, {session, fired, cache})
+  end
+
+  def get(n), do: :persistent_term.get({__MODULE__, n})
+end
+
+silent = Bench.network(Bench.Silent)
+cache_sizes = [500, 1_000, 2_000, 4_000]
+
+for n <- cache_sizes, do: Bench.Cached.put(n)
+
+IO.puts("\n\e[1m\e[4mactivation cache\e[0m")
+
+Bench.scenario(
+  "fire n matches of a rule that concludes nothing",
+  [1_000, 2_000, 4_000],
+  fn n ->
+    silent
+    |> Bench.session()
+    |> Rete.Session.insert(Bench.Cached.facts(n))
+    |> Rete.Session.fire_rules()
+  end,
+  note: "each firing records an empty batch against its match"
+)
+
+Bench.scenario(
+  "fire n matches, each one a cache hit",
+  cache_sizes,
+  fn n ->
+    {session, _fired, cache} = Bench.Cached.get(n)
+    Rete.Session.fire_rules(session, activation_cache: cache)
+  end,
+  note: "per hit of the rule or the query: the key, two lookups, and a fact check for the rule"
+)
+
+Bench.scenario(
+  "build a cache from a session of n matches",
+  cache_sizes,
+  fn n -> n |> Bench.Cached.get() |> elem(1) |> Rete.ActivationCache.from_session() end,
+  note: "one pass over the records of the rule and of the query, and no body runs"
 )
 
 # Last, because it sets the exit status of the run.

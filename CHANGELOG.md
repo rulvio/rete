@@ -4,6 +4,77 @@ All notable changes to `rete` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.3.0
+
+### Added
+
+* An activation cache. A rule or a query opts in when its `:cache` option is a value other
+  than `nil` or `false`, such as `%{cache: true}` or `%{cache: 2}`.
+  `Rete.ActivationCache.from_session/2` builds a cache from a session that fired.
+  `Rete.Session.fire_rules(session, activation_cache: cache)` then takes the conclusion of
+  an equal activation from the cache, and the body does not run. The cache is a plain map,
+  so you can save it with `:erlang.term_to_binary/1` and load it without the session. Any
+  other value raises, a session included. Load a cache only from storage you trust,
+  because it inserts facts that no rule checks. A hit is recorded like a firing, so a cache
+  from the new session holds the hits too. Two activations are equal when their rule and
+  their key are equal. The rule is its module, its name, the hash of its source, and its
+  `:cache` value. A new `:cache` value is a new version, so every entry made under the old
+  value misses. The key is the bindings. `:key_fn` on `from_session/2` and
+  `:activation_cache_key_fn` on `fire_rules/2` replace the key, and both must be the same
+  function. When the function returns `nil`, that activation is left out of the cache, or
+  runs without it. A key function that raises is reported as a body that raises. See
+  `Rete.ActivationCache`, which is a new public module.
+* A cached query takes its row from the cache, as a rule takes its facts, and its body does
+  not run. The session keeps no reference to the cache after the fire.
+* A hit emits `:activation_fired` with `cached: true` in its source. Each fact that a hit
+  inserts has the origin `{module, name, :cached}`. Its retraction has the plain pair.
+  `Rete.Listener.Trace` writes `cached` for the hit and for each fact it inserts. An error
+  about a cached fact names the cache and not the body.
+* `default_rule_opts` gives options to many rules and queries at once. `use Rete.Ruleset,
+  default_rule_opts: ...` gives them to one module, and evaluates them one time, where
+  `use` is. The `:default_rule_opts` build option gives them to every production of a
+  build. The build default is the weakest, and the options map of a production wins over
+  both. The defaults take `:salience`, `:cache` and `:meta`, each one time, with atom keys.
+* Production and query nodes have a new `cache` field. Query nodes also have `args`,
+  `salience` and `internal_salience`. The state has a field for the cache, and the memory
+  has `query_rows`. The snapshot format stays 1. Snapshots of different releases are not
+  guaranteed to be compatible.
+* `:max_duration` on `fire_rules/2` limits the whole call, in milliseconds. The engine
+  checks it before each cycle while work is pending, and it waits for a task no longer
+  than the time left. A call that is past it at a check raises.
+
+### Changed
+
+* A query now fires as a rule does. Its body runs during `fire_rules/2`, once for each
+  match, and the session keeps the result as the row of that match. A read returns the
+  kept rows and runs no body. Before, each read ran the body once for each row that it
+  returned. At `concurrency: 1`, a match that a rule takes away before its turn never runs
+  the body. A row goes when its match goes, as the facts of a rule do.
+* A query takes `:salience`, from its options map or from `default_rule_opts`. Before, a
+  query ignored it.
+* A query emits `:activation_added`, `:activation_removed` and `:activation_fired`, as a
+  rule does. The `facts` of its `:activation_fired` is a list that holds its row.
+* A query body that returns a task is awaited, as a rule body is. The reply of the task is
+  the row. A query activation counts in `:max_cycles` and takes part in `:concurrency`.
+* `:timeout` on `fire_rules/2` is now `:task_timeout`, because it limits the wait for one
+  task. The old name raises an error, and the error names the new one.
+* When `fire_rules/2` raises, for any reason, the engine now cancels every task that it
+  started and that still runs. Before, it shut down only the tasks behind an error in the
+  window. A task inside a list of facts, a task that a task returned, and a task started
+  inside a task that the fire started kept running. See `docs/design/engine.md` §11.
+* A firing that concludes nothing is now recorded. `Rete.Inspect.explain/1,2` reports it
+  as an activation with `asserts: []`, so it is no longer the same as a rule that never
+  matched. The `:activations` count of `why_not/1,2` includes it. Clara records only the
+  matches with an insertion, so rete now differs from Clara here.
+* The docs of `{:fire_finished, fired}` now say that `fired` counts cycles, as
+  `:max_cycles` does. `Rete.Listener.Trace` writes `settled after N cycles`.
+* A body that returns an improper list now raises an `ArgumentError` that names the rule.
+  Before, it raised a `FunctionClauseError` from `Enum`.
+* The `:fire_started` event is now `{:fire_started}`. It no longer carries the options of
+  `fire_rules/2`.
+* A module that uses `Rete.Ruleset` a second time now raises an error when it compiles.
+  The second `use` reset the rules that the first one collected.
+
 ## 1.2.0
 
 ### Changed

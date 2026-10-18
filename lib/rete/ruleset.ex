@@ -28,6 +28,11 @@ defmodule Rete.Ruleset do
   `use` whose `@before_compile` hook defines a helper, or the image cannot see it.
   `config :rete, compile_timeout: ms` changes the two-minute limit on an image compile.
 
+  `use Rete.Ruleset, default_rule_opts: %{cache: true}` gives every rule of the module
+  these options. A rule's own options map wins over them. A query gets them too. The
+  defaults take `:salience`, `:cache` and `:meta`. See "Default rule options" in
+  `docs/dsl.md`.
+
   Every `defrule` and `defquery` expands by running the front end pipeline:
 
       Rete.DSL.Parser      parse the quoted declaration into Rete.IR
@@ -48,9 +53,30 @@ defmodule Rete.Ruleset do
   alias Rete.IR
 
   @doc false
-  defmacro __using__(_opts) do
+  defmacro __using__(opts) do
+    module = __CALLER__.module
+
+    # A second `use` would reset every attribute below, and the rules above it would be
+    # lost from `@rule_data` without a word. A wrapper macro that also uses this module is
+    # the likely cause, so the error says to keep one `use`.
+    if Module.has_attribute?(module, :rete_default_rule_opts) do
+      raise ArgumentError,
+            "#{inspect(module)} uses Rete.Ruleset more than once. A second `use` would " <>
+              "reset the rules and the defaults that the first one collected. Keep one " <>
+              "`use Rete.Ruleset`, and give it `default_rule_opts:` if you need defaults."
+    end
+
+    defaults = module_defaults(opts)
+
+    # The keys are put at expansion. A module body expands in full before any of it runs,
+    # so a `defrule` below could not read an attribute that the quote sets. The
+    # values are set in the quote, so they are evaluated one time, here, where `use` is.
+    Module.put_attribute(module, :rete_default_rule_opts, Keyword.keys(defaults))
+
     quote do
       import Rete.Ruleset
+
+      Module.put_attribute(__MODULE__, :rete_default_rule_opts_values, unquote(defaults))
 
       @rule_data []
       @taxo_data []
@@ -152,11 +178,50 @@ defmodule Rete.Ruleset do
     Map.new(bind, fn var -> {var, Map.get(parsed, var) || {var, [], nil}} end)
   end
 
+  # The values stay AST, as the values of a rule's own options map do. `Rete.IR.escape/1`
+  # evaluates them in the module scope. Only the keys must be literal, so that a key can be
+  # checked here.
+  defp module_defaults(opts) do
+    case Keyword.get(opts, :default_rule_opts, []) do
+      {:%{}, _meta, [{:|, _, _}]} = update ->
+        raise ArgumentError,
+              ":default_rule_opts must be a literal map or keyword list, got: " <>
+                Macro.to_string(update)
+
+      {:%{}, _meta, pairs} = written when is_list(pairs) ->
+        Parser.check_default_rule_opts!(":default_rule_opts", pairs, Macro.to_string(written))
+
+      pairs when is_list(pairs) ->
+        Parser.check_default_rule_opts!(":default_rule_opts", pairs, Macro.to_string(pairs))
+
+      other ->
+        raise ArgumentError,
+              ":default_rule_opts must be a literal map or keyword list, got: " <>
+                Macro.to_string(other)
+    end
+  end
+
+  # The production's own options come last, so they win. Each default reads the value that
+  # `use` evaluated, so a later change to an attribute it names does not reach it.
+  defp with_module_defaults(%IR.Production{opts: opts} = production, env) do
+    case Module.get_attribute(env.module, :rete_default_rule_opts) do
+      keys when keys in [nil, []] ->
+        production
+
+      keys ->
+        defaults =
+          for key <- keys,
+              do: {key, quote(do: Keyword.fetch!(@rete_default_rule_opts_values, unquote(key)))}
+
+        %IR.Production{production | opts: Keyword.merge(defaults, opts)}
+    end
+  end
+
   # The name check is spliced in ahead of the codegen. So the first thing to fail on a
   # repeated name is the check that can explain it. Two queries of one name would
   # otherwise collide as two definitions of the same function.
   defp defproduction(env, decl, body, type) do
-    production = build(env, decl, body, type)
+    production = env |> build(decl, body, type) |> with_module_defaults(env)
 
     quote do
       unquote(name_check(env, production.name, type))
@@ -266,8 +331,10 @@ defmodule Rete.Ruleset do
   @doc """
   Defines a query.
 
-  A query has the same left hand side as a rule, but it never fires. It holds the matches
-  that reached it. Its **body is what the caller gets**, one result per match.
+  A query has the same left hand side as a rule, and it fires as a rule does. Its body runs
+  during `fire_rules/2`, once for each match, and the session keeps the result as the row
+  of that match. Its **body is what the caller gets**, one result per match. A read runs no
+  body.
 
   **The query is a function.** `defquery find_user(...)` also defines `find_user` in the
   same module, so you run it by calling it. Its arity is one more than the number of

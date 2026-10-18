@@ -40,7 +40,7 @@ defmodule Rete.Test.Canon do
     %{
       elements: sort_leaves(dumped.elements),
       tokens:
-        sort_leaves(map_leaves(dumped.tokens, &Enum.map(&1, fn t -> token(t, collections) end))),
+        sort_leaves(map_leaves(dumped.tokens, &Enum.map(&1, fn t -> stored(t, collections) end))),
       accum: Map.new(dumped.accum, fn {id, by_key} -> {id, sort_leaves(by_key)} end),
       insertions:
         Map.new(dumped.insertions, fn {id, by_token} ->
@@ -62,6 +62,10 @@ defmodule Rete.Test.Canon do
     |> Enum.filter(&collection?/1)
     |> Map.new(&{&1.id, &1.coll_binding})
   end
+
+  # A query keeps `{token, row}` in its bucket. See `Rete.Memory.add_row/5`.
+  defp stored({%Token{} = token, row}, collections), do: {token(token, collections), row}
+  defp stored(%Token{} = token, collections), do: token(token, collections)
 
   @doc """
   One token, with the collections it carries sorted and nothing else touched.

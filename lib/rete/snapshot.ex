@@ -10,11 +10,12 @@ defmodule Rete.Snapshot do
   alias Rete.Image
   alias Rete.Network
 
-  # Increase this when an engine struct changes. The struct-shape test in `snapshot_test.exs`
-  # fails until it does. Increase it also when the contract of `Negation.marker/2`,
-  # `marker_alpha/1` or `Taxonomy.default_fact_type/1` changes. No test catches that. The
-  # envelope and the MAC input never change, so an older release can still report
-  # `{:format, n}`.
+  # Snapshots of different releases of rete are not guaranteed to be compatible, so a change
+  # to an engine struct does not need a new format. Increase this only to make `load/2`
+  # refuse the snapshots of earlier releases. Do that when the contract of
+  # `Negation.marker/2`, `marker_alpha/1` or `Taxonomy.default_fact_type/1` changes, because
+  # nothing else would catch it. The envelope and the MAC input never change, so an older
+  # release can still report `{:format, n}`.
   @format 1
 
   # The first two bytes of a compressed term in the external term format.
@@ -82,7 +83,7 @@ defmodule Rete.Snapshot do
   def message({:not_portable, fun}) do
     "It holds #{inspect(fun)}. That is an anonymous function, and it runs only on the " <>
       "build that made it. Use a remote capture such as `&MyApp.fact_type/1`. Look in " <>
-      ":fact_type_fn, and in your facts."
+      ":fact_type_fn, in your facts, and in the rows of your queries."
   end
 
   def message({:no_image, _module, _detail} = reason), do: Image.message(reason)

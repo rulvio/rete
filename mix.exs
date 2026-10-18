@@ -1,7 +1,7 @@
 defmodule Rete.MixProject do
   use Mix.Project
 
-  @version "1.2.0"
+  @version "1.3.0"
   @source_url "https://github.com/rulvio/rete"
 
   def project do
@@ -113,6 +113,7 @@ defmodule Rete.MixProject do
           Rete.Ruleset,
           Rete.Session,
           Rete.Inspect,
+          Rete.ActivationCache,
           Rete.Listener,
           Rete.Listener.Collect,
           Rete.Listener.Trace

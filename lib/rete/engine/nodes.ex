@@ -335,7 +335,40 @@ defmodule Rete.Engine.Nodes do
 
   # --- terminals -------------------------------------------------------------------------
 
-  defp dispatch(%Node.Production{} = node, :left, tokens, %State{} = state) do
+  defp dispatch(%Node.Production{} = node, :left, tokens, %State{} = state),
+    do: activate(state, node, tokens)
+
+  # Either the match is still pending, so it never fires. Or it fired, and truth
+  # maintenance takes back what it inserted. `Agenda.remove/2` reports which case this is.
+  defp dispatch(%Node.Production{} = node, :left_retract, tokens, %State{} = state) do
+    deactivate(state, node, tokens, fn %State{} = state, token ->
+      {memory, facts} = Memory.take_insertion(state.memory, node.id, token)
+      {%State{state | memory: memory}, [{:retract_facts, node.id, facts}]}
+    end)
+  end
+
+  # A query fires as a rule does. `Rete.Engine` keeps the row of each firing, keyed on the
+  # parameters of the query, and a read returns those rows. See `Memory.add_row/5`.
+  defp dispatch(%Node.Query{} = node, :left, tokens, %State{} = state),
+    do: activate(state, node, tokens)
+
+  # A row inserted no facts, so a match that fired only takes its row back.
+  defp dispatch(%Node.Query{} = node, :left_retract, tokens, %State{} = state) do
+    deactivate(state, node, tokens, fn %State{} = state, token ->
+      key = Token.join_key(token, node.params)
+      {%State{state | memory: Memory.take_row(state.memory, node.id, key, token)}, []}
+    end)
+  end
+
+  defp dispatch(%Node.Query{}, kind, _items, state) when kind in [:right, :right_retract] do
+    {state, []}
+  end
+
+  defp dispatch(node, kind, _items, _state) do
+    raise ArgumentError, "no #{kind} behavior for #{inspect(node)}"
+  end
+
+  defp activate(%State{} = state, node, tokens) do
     agenda = Enum.reduce(tokens, state.agenda, &Agenda.add(&2, activation(state, node, &1)))
     source = Node.source(node)
     events = for token <- tokens, do: {:event, {:activation_added, source, token}}
@@ -343,9 +376,8 @@ defmodule Rete.Engine.Nodes do
     {%State{state | agenda: agenda}, events}
   end
 
-  # Either the match is still pending, so it never fires. Or it fired, and truth
-  # maintenance takes back what it inserted. `Agenda.remove/2` reports which case this is.
-  defp dispatch(%Node.Production{} = node, :left_retract, tokens, %State{} = state) do
+  # `fired` gives the state and the ops for a match that already fired.
+  defp deactivate(%State{} = state, node, tokens, fired) do
     # Collected newest first and reversed once. Appending per token would be quadratic in
     # the size of one batch, and a batch is a whole call's worth of retractions.
     {state, reversed} =
@@ -358,57 +390,12 @@ defmodule Rete.Engine.Nodes do
             {state, [{:event, {:activation_removed, Node.source(node), token}} | ops]}
 
           :missing ->
-            {memory, facts} = Memory.take_insertion(state.memory, node.id, token)
-            {%State{state | memory: memory}, [{:retract_facts, node.id, facts} | ops]}
+            {state, more} = fired.(state, token)
+            {state, Enum.reverse(more, ops)}
         end
       end)
 
     {state, Enum.reverse(reversed)}
-  end
-
-  # A query stores its matches keyed on its parameters. This is the only keying there is.
-  # `Rete.Engine.query/3` uses the parameters of a call as that key, so a read is a map
-  # lookup and not a scan. See `Rete.Ruleset.defquery/2`.
-  #
-  # A query with no parameters keys every token on `%{}`, which is one bucket. It thus
-  # still returns its rows in arrival order.
-  defp dispatch(%Node.Query{} = node, :left, tokens, %State{} = state) do
-    memory = by_params(node, tokens, state.memory, &Memory.add_tokens/4)
-
-    {%State{state | memory: memory}, []}
-  end
-
-  defp dispatch(%Node.Query{} = node, :left_retract, tokens, %State{} = state) do
-    memory = by_params(node, tokens, state.memory, &drop_tokens/4)
-
-    {%State{state | memory: memory}, []}
-  end
-
-  defp dispatch(%Node.Query{}, kind, _items, state) when kind in [:right, :right_retract] do
-    {state, []}
-  end
-
-  defp dispatch(node, kind, _items, _state) do
-    raise ArgumentError, "no #{kind} behavior for #{inspect(node)}"
-  end
-
-  # This applies `fun` to the store of the query, one call for each bucket. The grouping
-  # runs first, so there is one call for each distinct parameter value, and not one call
-  # for each token.
-  #
-  # For a query with no parameters, `Token.join_key(token, [])` returns `%{}` for every
-  # token. All of them thus group into the single bucket, and this costs one call.
-  defp by_params(%Node.Query{} = node, tokens, memory, fun) do
-    tokens
-    |> Enum.group_by(&Token.join_key(&1, node.params))
-    |> Enum.reduce(memory, fn {key, group}, memory -> fun.(memory, node.id, key, group) end)
-  end
-
-  # `remove_tokens/4` returns what it found. Nothing below a query reads that, so this
-  # discards it.
-  defp drop_tokens(memory, node_id, key, tokens) do
-    {memory, _removed} = Memory.remove_tokens(memory, node_id, key, tokens)
-    memory
   end
 
   # --- building matches ----------------------------------------------------------------

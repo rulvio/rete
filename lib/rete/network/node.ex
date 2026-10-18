@@ -205,6 +205,11 @@ defmodule Rete.Network.Node do
     machinery the user did not write. An extracted negation helper has to run before the
     rule that negates its marker. Otherwise, that rule fires once against an absence that
     had merely not been computed yet.
+
+    `:cache` is the rule's `:cache` option. Any value other than `nil` or `false` lets a
+    cache, given to `fire_rules/2` as `:activation_cache`, take the place of the body.
+    The value is part of the identity of the rule in the cache, so a new value is a new
+    version. A generated helper never sets it. See `Rete.ActivationCache`.
     """
     @type t :: %__MODULE__{
             id: non_neg_integer() | nil,
@@ -216,7 +221,8 @@ defmodule Rete.Network.Node do
             bind: [atom()],
             salience: integer(),
             internal_salience: integer(),
-            generated?: boolean()
+            generated?: boolean(),
+            cache: term()
           }
     defstruct [
       :id,
@@ -226,6 +232,7 @@ defmodule Rete.Network.Node do
       :rhs,
       :args,
       :bind,
+      :cache,
       salience: 0,
       internal_salience: 0,
       generated?: false
@@ -234,8 +241,10 @@ defmodule Rete.Network.Node do
 
   defmodule Query do
     @moduledoc """
-    A terminal node for a query. Holds the tokens that reached it, to be read back by
-    name.
+    A terminal node for a query. It fires as `Rete.Network.Node.Production` does, with the
+    same `:args`, `:salience` and `:internal_salience`. The engine keeps the value that
+    `:rhs` returns as the row of the token, and does not insert it. The node also keeps its
+    tokens, to be read back by name.
 
     `:params` is what the head of the query binds. These are the keys of its tokens, and
     they are the only way to read it. `Rete.Engine.query/3` takes exactly these, so a read
@@ -249,6 +258,8 @@ defmodule Rete.Network.Node do
     with no head. Nothing matches on it. It is here for one message: a bare name given to
     `Rete.Engine.query/3` names the call to write in its place. Without this the message
     would print a placeholder, because nothing else here knows the head.
+
+    `:cache` is the query's `:cache` option, as on `Rete.Network.Node.Production`.
     """
     @type t :: %__MODULE__{
             id: non_neg_integer() | nil,
@@ -256,11 +267,28 @@ defmodule Rete.Network.Node do
             module: module(),
             hash: integer(),
             rhs: fun(),
+            args: term(),
             bind: [atom()],
             params: [atom()],
-            head: [String.t()]
+            head: [String.t()],
+            salience: integer(),
+            internal_salience: integer(),
+            cache: term()
           }
-    defstruct [:id, :name, :module, :hash, :rhs, bind: [], params: [], head: []]
+    defstruct [
+      :id,
+      :name,
+      :module,
+      :hash,
+      :rhs,
+      :args,
+      :cache,
+      bind: [],
+      params: [],
+      head: [],
+      salience: 0,
+      internal_salience: 0
+    ]
   end
 
   @type t ::

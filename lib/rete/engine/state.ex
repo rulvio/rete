@@ -8,6 +8,9 @@ defmodule Rete.Engine.State do
 
   `:listeners` is `[{module, state}]` rather than a map, so listeners see events in
   attachment order and one module can be attached twice with different state.
+
+  `:activation_cache` is `{map, key_fn}` while one `Rete.Engine.fire_rules/2` call runs,
+  and `nil` at every other time. So no session keeps a cache, and no dump carries one.
   """
 
   alias Rete.Agenda
@@ -36,23 +39,35 @@ defmodule Rete.Engine.State do
           queue: :queue.queue(op()),
           order: %{term() => non_neg_integer()},
           fired: non_neg_integer(),
-          listeners: [{module(), term()}]
+          listeners: [{module(), term()}],
+          activation_cache: {map(), (map() -> term())} | nil
         }
 
-  defstruct [:network, :memory, :agenda, :queue, order: %{}, fired: 0, listeners: []]
+  defstruct [
+    :network,
+    :memory,
+    :agenda,
+    :queue,
+    :activation_cache,
+    order: %{},
+    fired: 0,
+    listeners: []
+  ]
 
   @doc """
   A state over a network, with empty memory and nothing pending.
 
-  `:order` is the compile position of each production, so two activations of equal
-  salience fire in the order the rules were written.
+  `:order` is the compile position of each rule and query, so two activations of equal
+  salience fire in the order they were written.
   """
   @spec new(Network.t()) :: t()
   def new(%Network{} = network) do
     order =
       network
       |> Network.beta_nodes()
-      |> Enum.filter(&match?(%Network.Node.Production{}, &1))
+      |> Enum.filter(
+        &(is_struct(&1, Network.Node.Production) or is_struct(&1, Network.Node.Query))
+      )
       |> Enum.sort_by(& &1.id)
       |> Enum.with_index()
       |> Map.new(fn {node, index} -> {node.id, index} end)

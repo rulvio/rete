@@ -884,7 +884,7 @@ defmodule Rete.QueryParamsTest do
         end
 
       assert error.message =~ "sets [:saliance]"
-      assert error.message =~ "takes [:salience, :internal_salience, :generated, :meta]"
+      assert error.message =~ "takes [:salience, :internal_salience, :generated, :meta, :cache]"
       refute error.message =~ "defquery"
     end
 

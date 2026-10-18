@@ -21,7 +21,16 @@ defmodule Rete.SnapshotTest do
     Rete.Bucket => [:counts, :dead, :dead_total, :indexed?, :live, :queue],
     Rete.Compiler.BetaGraph => [:backward, :forward, :next_id, :nodes, :shared],
     Rete.Element => [:bindings, :fact],
-    Rete.Engine.State => [:agenda, :fired, :listeners, :memory, :network, :order, :queue],
+    Rete.Engine.State => [
+      :activation_cache,
+      :agenda,
+      :fired,
+      :listeners,
+      :memory,
+      :network,
+      :order,
+      :queue
+    ],
     Rete.IR.Coll => [
       :__ast__,
       :alpha,
@@ -68,6 +77,7 @@ defmodule Rete.SnapshotTest do
       :facts,
       :inserters,
       :insertions,
+      :query_rows,
       :root_seeded?,
       :tokens
     ],
@@ -117,6 +127,7 @@ defmodule Rete.SnapshotTest do
     Rete.Network.Node.Production => [
       :args,
       :bind,
+      :cache,
       :generated?,
       :hash,
       :id,
@@ -126,7 +137,20 @@ defmodule Rete.SnapshotTest do
       :rhs,
       :salience
     ],
-    Rete.Network.Node.Query => [:bind, :hash, :head, :id, :module, :name, :params, :rhs],
+    Rete.Network.Node.Query => [
+      :args,
+      :bind,
+      :cache,
+      :hash,
+      :head,
+      :id,
+      :internal_salience,
+      :module,
+      :name,
+      :params,
+      :rhs,
+      :salience
+    ],
     Rete.Network.Node.RootJoin => [:alpha_code, :fact_binding, :id, :new_bind, :type],
     Rete.Network.Node.Test => [:code, :fun, :id],
     Rete.Taxonomy => [:alphas, :fact_type_fn, :index, :taxo],
@@ -1162,7 +1186,8 @@ defmodule Rete.SnapshotTest do
     end
 
     # A snapshot holds these structs as they are. A body from another shape still decodes,
-    # and it fails later inside the engine. Only a new `@format` makes `load/2` refuse it.
+    # and it fails later inside the engine. Snapshots of different releases are not
+    # guaranteed to be compatible, so a change here does not need a new `@format`.
     test "the structs a snapshot holds have the shape of this format" do
       {:ok, modules} = :application.get_key(:rete, :modules)
 
@@ -1180,8 +1205,8 @@ defmodule Rete.SnapshotTest do
         [Rete.Doc.Orders] |> Session.new() |> Session.dump!(@key) |> :erlang.binary_to_term()
 
       assert {format, shapes} == {1, @shapes}, """
-      A struct that a snapshot holds changed shape. Increase @format in Rete.Snapshot, \
-      then update @shapes and the format in this test.\
+      A struct that a snapshot holds changed shape. Update @shapes. Increase @format in \
+      Rete.Snapshot only to refuse the snapshots of earlier releases.\
       """
     end
   end

@@ -1040,14 +1040,14 @@ defmodule Rete.EngineTest do
 
       # Two ops, because one op is returned as it stands and never reaches the merge.
       queue =
-        :queue.from_list([{:event, {:fire_started, []}} | :queue.to_list(session.state.queue)])
+        :queue.from_list([{:event, {:fire_started}} | :queue.to_list(session.state.queue)])
 
       error =
         assert_raise RuntimeError, fn ->
           Rete.Engine.fire_rules(%{session.state | queue: queue})
         end
 
-      assert error.message =~ "{:event, {:fire_started, []}} cannot be merged"
+      assert error.message =~ "{:event, {:fire_started}} cannot be merged"
       assert error.message =~ "Rete.Engine.State.op/0"
     end
   end
@@ -1937,6 +1937,9 @@ defmodule Rete.EngineTest do
         |> Session.insert(facts)
         |> Session.fire_rules()
         |> Collect.by_tag(:activation_fired)
+        |> Enum.filter(fn {_tag, source, _token, _concluded} ->
+          source.rule == {Sums, :foobar_rule}
+        end)
         |> Enum.map(fn {_tag, _source, _token, concluded} -> concluded end)
 
       assert [[foobar: 200], [foobar: 300], [foobar: 300], [foobar: 400]] == Enum.sort(fired)
@@ -2642,17 +2645,17 @@ defmodule Rete.EngineTest do
             end
 
           assert error.message =~ "Tasks.exits returned a task that exited: :timeout"
-          refute error.message =~ "Raise :timeout"
+          refute error.message =~ "Raise :task_timeout"
         end
       end)
     end
 
-    test "a task that outruns :timeout is shut down" do
+    test "a task that outruns :task_timeout is shut down" do
       assert_raise RuntimeError, ~r/Tasks.hang did not finish/, fn ->
         [Tasks]
         |> Session.new()
         |> Session.insert({:hang, self(), 1})
-        |> Session.fire_rules(timeout: 20)
+        |> Session.fire_rules(task_timeout: 20)
       end
 
       assert_received {:started, 1, pid}
@@ -2668,7 +2671,7 @@ defmodule Rete.EngineTest do
         [Tasks]
         |> Session.new()
         |> Session.insert(facts)
-        |> Session.fire_rules(concurrency: 4, timeout: 20)
+        |> Session.fire_rules(concurrency: 4, task_timeout: 20)
       end
 
       for n <- 1..3 do
@@ -2774,17 +2777,17 @@ defmodule Rete.EngineTest do
       end
     end
 
-    test "a task that outruns :timeout names its rule" do
+    test "a task that outruns :task_timeout names its rule" do
       error =
         assert_raise RuntimeError, fn ->
           [Slow]
           |> Session.new()
           |> Session.insert(jobs(2))
-          |> Session.fire_rules(concurrency: 2, timeout: 5)
+          |> Session.fire_rules(concurrency: 2, task_timeout: 5)
         end
 
       assert error.message =~ "Rete.EngineTest.Slow.work did not finish"
-      assert error.message =~ ":timeout"
+      assert error.message =~ ":task_timeout"
     end
 
     # A cycle is one pass of the fire loop, so a group is one cycle however many
@@ -2856,7 +2859,7 @@ defmodule Rete.EngineTest do
         [CancelHang]
         |> Session.new()
         |> Session.insert({:trigger, self(), 1})
-        |> Session.fire_rules(concurrency: 8, timeout: 20)
+        |> Session.fire_rules(concurrency: 8, task_timeout: 20)
 
       assert [{:blocked, 1}] == derived(session, :blocked)
       assert_received {:started, 1, pid}
@@ -2880,15 +2883,15 @@ defmodule Rete.EngineTest do
       end
     end
 
-    test "an unusable concurrency or timeout is rejected rather than coerced" do
+    test "an unusable concurrency or task timeout is rejected rather than coerced" do
       cases = [
         {:concurrency, 0, "must be a positive integer"},
         {:concurrency, -1, "must be a positive integer"},
         {:concurrency, nil, "must be a positive integer"},
         {:concurrency, 1.5, "must be a positive integer"},
-        {:timeout, 0, "must be a positive integer or :infinity"},
-        {:timeout, nil, "must be a positive integer or :infinity"},
-        {:timeout, "5", "must be a positive integer or :infinity"}
+        {:task_timeout, 0, "must be a positive integer or :infinity"},
+        {:task_timeout, nil, "must be a positive integer or :infinity"},
+        {:task_timeout, "5", "must be a positive integer or :infinity"}
       ]
 
       for {opt, bad, expected} <- cases do
@@ -2900,6 +2903,609 @@ defmodule Rete.EngineTest do
         assert error.message =~ expected
         assert error.message =~ inspect(bad)
       end
+    end
+  end
+
+  # --- cancellation ----------------------------------------------------------------
+
+  # When a fire raises, the engine cancels every task it started that still runs. Most
+  # bodies here send the pid of a task the fire must cancel, and `gone/1` waits for that
+  # process to go down. A test that expects a task to stay alive says so.
+  describe "cancellation" do
+    alias Rete.EngineTest.Slow
+
+    defmodule Leaky do
+      use Rete.Ruleset
+
+      defrule listed({:listed, test}) do
+        task = Task.async(fn -> Process.sleep(:infinity) end)
+        send(test, {:pid, :listed, task.pid})
+        [task]
+      end
+
+      defrule improper({:improper, test}) do
+        task = Task.async(fn -> Process.sleep(:infinity) end)
+        send(test, {:pid, :improper, task.pid})
+        [task | :tail]
+      end
+
+      defrule improper_reply({:improper_reply, test}) do
+        Task.async(fn ->
+          inner = Task.async(fn -> Process.sleep(:infinity) end)
+          send(test, {:pid, :improper_reply, inner.pid})
+          [{:x, 1} | inner]
+        end)
+      end
+
+      defrule nested({:nested, test}) do
+        Task.async(fn ->
+          inner = Task.async(fn -> Process.sleep(:infinity) end)
+          send(test, {:pid, :nested, inner.pid})
+          inner
+        end)
+      end
+
+      defrule foreign({:foreign, test}) do
+        fn ->
+          inner = Task.async(fn -> Process.sleep(:infinity) end)
+          send(test, {:pid, :foreign, inner.pid})
+          inner
+        end
+        |> Task.async()
+        |> Task.await()
+      end
+
+      defrule unrelated({:unrelated, task}), do: task
+    end
+
+    # One group, in this order: a quick task, a body that raises, a task that never ends.
+    # Under concurrency the error reaches the head while `hang` is still in flight.
+    defmodule Behind do
+      use Rete.Ruleset
+
+      defrule quick({:go, _test}) do
+        Task.async(fn ->
+          Process.sleep(20)
+          {:quick, 1}
+        end)
+      end
+
+      defrule boom({:go, _test, :boom}), do: raise("body boom")
+
+      defrule hang({:go, test}) do
+        task = Task.async(fn -> Process.sleep(:infinity) end)
+        send(test, {:pid, :hang, task.pid})
+        task
+      end
+    end
+
+    # In one group, `stop` concludes what takes the match of `late` away. `late` returns a
+    # task that another process owns. `Task.shutdown/2` raises for such a task.
+    defmodule Overtaken do
+      use Rete.Ruleset
+
+      defrule stop({:go, _test}) do
+        Task.async(fn ->
+          Process.sleep(30)
+          {:stop, 1}
+        end)
+      end
+
+      defrule late({:go, test}, {:not, [{:stop, _}]}) do
+        fn ->
+          inner = Task.async(fn -> Process.sleep(:infinity) end)
+          send(test, {:pid, :late, inner.pid})
+          inner
+        end
+        |> Task.async()
+        |> Task.await()
+      end
+    end
+
+    defmodule OvertakenImproper do
+      use Rete.Ruleset
+
+      defrule stop({:go, _test}) do
+        Task.async(fn ->
+          Process.sleep(30)
+          {:stop, 1}
+        end)
+      end
+
+      defrule late({:go, test}, {:not, [{:stop, _}]}) do
+        task = Task.async(fn -> Process.sleep(:infinity) end)
+        send(test, {:pid, :late, task.pid})
+        [{:y, 1} | task]
+      end
+    end
+
+    # `late` loses its match to `stop`, after its task has replied with a task of its own.
+    # `boom` then raises, and that inner task must be cancelled with the rest.
+    defmodule OvertakenReply do
+      use Rete.Ruleset
+
+      defrule stop({:go, _test}) do
+        Task.async(fn ->
+          Process.sleep(30)
+          {:stop, 1}
+        end)
+      end
+
+      defrule late({:go, test}, {:not, [{:stop, _}]}) do
+        Task.async(fn ->
+          inner = Task.async(fn -> Process.sleep(:infinity) end)
+          send(test, {:pid, :late, inner.pid})
+          inner
+        end)
+      end
+
+      defrule zboom({:go, _test}) do
+        Process.sleep(60)
+        raise "boom"
+      end
+    end
+
+    # In one group: a quick task, a body that raises, and a task that replies with a task
+    # of its own. The reply comes before the raise, so the inner task must be cancelled.
+    defmodule RaiseBeforeReply do
+      use Rete.Ruleset
+
+      defrule quick({:go, _test}) do
+        Task.async(fn ->
+          Process.sleep(30)
+          {:quick, 1}
+        end)
+      end
+
+      defrule boom({:go, _test}), do: raise("body boom")
+
+      defrule reply({:go, test}) do
+        Task.async(fn ->
+          inner = Task.async(fn -> Process.sleep(:infinity) end)
+          send(test, {:pid, :reply, inner.pid})
+          inner
+        end)
+      end
+    end
+
+    # In one group: a quick task, a body that raises, and a task from `Task.completed/1`.
+    # The completed task is still unsettled when the raise comes.
+    defmodule CompletedBehind do
+      use Rete.Ruleset
+
+      defrule quick({:done, _n}) do
+        Task.async(fn ->
+          Process.sleep(30)
+          []
+        end)
+      end
+
+      defrule boom({:done, _n}), do: raise("body boom")
+      defrule known({:done, n}), do: Task.completed({:known, n})
+    end
+
+    defmodule Nester do
+      use Rete.Ruleset
+
+      defrule keep({:outer, _test}) do
+        Task.async(fn ->
+          Process.sleep(30)
+          {:kept, 1}
+        end)
+      end
+
+      # Fires another session, which raises. Only its own task is cancelled.
+      defrule nest({:outer, test}) do
+        try do
+          [Rete.EngineTest.Leaky]
+          |> Session.new()
+          |> Session.insert({:listed, test})
+          |> Session.fire_rules()
+        rescue
+          ArgumentError -> {:nested_failed, 1}
+        end
+      end
+    end
+
+    defmodule RaiseOnQuick do
+      @behaviour Rete.Listener
+
+      @impl true
+      def handle_event({:activation_fired, %{rule: {_, :quick}}, _token, _facts}, _state),
+        do: raise("listener boom")
+
+      def handle_event(_event, state), do: state
+    end
+
+    defp gone(label) do
+      assert_receive {:pid, ^label, pid}
+      ref = Process.monitor(pid)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 500
+      refute Process.alive?(pid)
+    end
+
+    defp registry_keys do
+      for {{Rete.Engine, :tasks, _ref} = key, _tasks} <- Process.get(), do: key
+    end
+
+    test "a task in a list of facts is cancelled" do
+      assert_raise ArgumentError, ~r/among its facts/, fn ->
+        [Leaky] |> Session.new() |> Session.insert({:listed, self()}) |> Session.fire_rules()
+      end
+
+      gone(:listed)
+    end
+
+    test "a task in an improper list is cancelled, and the error names the rule" do
+      error =
+        assert_raise ArgumentError, fn ->
+          [Leaky] |> Session.new() |> Session.insert({:improper, self()}) |> Session.fire_rules()
+        end
+
+      assert error.message =~ "Rete.EngineTest.Leaky.improper returned"
+      assert error.message =~ "which is an improper list"
+      gone(:improper)
+    end
+
+    test "a task in an improper list that a task returned is cancelled" do
+      assert_raise ArgumentError, ~r/which is an improper list/, fn ->
+        [Leaky]
+        |> Session.new()
+        |> Session.insert({:improper_reply, self()})
+        |> Session.fire_rules()
+      end
+
+      gone(:improper_reply)
+    end
+
+    test "the task that a task returned is cancelled" do
+      assert_raise ArgumentError, ~r/among its facts/, fn ->
+        [Leaky] |> Session.new() |> Session.insert({:nested, self()}) |> Session.fire_rules()
+      end
+
+      gone(:nested)
+    end
+
+    test "a task started inside a task the body awaited is cancelled" do
+      assert_raise ArgumentError, ~r/another process started/, fn ->
+        [Leaky] |> Session.new() |> Session.insert({:foreign, self()}) |> Session.fire_rules()
+      end
+
+      gone(:foreign)
+    end
+
+    test "a task that another process started for itself is left alone" do
+      test = self()
+
+      helper =
+        spawn(fn ->
+          task = Task.async(fn -> Process.sleep(:infinity) end)
+          send(test, {:task, task})
+          Process.sleep(:infinity)
+        end)
+
+      assert_receive {:task, task}
+
+      assert_raise ArgumentError, ~r/another process started/, fn ->
+        [Leaky] |> Session.new() |> Session.insert({:unrelated, task}) |> Session.fire_rules()
+      end
+
+      assert Process.alive?(task.pid)
+      Process.exit(helper, :kill)
+    end
+
+    test "a body error behind a task in flight cancels that task" do
+      assert_raise RuntimeError, "body boom", fn ->
+        [Behind]
+        |> Session.new()
+        |> Session.insert([{:go, self()}, {:go, self(), :boom}])
+        |> Session.fire_rules(concurrency: 3)
+      end
+
+      gone(:hang)
+    end
+
+    test "under concurrency, a task in a list of facts behind a raise is cancelled" do
+      assert_raise RuntimeError, ~r/did not finish: :task_timeout/, fn ->
+        [Behind, Leaky]
+        |> Session.new()
+        |> Session.insert([{:go, self()}, {:listed, self()}])
+        |> Session.fire_rules(concurrency: 3, task_timeout: 100)
+      end
+
+      gone(:hang)
+      gone(:listed)
+    end
+
+    test "an owned task in an improper list behind a retracted match is shut down" do
+      fired =
+        [OvertakenImproper]
+        |> Session.new()
+        |> Session.insert({:go, self()})
+        |> Session.fire_rules(concurrency: 2)
+
+      assert {:stop, 1} in Session.facts(fired)
+      gone(:late)
+    end
+
+    test "a task in the reply of a task behind a retracted match is cancelled by a later raise" do
+      assert_raise RuntimeError, "boom", fn ->
+        [OvertakenReply]
+        |> Session.new()
+        |> Session.insert({:go, self()})
+        |> Session.fire_rules(concurrency: 2)
+      end
+
+      gone(:late)
+    end
+
+    test "a raise cancels the task in the reply of a task that already finished" do
+      assert_raise RuntimeError, "body boom", fn ->
+        [RaiseBeforeReply]
+        |> Session.new()
+        |> Session.insert({:go, self()})
+        |> Session.fire_rules(concurrency: 3)
+      end
+
+      gone(:reply)
+    end
+
+    test "a raise shuts down a task from Task.completed/1, so its reply does not stay behind" do
+      assert_raise RuntimeError, "body boom", fn ->
+        [CompletedBehind]
+        |> Session.new()
+        |> Session.insert({:done, 1})
+        |> Session.fire_rules(concurrency: 3)
+      end
+
+      refute_received {_ref, {:known, 1}}
+    end
+
+    test "a task of another process behind a retracted match is left, and nothing raises" do
+      fired =
+        [Overtaken]
+        |> Session.new()
+        |> Session.insert({:go, self()})
+        |> Session.fire_rules(concurrency: 2)
+
+      assert {:stop, 1} in Session.facts(fired)
+      assert_receive {:pid, :late, pid}
+      assert Process.alive?(pid)
+      Process.exit(pid, :kill)
+    end
+
+    test "a listener that raises during a conclusion cancels the tasks in flight" do
+      assert_raise RuntimeError, "listener boom", fn ->
+        [Behind]
+        |> Session.new()
+        |> Session.with_listener(RaiseOnQuick, nil)
+        |> Session.insert({:go, self()})
+        |> Session.fire_rules(concurrency: 2)
+      end
+
+      gone(:hang)
+    end
+
+    test "no registry entry is left behind, after a raise or after a fire that settles" do
+      assert_raise ArgumentError, fn ->
+        [Leaky] |> Session.new() |> Session.insert({:listed, self()}) |> Session.fire_rules()
+      end
+
+      assert registry_keys() == []
+
+      [Slow] |> Session.new() |> Session.insert({:job, 1}) |> Session.fire_rules(concurrency: 2)
+      assert registry_keys() == []
+    end
+
+    test "a nested fire that raises cancels its own tasks, and not those of the outer fire" do
+      fired =
+        [Nester]
+        |> Session.new()
+        |> Session.insert({:outer, self()})
+        |> Session.fire_rules(concurrency: 2)
+
+      gone(:listed)
+      assert {:kept, 1} in Session.facts(fired)
+      assert {:nested_failed, 1} in Session.facts(fired)
+    end
+  end
+
+  describe ":max_duration" do
+    alias Rete.EngineTest.Blocking
+
+    # One rule, so the wait under test is the only one.
+    defmodule Hang do
+      use Rete.Ruleset
+
+      defrule hang({:hang, test}) do
+        task = Task.async(fn -> Process.sleep(:infinity) end)
+        send(test, {:pid, :hang, task.pid})
+        task
+      end
+    end
+
+    test "a wait for a task that runs past :max_duration raises, and cancels the task" do
+      error =
+        assert_raise RuntimeError, fn ->
+          [Hang]
+          |> Session.new()
+          |> Session.insert({:hang, self()})
+          |> Session.fire_rules(max_duration: 50)
+        end
+
+      assert error.message =~ "ran past its :max_duration of 50 ms while it waited for"
+      assert error.message =~ "Rete.EngineTest.Hang.hang"
+      gone(:hang)
+    end
+
+    test "a :max_duration shorter than :task_timeout bounds the wait" do
+      error =
+        assert_raise RuntimeError, fn ->
+          [Hang]
+          |> Session.new()
+          |> Session.insert({:hang, self()})
+          |> Session.fire_rules(task_timeout: 5_000, max_duration: 50)
+        end
+
+      assert error.message =~ "ran past its :max_duration of 50 ms while it waited for"
+      gone(:hang)
+    end
+
+    test "cycles past :max_duration raise between cycles" do
+      error =
+        assert_raise RuntimeError, fn ->
+          [Blocking]
+          |> Session.new()
+          |> Session.insert(Enum.map(1..20, &{:job, &1}))
+          |> Session.fire_rules(max_duration: 50)
+        end
+
+      assert error.message =~ ~r/ran past its :max_duration of 50 ms, after \d+ cycles/
+    end
+
+    test "a fire that settles inside :max_duration is untouched" do
+      fired =
+        [Blocking]
+        |> Session.new()
+        |> Session.insert({:job, 1})
+        |> Session.fire_rules(max_duration: 5_000)
+
+      assert {:done, 1} in Session.facts(fired)
+    end
+
+    test "the old name raises, and names the new one" do
+      error =
+        assert_raise ArgumentError, fn ->
+          Session.fire_rules(Session.new([Blocking]), timeout: 50)
+        end
+
+      assert error.message =~ ":timeout is now :task_timeout"
+    end
+
+    test ":infinity is accepted, and anything else that is not a positive integer raises" do
+      [Blocking] |> Session.new() |> Session.fire_rules(max_duration: :infinity)
+
+      for bad <- [0, -5, 1.5, :soon, nil] do
+        error =
+          assert_raise ArgumentError, fn ->
+            Session.fire_rules(Session.new([Blocking]), max_duration: bad)
+          end
+
+        assert error.message =~ ":max_duration must be a positive integer or :infinity"
+      end
+    end
+  end
+
+  # --- a query fires as a rule does --------------------------------------------------
+
+  # A body sends a message to the process that fires, so a test counts the bodies that ran.
+  describe "a query fires as a rule does" do
+    defmodule QueryFiring do
+      use Rete.Ruleset
+
+      defquery seen({:item, n}) do
+        send(self(), {:ran, :seen, n})
+        {:seen, n}
+      end
+
+      # Each pair is written in the order that salience must reverse. `block` outranks
+      # `open`, and takes its match away before its turn.
+      defquery open({:item, n}, {:not, [{:blocked, n}]}) do
+        send(self(), {:ran, :open, n})
+        n
+      end
+
+      defrule block(%{salience: 10}, {:item, n}) when n > 100, do: {:blocked, n}
+
+      defrule late({:order, n}), do: {:late, n}
+      defquery early(%{salience: 20}, {:order, n}), do: n
+
+      defquery fetched({:job, id}), do: Task.async(fn -> {:fetched, id} end)
+      defquery known({:known, id}), do: Task.completed({:known, id})
+    end
+
+    defp ran do
+      receive do
+        {:ran, query, n} -> [{query, n} | ran()]
+      after
+        0 -> []
+      end
+    end
+
+    defp fire(facts, opts \\ []) do
+      [QueryFiring] |> Session.new() |> Session.insert(facts) |> Session.fire_rules(opts)
+    end
+
+    test "the body runs once for each match during the fire, and a read runs nothing" do
+      session = fire([{:item, 1}, {:item, 2}])
+      assert Enum.sort(ran()) == [open: 1, open: 2, seen: 1, seen: 2]
+
+      assert Enum.sort(QueryFiring.seen(session)) == [seen: 1, seen: 2]
+      assert Enum.sort(QueryFiring.seen(session)) == [seen: 1, seen: 2]
+      assert ran() == []
+    end
+
+    test "a match that a rule of higher salience takes away never runs the body" do
+      session = fire([{:item, 1}, {:item, 200}])
+
+      assert {:open, 200} not in ran()
+      assert QueryFiring.open(session) == [1]
+    end
+
+    test "a retraction takes the row away" do
+      session = fire([{:item, 1}])
+      ran()
+
+      session = session |> Session.retract({:item, 1}) |> Session.fire_rules()
+
+      assert QueryFiring.seen(session) == []
+      assert ran() == []
+    end
+
+    test "each occurrence of a fact has its own row" do
+      session = fire([{:item, 1}, {:item, 1}])
+      assert QueryFiring.seen(session) == [seen: 1, seen: 1]
+
+      session = session |> Session.retract({:item, 1}) |> Session.fire_rules()
+      assert QueryFiring.seen(session) == [seen: 1]
+    end
+
+    test "salience orders a query against a rule" do
+      fired =
+        [QueryFiring]
+        |> Session.new()
+        |> Session.with_listener(Collect, [])
+        |> Session.insert({:order, 1})
+        |> Session.fire_rules()
+        |> Collect.by_tag(:activation_fired)
+        |> Enum.map(fn {_tag, source, _token, _facts} -> source.rule end)
+
+      assert fired == [{QueryFiring, :early}, {QueryFiring, :late}]
+    end
+
+    test "a returned task is awaited, and its reply is the row" do
+      assert QueryFiring.fetched(fire([{:job, 7}])) == [{:fetched, 7}]
+      assert QueryFiring.fetched(fire([{:job, 7}], concurrency: 2)) == [{:fetched, 7}]
+    end
+
+    test "a task from Task.completed/1 gives its result" do
+      for concurrency <- [1, 2] do
+        session = fire([{:known, 1}, {:known, 2}], concurrency: concurrency)
+        assert Enum.sort(QueryFiring.known(session)) == [known: 1, known: 2]
+      end
+    end
+
+    test ":activation_fired carries the row" do
+      events =
+        [QueryFiring]
+        |> Session.new()
+        |> Session.with_listener(Collect, [])
+        |> Session.insert({:item, 3})
+        |> Session.fire_rules()
+        |> Collect.by_tag(:activation_fired)
+
+      assert {:activation_fired, %{rule: {QueryFiring, :seen}}, _token, [{:seen, 3}]} =
+               Enum.find(events, &match?({_, %{rule: {QueryFiring, :seen}}, _, _}, &1))
     end
   end
 end

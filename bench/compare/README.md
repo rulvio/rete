@@ -1,7 +1,9 @@
 # rete against clara-rules
 
-This bench runs ten workloads through two engines and prints one table. `RESULTS.md` holds
-the last run.
+This bench runs ten workloads through two engines and prints one table. Each machine keeps
+its own file of results, named after its chip, such as `RESULTS-apple-m3-max.md`. A run
+replaces the file of the machine it ran on, and leaves the files of other machines. A table
+compares only with a table from the same machine.
 
 It is not `bench/run.exs`. That one measures shape, asserts on exponents, and gates CI.
 This one measures milliseconds at one size, compares two engines, and gates nothing. No
@@ -11,18 +13,18 @@ come from `bench/run.exs`.
 ## Running it
 
 ```sh
-bash bench/compare/run.sh          # measure, and write RESULTS.md
+bash bench/compare/run.sh          # measure, and write RESULTS-<chip>.md
 bash bench/compare/run.sh --smoke  # run each scenario once, check the counts, print the table
 ```
 
-A smoke run times nothing and writes no `RESULTS.md`. It prints the table with its timing
+A smoke run times nothing and writes no results file. It prints the table with its timing
 cells empty, and fails if the engines disagree on a count.
 
 It needs a JVM and the Clojure CLI. It runs on macOS and on Linux.
 
 `clara/deps.edn` names which released clara-rules to measure. It also pins Clojure, so the
 installed Clojure CLI does not choose the version. The clara side reads the clara-rules
-version it loaded off the jar, and `RESULTS.md` records that version.
+version it loaded off the jar, and the results file records that version.
 
 ## The parts
 
@@ -30,13 +32,13 @@ version it loaded off the jar, and `RESULTS.md` records that version.
 |---|---|
 | `rete.exs` | the rete side, run by `mix run`, measured by Benchee |
 | `clara/src/bench/clara.clj` | the clara side, run by `clojure -M:bench`, measured by Criterium |
-| `report.exs` | joins the result files and writes `RESULTS.md` |
+| `report.exs` | joins the result files and writes `RESULTS-<chip>.md` |
 | `run.sh` | the three of them, in order |
 | `results/` | the raw TSV each side writes. Not committed |
 
 ## What the run records
 
-`RESULTS.md` opens with the machine and the two runtimes, because a table of milliseconds
+A results file opens with the machine and the two runtimes, because a table of milliseconds
 means nothing without them. On macOS the machine comes from `system_profiler`, `sysctl` and
 `sw_vers`. On Linux it comes from `lscpu`, `nproc`, `/proc/meminfo`, `/etc/os-release` and
 `uname`. A row that the machine does not report reads "unknown".
@@ -54,8 +56,11 @@ Every ruleset carries a counting query. Each scenario reports how many matches t
 holds once the session settles, and `report.exs` refuses to print a ratio for a scenario
 whose engines disagree. A ratio between two different workloads is worse than no ratio.
 
-The counting query costs both engines something, and it is the same something. It is part
-of the declared workload rather than an instrument bolted on beside it.
+The counting query is part of the declared workload, and not an instrument added beside it.
+It holds the same matches on both engines, but it does not cost them the same. A rete query
+fires as a rule does, so each match costs one activation and one run of its body. A clara
+query has no body, and its node only stores the match. So the rete column includes one
+activation for each counted match, and the clara columns do not.
 
 ## The scenarios
 

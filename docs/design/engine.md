@@ -9,7 +9,7 @@ Status: implemented, end to end.
 | module | file | what it is |
 |---|---|---|
 | `Rete.Token`, `Rete.Element`, `Rete.Activation` | `lib/rete/token.ex` | what travels |
-| `Rete.Memory` | `lib/rete/memory.ex` | the five working memories |
+| `Rete.Memory` | `lib/rete/memory.ex` | the six working memories |
 | `Rete.Agenda` | `lib/rete/agenda.ex` | salience-ordered activations |
 | `Rete.Engine.State` | `lib/rete/engine/state.ex` | everything that changes, as one value |
 | `Rete.Engine.Nodes` | `lib/rete/engine/nodes.ex` | what each node kind does |
@@ -136,16 +136,17 @@ term that triggered it is a different term of the same value. Match *order* is p
 token's identity: two tokens over the same facts, in a different order, are different
 matches.
 
-**`Rete.Activation`** — a production node plus the token that satisfied it, plus the
+**`Rete.Activation`** — a rule or query node plus the token that satisfied it, plus the
 salience and compile order it will be sorted by.
 
-## 4. The five memories, and one index over them
+## 4. The six memories, and one index over them
 
 ```
 elements    node_id => join_key => Bucket of Element     right side of a beta node
 tokens      node_id => join_key => Bucket of Token       left side of a beta node
 accum       node_id => join_key => group_key => [member] what a collection gathered
 insertions  node_id => token => [[fact]]                 truth maintenance
+query_rows  node_id => token => [row]                    what each query match gave
 facts       fact => count                                what the session holds
 
 inserters   fact => {node_id, token} => count            `insertions`, reversed
@@ -172,7 +173,8 @@ them, and `Rete.Session.facts/1` looked right while a query answered short.
 
 **`insertions` is the provenance graph.** "This match at this production inserted these
 facts" — read backwards, this is exactly the edge that `Rete.Inspect.explain/1,2` walks. No
-separate bookkeeping exists for explanation.
+separate bookkeeping exists for explanation. A firing that concluded nothing is an empty
+batch. It is a record of the firing, and it is the edge of no fact.
 
 `inserters` is that same relation indexed the other way, and the one derived thing in here.
 It answers "which matches inserted *this fact*". `Rete.Inspect` asks it per matched fact when
@@ -189,6 +191,10 @@ until `Rete.Memory.index_inserters/1` builds it in one pass. After that `add_ins
 holds nothing. Collapsing them is what lets a fully drained session compare equal to a fresh
 one. It is a multiset keyed on `{node_id, token}`, so it does not depend on the order the
 session reached it in. Being a cache, it is left out of `dump/1`.
+
+`query_rows` is to a query what `insertions` is to a rule. A query fires as a rule does,
+and the row that its body gives is kept here against the token. A row goes when its match
+goes. See §9.
 
 `root_seeded?` is the one field that is not a memory — see §6.
 
@@ -208,7 +214,7 @@ It returns the new state, and the work produced.
 | `AccumulateJoin` | as `Accumulate`; candidates cannot be reduced until a token exists | the same |
 | `Test` | propagates when `:fun.(bindings)` is truthy | nothing — a test has no fact input |
 | `Production` | adds an activation to the agenda | nothing |
-| `Query` | stores the token for lookup | nothing |
+| `Query` | adds an activation to the agenda, as `Production` does | nothing |
 
 ### The retraction rule
 
@@ -295,9 +301,9 @@ found the activation. That is exactly the distinction a production needs on retr
 Either the match never fired and never will, or it fired, and its conclusions have to be
 taken back.
 
-Every activation of one production shares a key. Salience, internal salience, and compile
-order all come from the node, none from the match. So there are at most as many buckets as
-there are production nodes, however many facts a session holds. A single sorted list,
+Every activation of one rule or query shares a key. Salience, internal salience, and
+compile order all come from the node, none from the match. So there are at most as many
+buckets as there are rule and query nodes, however many facts a session holds. A single sorted list,
 instead, would walk past every match already queued for the same rule, on every insertion.
 
 The buckets themselves sit in a `:gb_trees`, keyed by sort key. That bounds the second
@@ -354,6 +360,51 @@ already holds. Paying that once per fact is what made an unkeyed negation and a 
 collection quadratic. The `{:propagated, op, node_id, count}` event coarsens with it:
 fewer events, larger counts, same shape.
 
+### A cache can take the place of a body
+
+`fire_rules(session, activation_cache: cache)` lets a cache answer for the body of a rule
+or a query whose `:cache` is a value other than `nil` or `false`. `Rete.ActivationCache` holds the
+user contract. This is how the engine does it.
+
+The cache comes from the `insertions` and `query_rows` memories of a session that fired
+(§4). Truth maintenance already needs a record of what each activation concluded, so the
+cache adds no store. `Rete.ActivationCache.from_session/2` reads that record in one pass, and it builds
+an index from it. The index is a plain map, so a caller can save it and load it without
+the session. A fire does no pass of its own. A lookup finds the rule with one
+`Map.fetch/2`, then builds the key and finds it with another. The key is the bindings by
+default, so a lookup costs in proportion to their size.
+
+The index does not use node ids. Two networks give one rule different ids, and a token
+carries the ids of the nodes it matched. So a rule is found by `{module, name, hash,
+cache}`, and an activation by its key. The default key is the bindings. A body reads
+only those, so they are all its result depends on. The facts alone would not do. Two
+branches of a disjunction can match the same facts and bind different variables. The `:cache` value is in the identity because it acts as a version. A rule that
+had another value, or none, when the cache was built never hits.
+
+The lookup comes before the body, on both paths, inside the same rescue as the body. So a
+key function that raises is reported as a body is, in group order. A hit becomes
+`{:cached, facts}`, which `conclude/4` treats like a body's result. So a hit is checked, recorded in `insertions`,
+and inserted like any conclusion. Three things follow:
+
+* truth maintenance and `Rete.Inspect` see no difference between a hit and a firing.
+* the new session holds a record of its hits. So `from_session/2` of the new session
+  gives the cache for the next fire.
+* there is no write step. Nothing can store the result of a body that raised, or of an
+  activation that a conclusion earlier in its group cancelled.
+
+Under concurrency, a hit is not a task. So it leaves the window as soon as it reaches the
+head (§11). `Rete.Agenda.remove/2` still decides whether it applies, as for a body.
+
+A body that concluded nothing is recorded too, as an empty batch in `insertions`. So the
+cache answers for it as for any other. The cost is one entry for each firing that
+concludes nothing, in every session, cached or not. The same record lets `Rete.Inspect`
+report that firing.
+
+The cache is on the state for the length of one `fire_rules/2` call, as
+`:activation_cache`. The call clears the field before it returns, so no session keeps the
+cache. A query fires as a rule does, so a hit of a query takes the same path as a hit of a
+rule. The engine keeps its row in `Memory.query_rows`.
+
 ## 8. Truth maintenance
 
 Facts a rule inserts are **logical**. They exist only while the match that concluded them
@@ -407,11 +458,26 @@ then a match of its own, and those pair with every counter still live.
 
 ## 9. Queries
 
-A query terminal stores the tokens that reach it. It does not activate. It stores each
-token under the **parameters** of the query, which are its head. `Rete.Engine.query/3` is
-thus a map lookup on the key that a call supplies. For each token that it finds, it returns
-the value that the *body* of the query computes from the bindings of that token. It returns
-one row for each match, and not the bindings.
+A query terminal puts an activation on the agenda for each token that reaches it, as a
+rule terminal does. The activation fires in its turn, and the engine keeps what the body
+returns as the row of that token. It inserts nothing. The row goes to two places:
+
+* `Memory.query_rows` keeps it against the token. This is the record of truth maintenance,
+  as `insertions` is for a rule.
+* the bucket of the query keeps `{token, row}` under the **parameters** of the query, which
+  are its head. This is what a read uses.
+
+A token that leaves takes its row out of both, as truth maintenance takes back the facts of
+a rule. At `concurrency: 1`, a match that leaves before its turn never runs the body. Above
+it, the body can run while a task ahead of it is in flight, and the engine then discards
+the row, as it discards the facts of a rule. See §11.
+
+`Rete.Engine.query/3` is thus a map lookup on the key that a call supplies. It returns the
+rows in that bucket, one row for each match, and not the bindings. It runs no body, and it
+looks up nothing for each row. After a fire the agenda is empty, so every match has its row.
+
+A query takes `:salience` as a rule does. A query row changes no other match, so salience
+only decides when its body runs.
 
 A call names every parameter, and no other name. A partial key is not a more narrow lookup.
 It is a different key, so the engine raises an error instead of an answer of `[]`. A query
@@ -582,8 +648,9 @@ about it, so the usual process rules apply. The engine adds two things:
 
 * when it sees the task exit, it raises an error that names the rule and the bindings it
   fired on.
-* it shuts the task down with `:brutal_kill` on a timeout, when its activation is
-  cancelled, and when an error leaves the group. The task gets no chance to clean up.
+* it cancels the task on a timeout, when its activation is cancelled, and when an error
+  leaves the group. "Cancellation" below says which tasks that reaches. The task gets no
+  chance to clean up.
 
 ### A cycle is a group, not an activation
 
@@ -609,20 +676,58 @@ it.
 A returned task can fail in ways a body cannot. Each of these raises an error that names
 the rule and its bindings:
 
-* the task takes longer than `:timeout`. The engine shuts it down and raises a
-  `RuntimeError`.
+* the task is not done when its wait of `:task_timeout` ends. The wait starts when the task
+  reaches its turn in group order. The engine shuts it down and raises a `RuntimeError`.
 * the task exits. The engine raises a `RuntimeError` with the exit reason.
 * another process started the task. The engine cannot await it, and raises an
   `ArgumentError`.
 * a `%Task{}` arrives inside a list of facts, or as the result of a task. The engine awaits
   only a bare task, and raises an `ArgumentError`.
 
-When an error leaves the window, the tasks behind it are still running. Nothing would ever
-await them. So the engine shuts each one down before the error goes on.
+The engine shuts down the task of an activation that `Rete.Agenda.remove/2` reports as
+`:missing`, and each task in its list of facts, when its own process owns the task. It does
+not await them. So a task that fails cannot raise for a match that no longer holds.
+"Cancellation" below says what happens to a task of another process.
 
-The engine also shuts down the task of an activation that `Rete.Agenda.remove/2` reports
-as `:missing`. It does not await that task. So a task that fails cannot raise for a match
-that no longer holds.
+### Cancellation
+
+When a fire raises, for any reason, the engine cancels every task that it started and that
+still runs. The tasks behind an error in the window are the common case. Nothing would
+ever await them.
+
+One catch in `fire/2` does this, for every path that can raise. A raise discards the state,
+so the fire keeps its tasks in the process dictionary, under a key of its own. A body that
+fires another session gets another key, so the two fires do not cancel each other's tasks.
+The engine tracks a task when it first sees it, and it stops when it settles the task:
+
+* a task that a body returns.
+* a task inside a list of facts, which is an error.
+* a task that a task returns, which is an error. Its owner is the outer task.
+* a task that another process owns, which is an error.
+
+The engine cancels a task of its own process with `Task.shutdown/2`, which also flushes the
+reply. It kills any other task only if the `$callers` of that task lead back to the
+firing process. That covers a task started inside a task that the fire started. A task
+that another process started for its own reasons is left alone.
+
+Two things are out of reach. A process that a body starts and never returns is not seen.
+A task with no `$callers` link to the fire is not this fire's to kill.
+
+The `$callers` check has a limit. It cannot tell when a process started. Suppose the
+firing process started a worker before the fire, and a body returns a task of that worker.
+That task has the firing process in its `$callers`, so a raise kills it. Returning that
+task is already an error, so only a body with this error reaches the case.
+
+A fire that does not raise cancels only its own tasks. On the `:missing` path it shuts
+down a task of its own process. It leaves a task of another process running.
+
+### The time budget
+
+`:max_duration` limits the whole call, where `:task_timeout` limits one wait. The engine
+checks the budget before each cycle, when work is pending. It also waits for a task no
+longer than the time left. A fire past its budget raises, and the catch above cancels its
+tasks. The
+check cannot stop a body that blocks without returning a task, or one long propagation.
 
 ---
 
@@ -693,8 +798,8 @@ that no longer holds.
   propagates is worth more than agreeing with Clara on the empty case. `Rete.BehaviorTest`
   records the divergence where it pins the Clara case.
 * **No partial firing.** `fire_rules/2` runs to quiescence in the calling process. There
-  is no fire-one-activation option, no async variant, and no way to interrupt a settling
-  pass other than the cycle cap.
+  is no fire-one-activation option, and no async variant. Only the cycle cap and
+  `:max_duration` interrupt a settling pass. See §11.
 * **Nothing reports what *would* activate before it activates.** Working out which rules a
   queued fact satisfies means matching it, and matching before a fire is exactly the work
   this design moved into the fire. A function that answered it would do that work twice, or
@@ -925,9 +1030,9 @@ one time at start, so the isolated figure is the one that describes it.
 ### Queries
 
 The **parameters** of a query are what its head binds, and they key its matches.
-`Rete.Engine.Nodes` stores each token under `Token.join_key(token, node.params)`, in the
-store of the query node. `Rete.Engine.query/3` then uses the parameters of a call as that
-key. There is one store and one keying. A read is thus a map fetch, and it costs what it
+When a query activation fires, the engine stores `{token, row}` under
+`Token.join_key(token, node.params)`, in the store of the query node. `Rete.Engine.query/3`
+then uses the parameters of a call as that key. There is one store and one keying. A read is thus a map fetch, and it costs what it
 returns, not what the query holds.
 
 The patterns of the head do not reach the network. They are Elixir patterns, and they are
@@ -943,32 +1048,31 @@ See `ir.md` §2.
 
 | 200 reads, 4,000 matches, one row returned | |
 |---|---|
-| no parameters, filtered in Elixir | 33 ms |
-| `defquery rows(cid)(...)` | **0.02 ms** |
+| no parameters, filtered in Elixir | 35 ms |
+| `defquery rows(cid)(...)` | **0.03 ms** |
 
-One read is thus 0.1 µs. Clara takes 0.5 µs on the same test. The time does not change with
-the match count. To build every row and then filter is linear in the match count. The
-scaling scenario in `bench/run.exs` stays at 0.02 ms for 500, 1,000, 2,000 and 4,000
-matches.
+One read is thus 0.15 µs. The time does not change with the match count. To read every
+row and then filter is linear in the match count. The scaling scenario in `bench/run.exs`
+stays at 0.03 ms for 500, 1,000, 2,000 and 4,000 matches.
 
-A query with no parameters keys every token on `%{}`. This is one bucket, and it holds its
-tokens in arrival order. A query with no head thus costs and behaves exactly as it did
-before heads existed.
+A query with no parameters keys every row on `%{}`. This is one bucket, and it holds its
+rows in the order that they fired. So a query with no head pays nothing for the keying.
 
 **The cost of a head is the cardinality of the variable that it names. The head itself
-costs almost nothing.** These measurements send 4,000 facts to a query node:
+costs almost nothing.** These measurements send 4,000 facts to a query node. The insert
+column includes the fire, which runs each body once:
 
 | head | insert | memory | buckets |
 |---|---|---|---|
-| no parameters | 2.3 ms | 1,108 KB | 1 |
-| one parameter, 4 distinct values | 2.6 ms | 1,109 KB | 4 |
-| one parameter, all distinct | 4.2 ms | 1,872 KB | 4,000 |
-| three parameters, all distinct | 4.6 ms | 2,060 KB | 4,000 |
+| no parameters | 10 ms | 1,435 KB | 1 |
+| one parameter, 4 distinct values | 12 ms | 1,435 KB | 4 |
+| one parameter, all distinct | 15 ms | 2,200 KB | 4,000 |
+| three parameters, all distinct | 13 ms | 2,511 KB | 4,000 |
 
 A parameter with a low cardinality costs very little. The added work is one `Map.take/2`
-for each token, and the buckets hold the same tokens in a different arrangement. A
-parameter on a unique field uses approximately 69% more memory, because each `Rete.Bucket`
-has its own structure, and there is now one bucket for each row.
+for each row, and the buckets hold the same rows in a different arrangement. A parameter on
+a unique field uses approximately 53% more memory, because each `Rete.Bucket` has its own
+structure, and there is now one bucket for each row.
 
 Retraction is not in the table. `mix bench` measures it, and it moves by more between two
 runs of one shape than it does between the four shapes. A head thus does not change what
@@ -993,28 +1097,27 @@ report.
 
 #### The capability that was removed
 
-No operation became slower. This release removed a *capability* instead. The old query
+When heads came in, no operation became slower. That release removed a *capability* instead. The old query
 could filter on **any** binding, inside the engine, with no declaration. That filter ran on
 the bindings, and it called the body only for the rows that the filter kept.
 
 For a binding that you do not declare, the replacement is `Enum.filter/2` on the result.
-This is not an engine operation. It builds every row, and then discards most of them. These
+This is not an engine operation. A read runs no body, because each body ran once during
+the fire. So the filter scans every kept row, and then discards most of them. These
 measurements use a body that builds a map and a string. Each is 50 reads that select 1 row
 out of 4,000:
 
 | | |
 |---|---|
-| `rows(session) \|> Enum.filter(...)` | 18 ms |
+| `rows(session) \|> Enum.filter(...)` | 4 to 5 ms |
 | `defquery rows(a)(...)` then `rows(session, 1)` | **0.01 ms** |
 
-That is a factor of approximately 1,600, and the body is what makes it so large. A head
-keys on the bindings, so the body runs for the one row that comes back. A filter on the
-result runs the body 4,000 times per read, and then discards 3,999 of the rows.
+That is a factor of approximately 500. A head reads one bucket. A filter on the result
+scans all 4,000 rows on each read, and discards 3,999 of them.
 
-The filter that this release removed sat between these two. It also scanned every match,
-so it did not read like a head. But it ran on the bindings, and called the body only for
-the rows it kept, so it did not pay the body cost that `Enum.filter/2` pays. That filter is
-deleted, so `mix bench` cannot measure it and no row here stands for it.
+The filter that the release of heads removed ran on the bindings, inside the engine. It
+also scanned every match, so it did not read like a head. That filter is deleted, so
+`mix bench` cannot measure it and no row here stands for it.
 
 You cannot reach for it by accident. A query with no head is `name/1`, so the old call
 does not compile. `Rete.Session.query/3` reaches the same query at run time, and it
@@ -1070,7 +1173,7 @@ the full item. Thus 500 facts cost 1.4 ms at a 1-field payload, and 4.2 ms at 51
 
 Every quadratic here was first blamed on the wrong thing. The first attempt blamed beta
 memory's append, which was real but not dominant — the agenda was. The tell: a query
-terminal, which has no agenda, was near-linear while a production terminal was not. The
+terminal, which had no agenda then, was near-linear while a production terminal was not. The
 second blamed `insert_ordered/2` for the collection, and a probe agreed: feed members in
 descending order, making that walk a prepend, and the scenario goes linear. The fixture
 concealed the true cause, because it inserted the token last and thus never read a group

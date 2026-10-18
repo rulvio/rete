@@ -5,8 +5,8 @@ defmodule Rete.Engine do
   **Internal.** Not part of the public API. Call it through `Rete.Session`.
 
   Propagation drains a queue of pending work. A node consumes one unit, and returns the
-  work it produced. Firing pops the most salient activation, runs its right hand side, and
-  inserts what it returned. Propagation drains to completion **before** the next
+  work it produced. Firing pops the most salient activation and runs its right hand side.
+  A rule inserts what it returned, and a query keeps it as a row. Propagation drains to completion **before** the next
   activation fires, so a rule always sees a settled network.
 
   `fire_rules/2` is the only entry point that drains. `new/1`, `insert/3` and `retract/3`
@@ -29,13 +29,14 @@ defmodule Rete.Engine do
   alias Rete.Network
   alias Rete.Network.Node
   alias Rete.Taxonomy
+  alias Rete.Token
 
   # A rule that reads the type its own body concludes never settles, and nothing detects
   # that shape. So the cap is what turns a hang into an error that names the rule. See
   # `docs/design/observability.md` §3 for the number, and for what it costs either way.
   @default_max_cycles 100_000
   @default_concurrency 1
-  @default_timeout :infinity
+  @default_task_timeout :infinity
 
   @doc """
   A state over a network, with nothing inserted.
@@ -212,23 +213,71 @@ defmodule Rete.Engine do
       it awaits up to this many returned tasks together. It applies their conclusions in
       group order. A body that does not return a task never runs in parallel. See
       `docs/design/engine.md` §11.
-    * `:timeout` — milliseconds the engine waits for one returned task, or `:infinity`, the
-      default. A task that takes longer is shut down, and the call raises.
+    * `:task_timeout` — milliseconds the engine waits for one returned task, or
+      `:infinity`, the default. The wait starts when the task reaches its turn in group
+      order. A task that is not done when the wait ends is shut down, and the call raises.
+    * `:max_duration` — milliseconds the whole call may run, or `:infinity`, the default. The
+      engine checks it before each cycle while work is pending, and it bounds each wait for
+      a task. A call that is past it at a check raises. A call that settles in its last
+      cycle returns. It cannot stop a body that blocks without returning a task.
+    * `:activation_cache` — a plain map from `Rete.ActivationCache.from_session/2`, or
+      `nil`, the default. Any other value raises. A rule or a query can set `:cache` to a
+      value other than `nil` or `false`. An activation of it then takes what the cache
+      holds for an equal activation, and its body does not run.
+    * `:activation_cache_key_fn` — an arity-1 function that gives the key of an
+      activation. When it returns `nil`, that activation runs without the cache.
+      `Rete.ActivationCache.key/1` by default. Give the same function that built the cache.
+
+  When the call raises, for any reason, the engine cancels every task that it started and
+  that is still running. See `docs/design/engine.md` §11.
   """
   @spec fire_rules(State.t(), keyword()) :: State.t()
   def fire_rules(%State{} = state, opts \\ []) do
+    check_renamed!(opts)
+
+    key_fn =
+      opts
+      |> Keyword.get(:activation_cache_key_fn, &Rete.ActivationCache.key/1)
+      |> validate_key_fn!()
+
     cfg = %{
       max_cycles: opts |> Keyword.get(:max_cycles, @default_max_cycles) |> validate_cycles!(),
       concurrency:
         opts |> Keyword.get(:concurrency, @default_concurrency) |> validate_concurrency!(),
-      timeout: opts |> Keyword.get(:timeout, @default_timeout) |> validate_timeout!()
+      task_timeout:
+        opts |> Keyword.get(:task_timeout, @default_task_timeout) |> validate_task_timeout!(),
+      max_duration: opts |> Keyword.get(:max_duration, :infinity) |> validate_max_duration!(),
+      tasks: {__MODULE__, :tasks, make_ref()}
     }
 
+    cfg = Map.put(cfg, :ends_at, ends_at(cfg.max_duration))
+
+    cache =
+      case opts |> Keyword.get(:activation_cache) |> validate_cache!() do
+        nil -> nil
+        cache -> {cache, key_fn}
+      end
+
+    # The cache is on the state only while this call runs. `compute/4` reads it there when
+    # an activation fires. Clearing it on return keeps it out of the session and its dumps.
+    state = emit(%State{state | activation_cache: cache}, fn -> {:fire_started} end)
+
     state
-    |> emit(fn -> {:fire_started, opts} end)
-    |> coalesce_queue()
-    |> drain()
-    |> fire_loop(cfg, 0, %{})
+    |> fire(cfg)
+    |> Map.put(:activation_cache, nil)
+  end
+
+  # The one place a fire's tasks are cancelled. A raise discards the state, so the tasks
+  # live in the process dictionary, under a key of this call. A body that fires another
+  # session gets a key of its own.
+  defp fire(state, cfg) do
+    state |> coalesce_queue() |> drain() |> fire_loop(cfg, 0, %{})
+  catch
+    kind, reason ->
+      cancel_all(cfg)
+      :erlang.raise(kind, reason, __STACKTRACE__)
+  after
+    Process.delete(cfg.tasks)
   end
 
   # Do not relax this to accept any term. `fired >= nil` is false for every integer under
@@ -247,16 +296,69 @@ defmodule Rete.Engine do
     raise ArgumentError, ":concurrency must be a positive integer, got: #{inspect(other)}"
   end
 
-  defp validate_timeout!(:infinity), do: :infinity
-  defp validate_timeout!(n) when is_integer(n) and n > 0, do: n
+  defp validate_task_timeout!(:infinity), do: :infinity
+  defp validate_task_timeout!(n) when is_integer(n) and n > 0, do: n
 
-  defp validate_timeout!(other) do
+  defp validate_task_timeout!(other) do
     raise ArgumentError,
-          ":timeout must be a positive integer or :infinity, got: #{inspect(other)}"
+          ":task_timeout must be a positive integer or :infinity, got: #{inspect(other)}"
+  end
+
+  defp validate_max_duration!(:infinity), do: :infinity
+  defp validate_max_duration!(n) when is_integer(n) and n > 0, do: n
+
+  defp validate_max_duration!(other) do
+    raise ArgumentError,
+          ":max_duration must be a positive integer or :infinity, got: #{inspect(other)}"
+  end
+
+  # Unknown keys are ignored. So an old name would silently stop limiting anything, and
+  # the call would wait without end where it used to raise.
+  @renamed [timeout: :task_timeout]
+
+  defp check_renamed!(opts) do
+    for {old, new} <- @renamed, Keyword.has_key?(opts, old) do
+      raise ArgumentError,
+            "#{inspect(old)} is now #{inspect(new)}. Give #{inspect(new)} the same value. " <>
+              ":task_timeout limits the wait for one task, and :max_duration limits the " <>
+              "whole call."
+    end
+
+    :ok
+  end
+
+  defp ends_at(:infinity), do: :infinity
+  defp ends_at(ms), do: System.monotonic_time(:millisecond) + ms
+
+  defp validate_key_fn!(fun) when is_function(fun, 1), do: fun
+
+  defp validate_key_fn!(other) do
+    raise ArgumentError,
+          ":activation_cache_key_fn must be a function of arity 1, got: #{inspect(other)}"
+  end
+
+  defp validate_cache!(nil), do: nil
+  defp validate_cache!(cache) when is_map(cache) and not is_struct(cache), do: cache
+
+  # Named, not inspected. A session is the likely struct here, and its dump is the whole
+  # working memory.
+  defp validate_cache!(%module{}) do
+    raise ArgumentError,
+          ":activation_cache takes a plain map, and got a #{inspect(module)} struct. Build " <>
+            "the map with `Rete.ActivationCache.from_session(session)`, and give that."
+  end
+
+  defp validate_cache!(other) do
+    raise ArgumentError,
+          ":activation_cache must be a map from Rete.ActivationCache.from_session/2, or " <>
+            "nil, got: #{inspect(other)}"
   end
 
   @doc """
-  Runs a query: one result per match, computed by the query's body.
+  Reads a query: one row per match.
+
+  The body of the query ran when its match fired, during `fire_rules/2`. This returns the
+  rows that those bodies gave, and runs no body.
 
   A query is named by the `{module, name}` pair it was defined under. `defquery
   summary(...)` also defines `summary` in its own module, and calling that is the readable
@@ -274,7 +376,7 @@ defmodule Rete.Engine do
   A parameter matches a binding by **term equality**, in the same way as a map key. `1` and
   `1.0` are therefore different parameter values, but `==` reports that they are equal.
 
-  Row order is **unspecified**. Rows follow the order the facts arrived in.
+  Row order is **unspecified**. Rows follow the order the matches fired in.
   """
   @spec query(State.t(), {module(), atom()}, keyword() | %{atom() => term()}) :: [term()]
   def query(state, ref, params \\ [])
@@ -285,9 +387,9 @@ defmodule Rete.Engine do
     params = normalize_params(params)
     check_params!(node, params)
 
-    state.memory
-    |> Memory.tokens(node.id, params)
-    |> Enum.map(&node.rhs.(node.hash, &1.bindings))
+    # The bucket of a query holds `{token, row}`, keyed on its parameters. See
+    # `Memory.add_row/5`.
+    for {_token, row} <- Memory.tokens(state.memory, node.id, params), do: row
   end
 
   def query(%State{} = state, name, _params) when is_atom(name) do
@@ -456,11 +558,30 @@ defmodule Rete.Engine do
         raise RuntimeError, runaway(state, fired, tally)
 
       {:ok, mode, activations, state} ->
+        check_duration!(cfg, fired)
+
         state
         |> fire_cycle(activations, cfg, mode)
         |> fire_loop(cfg, fired + 1, tally(tally, activations))
     end
   end
+
+  # Checked only when work is pending, as the cycle cap is. A fire that settles just after
+  # its :max_duration has not overrun.
+  defp check_duration!(%{ends_at: :infinity}, _fired), do: :ok
+
+  defp check_duration!(cfg, fired) do
+    if time_left(cfg) <= 0 do
+      raise RuntimeError,
+            "fire_rules ran past its :max_duration of #{cfg.max_duration} ms, after " <>
+              "#{fired} cycles. The engine cancelled the tasks it had started. Raise " <>
+              ":max_duration, or " <>
+              "remove it to let the call run until the agenda is empty."
+    end
+  end
+
+  defp time_left(%{ends_at: :infinity}), do: :infinity
+  defp time_left(cfg), do: cfg.ends_at - System.monotonic_time(:millisecond)
 
   # One activation at the default concurrency, a whole activation group above it. Either
   # way, what comes back is one cycle. `:max_cycles` counts these, not the activations
@@ -543,7 +664,12 @@ defmodule Rete.Engine do
   # is awaited at once, so nothing overlaps.
   defp fire_cycle(%State{} = state, [activation], cfg, :popped) do
     node = Network.node(state.network, activation.node_id)
-    result = node |> compute(activation) |> settle(node, activation, cfg.timeout)
+
+    result =
+      state
+      |> compute(cfg, node, activation)
+      |> settle(node, activation, cfg)
+      |> track_listed(cfg)
 
     state |> conclude(activation, node, result) |> drain()
   end
@@ -583,9 +709,10 @@ defmodule Rete.Engine do
     state
   end
 
+  # A hit is not a task, so `shrink/5` applies it as soon as it reaches the head.
   defp run_body(state, activation, window, in_flight, cfg) do
     node = Network.node(state.network, activation.node_id)
-    outcome = compute(node, activation)
+    outcome = compute(state, cfg, node, activation)
     in_flight = if match?({:task, _}, outcome), do: in_flight + 1, else: in_flight
 
     shrink(state, :queue.in({activation, node, outcome}, window), in_flight, cfg, cfg.concurrency)
@@ -595,27 +722,14 @@ defmodule Rete.Engine do
   defp shrink(state, window, in_flight, cfg, limit) do
     case :queue.out(window) do
       {{:value, {_activation, _node, {:task, _}} = head}, rest} when in_flight >= limit ->
-        state |> apply_head(head, rest, cfg) |> shrink(rest, in_flight - 1, cfg, limit)
+        head |> apply_conclusions(state, cfg) |> shrink(rest, in_flight - 1, cfg, limit)
 
       {{:value, {_activation, _node, outcome} = head}, rest} when elem(outcome, 0) != :task ->
-        state |> apply_head(head, rest, cfg) |> shrink(rest, in_flight, cfg, limit)
+        head |> apply_conclusions(state, cfg) |> shrink(rest, in_flight, cfg, limit)
 
       _ ->
         {state, window, in_flight}
     end
-  end
-
-  # A raise here leaves the tasks behind the head running, and nothing would ever await
-  # them. So they are shut down before the error goes on.
-  defp apply_head(state, head, rest, cfg) do
-    apply_conclusions(head, state, cfg.timeout)
-  catch
-    kind, reason ->
-      for {_activation, _node, {:task, task}} <- :queue.to_list(rest) do
-        _ = Task.shutdown(task, :brutal_kill)
-      end
-
-      :erlang.raise(kind, reason, __STACKTRACE__)
   end
 
   # Each activation leaves the agenda as its own conclusions are applied. `:missing` means
@@ -623,24 +737,38 @@ defmodule Rete.Engine do
   # not fire — the same outcome firing one at a time would give. Its body ran while a task
   # ahead of it was in flight, and the engine discards the result. Its task is shut down
   # rather than awaited, so a task that fails cannot raise for a match that no longer holds.
-  defp apply_conclusions({activation, node, outcome}, %State{} = state, timeout) do
+  defp apply_conclusions({activation, node, outcome}, %State{} = state, cfg) do
     case Agenda.remove(state.agenda, activation) do
       {agenda, :removed} ->
-        result = settle(outcome, node, activation, timeout)
+        result = outcome |> settle(node, activation, cfg) |> track_listed(cfg)
         %State{state | agenda: agenda} |> conclude(activation, node, result) |> drain()
 
       {_agenda, :missing} ->
-        with {:task, task} <- outcome, do: _ = Task.shutdown(task, :brutal_kill)
+        case outcome do
+          {:task, task} -> shut_down(cfg, task)
+          {:ok, facts} -> facts |> listed_tasks() |> Enum.each(&shut_down(cfg, &1))
+          _outcome -> :ok
+        end
+
         state
     end
   end
 
   # It returns failure rather than raising it. Under concurrency the failure waits for its
   # turn in group order, so it is raised where the sequential path would raise it.
-  defp compute(node, %Activation{token: token}) do
-    case node.rhs.(node.args, token.bindings) do
-      %Task{} = task -> {:task, task}
-      result -> {:ok, normalize_facts(result)}
+  #
+  # The cache lookup is inside the rescue too. It calls the user's key function, so its
+  # failure is reported as a body's would be.
+  defp compute(%State{activation_cache: cache}, cfg, node, %Activation{token: token}) do
+    case Rete.ActivationCache.lookup(cache, node, token) do
+      {:ok, facts} ->
+        {:cached, facts}
+
+      :error ->
+        case node.rhs.(node.args, token.bindings) do
+          %Task{} = task -> {:task, track(cfg, task)}
+          result -> node |> concluded(result) |> track_listed(cfg)
+        end
     end
   rescue
     error -> {:raised, error, __STACKTRACE__}
@@ -649,43 +777,168 @@ defmodule Rete.Engine do
   end
 
   # `Task.yield/2` raises for a task that another process owns, and that error names no
-  # rule. So the owner is checked first. A timeout shuts the task down, because nothing
-  # else would.
-  defp settle({:task, %Task{owner: owner} = task}, node, %Activation{token: token}, _timeout)
+  # rule. So the owner is checked first. The foreign task stays tracked, so the raise
+  # cancels it if this fire started it.
+  #
+  # The wait is the shorter of `:task_timeout` and the time left of `:max_duration`. Either
+  # way the task is shut down, because nothing else would.
+  defp settle({:task, %Task{owner: owner} = task}, node, %Activation{token: token}, _cfg)
        when owner != self() do
     raise ArgumentError, foreign_task(node, token, task)
   end
 
-  defp settle({:task, task}, node, %Activation{token: token}, timeout) do
-    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
-      {:ok, %Task{} = inner} -> raise ArgumentError, task_in_facts(node, token, inner)
-      {:ok, value} -> {:ok, normalize_facts(value)}
+  defp settle({:task, task}, node, %Activation{token: token}, cfg) do
+    {wait, cause} = wait(cfg)
+    reply = Task.yield(task, wait) || Task.shutdown(task, :brutal_kill)
+    untrack(cfg, task)
+
+    case reply do
+      {:ok, %Task{} = inner} -> raise ArgumentError, task_in_facts(node, token, track(cfg, inner))
+      {:ok, value} -> concluded(node, value)
       {:exit, reason} -> {:exited, reason}
+      nil when cause == :max_duration -> {:past_duration, cfg.max_duration}
       nil -> :timed_out
     end
   end
 
-  defp settle(outcome, _node, _activation, _timeout), do: outcome
+  defp settle(outcome, _node, _activation, _cfg), do: outcome
 
-  # The engine records facts against the token before inserting them. So retracting the
-  # token later finds them, even if the insertion cascades.
-  defp conclude(%State{} = state, %Activation{token: token}, node, result) do
-    facts = result |> unwrap!(node, token) |> check_facts!(state, node, token)
+  # A query keeps what its body returned as one row, so `nil` and a list are rows too.
+  defp concluded(%Node.Query{}, value), do: {:ok, value}
+  defp concluded(_node, value), do: {:ok, normalize_facts(value)}
 
-    case facts do
-      [] ->
-        emit(state, fn -> {:activation_fired, Node.source(node), token, []} end)
-
-      facts ->
-        memory = Memory.add_insertion(state.memory, node.id, token, facts)
-
-        %State{state | memory: memory}
-        |> emit(fn -> {:activation_fired, Node.source(node), token, facts} end)
-        |> insert(facts, {node.module, node.name})
+  defp wait(cfg) do
+    case {cfg.task_timeout, time_left(cfg)} do
+      {timeout, :infinity} -> {timeout, :task_timeout}
+      {:infinity, left} -> {max(left, 0), :max_duration}
+      {timeout, left} when left < timeout -> {max(left, 0), :max_duration}
+      {timeout, _left} -> {timeout, :task_timeout}
     end
   end
 
+  # --- the tasks of a fire ------------------------------------------------------------
+
+  # Every task the fire has seen and not yet settled, by ref. `fire/2` cancels what is left
+  # here when the call raises, and deletes the entry when it returns.
+  #
+  # By ref and not by pid, because a task from `Task.completed/1` has no pid. It is still
+  # tracked, so that a raise shuts it down, and that flushes its reply.
+  defp track(cfg, %Task{ref: ref} = task) do
+    Process.put(cfg.tasks, Map.put(Process.get(cfg.tasks, %{}), ref, task))
+    task
+  end
+
+  defp untrack(cfg, %Task{ref: ref}) do
+    case Process.get(cfg.tasks) do
+      nil -> :ok
+      tasks -> Process.put(cfg.tasks, Map.delete(tasks, ref))
+    end
+  end
+
+  # Only a task of this process. `Task.shutdown/2` raises for any other task, and a fire
+  # that does not raise kills nothing it does not own. A foreign task stays tracked, so a
+  # later raise reaches it, under the rule of `cancel/1`.
+  #
+  # A task that finished first gives its reply to `Task.shutdown/2`. The tasks in that reply
+  # are tracked, as a reply on any other path is.
+  defp shut_down(cfg, %Task{owner: owner} = task) when owner == self() do
+    case Task.shutdown(task, :brutal_kill) do
+      {:ok, reply} -> reply |> listed_tasks() |> Enum.each(&track(cfg, &1))
+      _gone -> :ok
+    end
+
+    untrack(cfg, task)
+  end
+
+  defp shut_down(_cfg, _task), do: :ok
+
+  # A task in a list of facts makes `check_facts!/5` raise. It is tracked as soon as the
+  # body returns, so a raise ahead of it in the window cancels it too. A cached result is
+  # not, because its pids come from storage.
+  defp track_listed({:ok, facts} = result, cfg) do
+    facts |> listed_tasks() |> Enum.each(&track(cfg, &1))
+    result
+  end
+
+  defp track_listed(result, _cfg), do: result
+
+  # The tasks at the top level of a list of facts. The list can be improper, because
+  # `normalize_facts/1` leaves one for `check_facts!/5` to refuse.
+  defp listed_tasks([%Task{} = task | tail]), do: [task | listed_tasks(tail)]
+  defp listed_tasks([_fact | tail]), do: listed_tasks(tail)
+  defp listed_tasks(%Task{} = task), do: [task]
+  defp listed_tasks(_tail), do: []
+
+  defp cancel_all(cfg) do
+    cfg.tasks |> Process.get(%{}) |> Map.values() |> Enum.each(&cancel/1)
+  end
+
+  # A task of this process is shut down, which also flushes its reply. Any other task is
+  # killed only if its `$callers` lead back here. That is a task started inside a task that
+  # this fire started. A task that another process started for its own reasons is left.
+  # `$callers` cannot tell when a process started. So a task that a worker of this process
+  # started for itself is killed too, if a body returned it. `docs/design/engine.md` §11.
+  #
+  # A task that finished first gives its reply to `Task.shutdown/2`. The tasks in that reply
+  # were started inside it, so they are cancelled too.
+  defp cancel(%Task{owner: owner} = task) when owner == self() do
+    with {:ok, reply} <- Task.shutdown(task, :brutal_kill),
+         do: reply |> listed_tasks() |> Enum.each(&cancel/1)
+  end
+
+  defp cancel(%Task{pid: pid}) do
+    if started_here?(pid), do: Process.exit(pid, :kill)
+  end
+
+  defp started_here?(pid) when node(pid) == node() do
+    case Process.info(pid, :dictionary) do
+      {:dictionary, dictionary} -> self() in Keyword.get(dictionary, :"$callers", [])
+      nil -> false
+    end
+  end
+
+  defp started_here?(_pid), do: false
+
+  # The engine records facts against the token before inserting them. So retracting the
+  # token later finds them, even if the insertion cascades.
+  #
+  # A firing that concluded nothing is recorded too, as an empty batch. Without it,
+  # `Rete.Inspect` could not tell that rule from one that never matched, and the cache
+  # could not answer for its body.
+  #
+  # A hit takes this path too, so it is recorded like a firing. Truth maintenance and
+  # `Rete.Inspect` then see no difference, and this session can be the cache of the next.
+  # The facts are checked again, because the cache can come from another network.
+  # A query keeps its row against the token, as a rule keeps its facts, and inserts nothing.
+  defp conclude(%State{} = state, %Activation{token: token}, %Node.Query{} = node, result) do
+    cached? = match?({:cached, _row}, result)
+    row = unwrap!(result, node, token)
+    memory = Memory.add_row(state.memory, node.id, Token.join_key(token, node.params), token, row)
+    emit(%State{state | memory: memory}, fn -> fired(node, token, [row], cached?) end)
+  end
+
+  defp conclude(%State{} = state, %Activation{token: token}, node, result) do
+    cached? = match?({:cached, _facts}, result)
+    facts = result |> unwrap!(node, token) |> check_facts!(state, node, token, cached?)
+    memory = Memory.add_insertion(state.memory, node.id, token, facts)
+    state = emit(%State{state | memory: memory}, fn -> fired(node, token, facts, cached?) end)
+
+    case facts do
+      [] -> state
+      facts -> insert(state, facts, origin(node, cached?))
+    end
+  end
+
+  defp fired(node, token, facts, false), do: {:activation_fired, Node.source(node), token, facts}
+
+  defp fired(node, token, facts, true),
+    do: {:activation_fired, Map.put(Node.source(node), :cached, true), token, facts}
+
+  defp origin(node, false), do: {node.module, node.name}
+  defp origin(node, true), do: {node.module, node.name, :cached}
+
   defp unwrap!({:ok, facts}, _node, _token), do: facts
+  defp unwrap!({:cached, facts}, _node, _token), do: facts
 
   # Reraised exactly as thrown, with the original stacktrace. That stacktrace already
   # names the generated `__rhs_<name>__` frame, in the ruleset module or its image. So the
@@ -696,12 +949,21 @@ defmodule Rete.Engine do
   defp unwrap!({:caught, kind, value, stacktrace}, _node, _token),
     do: :erlang.raise(kind, value, stacktrace)
 
+  defp unwrap!({:past_duration, max_duration}, node, token) do
+    raise RuntimeError,
+          "fire_rules ran past its :max_duration of #{max_duration} ms while it waited " <>
+            "for " <>
+            "#{Network.ref_string({node.module, node.name})}. It fired on " <>
+            "#{inspect(token.bindings)}. The engine cancelled the tasks it had started. " <>
+            "Raise :max_duration, or remove it."
+  end
+
   # The engine shut the task down, so there is no original error to reraise.
   defp unwrap!(:timed_out, node, token) do
     raise RuntimeError,
           "#{Network.ref_string({node.module, node.name})} did not finish: " <>
-            ":timeout. It fired on #{inspect(token.bindings)}. " <>
-            "Raise :timeout, or remove it to wait indefinitely."
+            ":task_timeout. It fired on #{inspect(token.bindings)}. " <>
+            "Raise :task_timeout, or remove it to wait indefinitely."
   end
 
   # The caller outlived the exit of the task, so `Task.yield/2` reported it.
@@ -714,51 +976,85 @@ defmodule Rete.Engine do
     """
   end
 
-  # A rule may return one fact, a list of them, or nothing.
+  # A rule may return one fact, a list of them, or nothing. An improper list is left as it
+  # is, so that every path reaches `check_facts!/5`, which names the rule.
   defp normalize_facts(nil), do: []
-  defp normalize_facts(facts) when is_list(facts), do: Enum.reject(facts, &is_nil/1)
+
+  defp normalize_facts(facts) when is_list(facts) do
+    if List.improper?(facts), do: facts, else: Enum.reject(facts, &is_nil/1)
+  end
+
   defp normalize_facts(fact), do: [fact]
 
   # Attributes a body's non-fact return value to the rule that returned it. The `try`
   # must wrap the type call for one fact, and nothing else. Wrapping the insertion too
   # would catch whatever the resulting cascade raises, and blame it on this rule.
-  defp check_facts!(facts, %State{} = state, node, token) do
+  #
+  # A cached fact is checked as well, because the cache can come from another network. Its
+  # error says so, because the body did not run and cannot be the cause.
+  defp check_facts!(facts, %State{} = state, node, token, cached?) do
+    if List.improper?(facts), do: raise(ArgumentError, improper(node, token, facts))
+
     Enum.each(facts, fn
       # A task is a struct, so the taxonomy would give it a type and insert it.
       %Task{} = task ->
-        raise ArgumentError, task_in_facts(node, token, task)
+        raise ArgumentError, task_in_facts(node, token, task, cached?)
 
       fact ->
-        check_fact!(fact, state, node, token)
+        check_fact!(fact, state, node, token, cached?)
     end)
 
     facts
   end
 
-  defp check_fact!(fact, %State{} = state, node, token) do
+  defp check_fact!(fact, %State{} = state, node, token, cached?) do
     type =
       try do
         Taxonomy.fact_type(state.network.taxonomy, fact)
       rescue
         error ->
           reraise ArgumentError,
-                  [message: not_a_fact(node, token, fact, error)],
+                  [message: not_a_fact(node, token, fact, error, cached?)],
                   __STACKTRACE__
       end
 
     if not node.generated? and MapSet.member?(state.network.reserved_types, type) do
-      raise ArgumentError, concluded_marker(node, token, fact, type)
+      raise ArgumentError, concluded_marker(node, token, fact, type, cached?)
     end
   end
 
-  defp task_in_facts(node, token, task) do
+  # The opening of each error about a returned value. A hit names the cache, because the
+  # body did not run.
+  defp gave(node, value, false),
+    do: "#{Network.ref_string({node.module, node.name})} returned #{inspect(value)}"
+
+  defp gave(node, value, true),
+    do:
+      "The activation cache holds #{inspect(value)} for " <>
+        Network.ref_string({node.module, node.name})
+
+  @cache_advice "The body did not run. The cache came from another network or from " <>
+                  "storage. Build it again with `Rete.ActivationCache.from_session/2`, or " <>
+                  "give `:cache` a new value."
+
+  defp task_in_facts(node, token, task, cached? \\ false)
+
+  defp task_in_facts(node, token, task, false) do
     """
-    #{Network.ref_string({node.module, node.name})} returned #{inspect(task)} among its \
-    facts.
+    #{gave(node, task, false)} among its facts.
 
     It fired on #{inspect(token.bindings)}. A body may return one task, and the result of \
     that task is the facts. The engine does not await a task in a list, or a task that a \
     task returns.\
+    """
+  end
+
+  defp task_in_facts(node, token, task, true) do
+    """
+    #{gave(node, task, true)} among its facts.
+
+    It fired on #{inspect(token.bindings)}. A cache holds facts, and not tasks. \
+    #{@cache_advice}\
     """
   end
 
@@ -772,12 +1068,13 @@ defmodule Rete.Engine do
     """
   end
 
-  defp concluded_marker(node, token, fact, type) do
-    """
-    #{Network.ref_string({node.module, node.name})} returned #{inspect(fact)}. \
-    #{Negation.reserved_message(type)}
+  defp concluded_marker(node, token, fact, type, cached?) do
+    advice = if cached?, do: @cache_advice, else: "Return a fact of another type."
 
-    It fired on #{inspect(token.bindings)}. Return a fact of another type.\
+    """
+    #{gave(node, fact, cached?)}. #{Negation.reserved_message(type)}
+
+    It fired on #{inspect(token.bindings)}. #{advice}\
     """
   end
 
@@ -814,14 +1111,33 @@ defmodule Rete.Engine do
     ArgumentError -> false
   end
 
-  defp not_a_fact(node, token, fact, error) do
+  # Only a body reaches this. `Rete.ActivationCache.lookup/3` refuses an improper list.
+  defp improper(node, token, facts) do
     """
-    #{Network.ref_string({node.module, node.name})} returned #{inspect(fact)}, \
-    which is not a fact.
+    #{gave(node, facts, false)}, which is an improper list.
+
+    It fired on #{inspect(token.bindings)}. The body of a rule is the facts to insert: \
+    return one fact, a proper list of facts, or `nil`/`[]` to insert nothing.\
+    """
+  end
+
+  defp not_a_fact(node, token, fact, error, false) do
+    """
+    #{gave(node, fact, false)}, which is not a fact.
 
     It fired on #{inspect(token.bindings)}. The body of a rule is the facts to \
     insert: return a struct, a tagged tuple `{:type, ...}`, a tagged map \
     `%{__type__: ...}`, a list of those, or `nil`/`[]` to insert nothing.
+
+    #{Exception.message(error)}\
+    """
+  end
+
+  defp not_a_fact(node, token, fact, error, true) do
+    """
+    #{gave(node, fact, true)}, which is not a fact on this network.
+
+    It fired on #{inspect(token.bindings)}. #{@cache_advice}
 
     #{Exception.message(error)}\
     """

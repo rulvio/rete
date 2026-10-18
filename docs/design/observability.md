@@ -68,10 +68,17 @@ to resolve it. `{module, name}` is already the identity that `Rete.Session.query
 shape every listener matches on. `{:propagated, ...}` is the exception, and it keeps the
 bare id: it fires for every node, and a join has no name.
 
-`origin` is a `{module, name}` pair. `{Rete.Session, :insert}` and
-`{Rete.Session, :retract}` mean your own call. Any other pair names the rule whose match
-added or lost the fact. So a listener can reconstruct provenance from events alone, without
-reading memory. The origin is the same pair that `Rete.Inspect` reports in `:sources`.
+`origin` is a `{module, name}` pair, with one exception below. `{Rete.Session, :insert}`
+and `{Rete.Session, :retract}` mean your own call. Any other pair names the rule whose
+match added or lost the fact. So a listener can reconstruct provenance from events alone,
+without reading memory. The origin is the same pair that `Rete.Inspect` reports in
+`:sources`.
+
+An activation cache changes two things. A hit adds `cached: true` to the source of its
+`:activation_fired`. A fact that the hit inserted has the origin `{module, name, :cached}`.
+Its first two elements are the pair that `Rete.Inspect` reports. The retraction of that
+fact has the plain pair, because the retraction names the rule whose match lost the fact.
+A listener that pairs the two events compares the first two elements.
 
 A listener **must** have a catch-all clause. The engine adds new events as it grows. A
 listener that crashed on an unfamiliar event would turn every upgrade into a breaking
@@ -90,6 +97,11 @@ records what it needs. `memory.insertions` is `node_id => token => [[facts]]`: "
 at this production inserted these facts". Read backwards, this is exactly a provenance
 edge. A token's `:matches` is the ordered list of facts behind it. `explain/1,2` just walks
 these two structures.
+
+A firing that concluded nothing is an empty batch in `insertions`. So `explain/1,2`
+reports it with `asserts: []`, and it differs from a rule that never matched. Clara's
+`:rule-matches` holds only the matches with a logical insertion, so rete differs from
+Clara here.
 
 Prefer the memory-derived answer wherever one exists. It needs no setup, and it cannot
 drift from reality. Listeners add only what memory cannot know: history, ordering, and
@@ -285,12 +297,6 @@ just catch the error.
 * **`explain/1,2` is a snapshot, not a history.** It reads truth maintenance, so a rule
   that fired and was later retracted reports no activation for that match. Attach
   `Rete.Listener.Collect`, and read `:activation_fired` events for that instead.
-* **A rule that concludes nothing reports no activation.** Truth maintenance records a
-  match only where a conclusion rests on it, and a production keeps no tokens of its own.
-  So a body returning `nil` or `[]` fires and leaves nothing behind to read, and
-  `activations: []` cannot be told apart from a rule that never matched. Clara splits the
-  same way: its `:rule-matches` holds only the matches with a logical insertion. A listener
-  sees these firings, as an `:activation_fired` event carrying no facts.
 * **No "why did this fact *not* get concluded".** `why_not/1,2` answers that for a named
   rule. Nothing starts from a hypothetical fact and works backwards.
 * **`Listener.Collect` grows without bound.** Fine for a test or a debugging session, not

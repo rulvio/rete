@@ -36,6 +36,10 @@ defmodule Rete.CanonTest do
     |> Map.values()
     |> Enum.flat_map(&Map.values/1)
     |> Enum.concat()
+    |> Enum.map(fn
+      {token, _row} -> token
+      token -> token
+    end)
   end
 
   defp binding(session, name) do

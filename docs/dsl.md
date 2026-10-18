@@ -596,9 +596,11 @@ end
 | key | meaning |
 |---|---|
 | `:salience` | firing priority, default `0`. Higher fires first. |
+| `:cache` | any value other than `nil` or `false` lets an activation cache answer for the body. Default `nil`. See [The activation cache](#the-activation-cache). |
 
 Activations fire in `salience` order, descending. Ties break on the order the rules were
-defined in.
+defined in. A query takes salience too, because it fires as a rule does. Its row changes no
+other match, so salience only decides when its body runs.
 
 Salience orders *firing*, not matching. Every rule whose left hand side holds fires
 eventually. By the time `fire_rules/2` returns, the session is consistent regardless of
@@ -607,7 +609,7 @@ as a general control-flow mechanism.
 
 `:internal_salience` is reserved. The compiler uses it to make an extracted negation
 helper run before the rule that negates its marker. Setting `:internal_salience` yourself
-raises an error. Any other key raises an error too, except `:meta`, below.
+raises an error. Any other key raises an error too, except `:cache` and `:meta`.
 
 ### Attaching your own data: `:meta`
 
@@ -629,10 +631,54 @@ iex> Rete.get_rule_data([MyRuleset]) |> Enum.map(&{&1.name, Keyword.get(&1.opts,
 [urgent: %{owner: "billing", ticket: "OPS-42"}]
 ```
 
+### Default rule options
+
+A ruleset module can give options to all of its rules:
+
+```elixir
+defmodule MyRuleset do
+  use Rete.Ruleset, default_rule_opts: %{cache: true}
+
+  defrule enrich({:customer, cid}), do: {:profile, cid}
+  defrule live(%{cache: false}, {:tick, t}), do: {:seen, t}
+end
+```
+
+A build can give them too, to every rule of every module in it:
+
+```elixir
+Rete.Session.new([MyRuleset, OtherRuleset], default_rule_opts: %{cache: true})
+```
+
+The defaults take `:salience`, `:cache` and `:meta`. Any other key raises an error, and so
+does a key that is not an atom or a key given twice. A map and a keyword list both work. In
+the module, write the map literally.
+
+When two levels set one key, the more specific level wins. The build default is the
+weakest. The module default wins over it. The options map of the rule wins over both. So
+`live` above stays uncached under either default.
+
+A default merges key by key. A `:meta` in a rule replaces a default `:meta` as a whole. A
+change to a default `:cache` value makes every cached rule of that level miss. A query gets
+the defaults too, `:salience` included. A negation helper that the compiler generates gets
+a default salience, as it gets a written one. It never gets `:cache`.
+
+The values of a module default are evaluated one time, where `use` is. A module attribute
+that a default names keeps the value it had there. A module can use `Rete.Ruleset` only one
+time, and a second `use` raises an error.
+
+`Rete.get_rule_data/1` shows the options of a rule after the module defaults. The build
+defaults are not in it, because they belong to the build.
+
 ## Queries
 
-A query has the same left hand side as a rule. It never fires. You read it instead, and
-**its body is what you get**: one result per match, shaped however you like.
+A query has the same left hand side as a rule, and it fires as a rule does. Its body runs
+during `fire_rules/2`, once for each match. The session keeps what the body returns as the
+row of that match, and inserts nothing. You read the rows, and **the body is what you get**:
+one result per match, shaped however you like. A read runs no body.
+
+A query takes `:salience` and `:cache` as a rule does. A body that returns a task is
+awaited, and the reply of the task is the row. When a match goes, its row goes with it.
 
 ```elixir
 defquery large_orders({:large_order, cid, amt}) do
@@ -878,7 +924,7 @@ Two more points:
   answer from before that insert. See "Expecting anything to happen before `fire_rules/2`"
   below.
 
-Row order is unspecified. Rows come back in the order the facts arrived in, so the same
+Row order is unspecified. Rows come back in the order the matches fired in, so the same
 facts fed in a different order answer in a different order. **Sort the result yourself if
 order matters to you.**
 
@@ -890,39 +936,38 @@ A parameter keys the matches of a query. A keyed store holds one bucket for each
 value. The cost of a head is thus the **cardinality** of the variable that it names. The
 head itself costs almost nothing.
 
-These measurements insert 4,000 matches. `mix bench` runs them.
+These measurements insert 4,000 matches and fire them. The fire runs each body once.
+`mix bench` runs them.
 
 | head | insert | memory | buckets |
 |---|---|---|---|
-| no parameters | 2.3 ms | 1,108 KB | 1 |
-| one parameter, 4 distinct values | 2.6 ms | 1,109 KB | 4 |
-| one parameter, all distinct | 4.2 ms | 1,872 KB | 4,000 |
-| three parameters, all distinct | 4.6 ms | 2,060 KB | 4,000 |
+| no parameters | 10 ms | 1,435 KB | 1 |
+| one parameter, 4 distinct values | 12 ms | 1,435 KB | 4 |
+| one parameter, all distinct | 15 ms | 2,200 KB | 4,000 |
+| three parameters, all distinct | 13 ms | 2,511 KB | 4,000 |
 
 A parameter with a low cardinality costs very little. The added work is one `Map.take/2`
-for each token, and the buckets hold the same tokens in a different arrangement. A
-parameter on a unique field uses approximately 69% more memory, because each bucket has its
-own structure, and there is now one bucket for each row. Retraction does not vary with the
+for each row, and the buckets hold the same rows in a different arrangement. A parameter on
+a unique field uses approximately 53% more memory, because each bucket has its own
+structure, and there is now one bucket for each row. Retraction does not vary with the
 head by more than the noise of the measurement.
 
 ### How much a parameter saves
 
-A read still builds every row that it returns. The parameter saves only the scan. The
+A read runs no body, so it costs the rows that it walks. The parameter saves the scan. The
 increase in speed thus follows the number of distinct values that the parameter takes.
 These measurements read one value out of 4,000 matches. They compare a query with a head
 against a query without a head, which Elixir code then filters:
 
 | distinct values | rows returned | headless + filter | parameter | |
 |---|---|---|---|---|
-| 1 | 4,000 | 0.17 ms | 0.11 ms | 1.5× |
-| 4 | 1,000 | 0.11 ms | 0.019 ms | 6× |
-| 20 | 200 | 0.10 ms | 0.0022 ms | 45× |
-| 200 | 20 | 0.090 ms | 0.00025 ms | 375× |
-| 4,000 | 1 | 0.089 ms | 0.0001 ms | 860× |
+| 1 | 4,000 | 0.2 ms | 0.16 ms | 1.3× |
+| 4 | 1,000 | 0.16 ms | 0.018 ms | 9× |
+| 20 | 200 | 0.12 ms | 0.0014 ms | 80× |
+| 200 | 20 | 0.11 ms | 0.00025 ms | 450× |
+| 4,000 | 1 | 0.11 ms | 0.00015 ms | 800× |
 
-Read the ratio, and not the two durations. Both of them move with the work that the body
-does, and this body returns a value that it already holds. The table below shows what a
-body that builds something does to the same comparison.
+Read the ratio, and not the two durations. The durations move with the machine.
 
 As a general rule, the increase in speed is approximately the number of distinct values.
 The fixed cost of a call then becomes the limit. This rule applies if the values are
@@ -934,14 +979,12 @@ distinct values saves little and costs little. A parameter on a field with many 
 values saves almost the full cost of the read. Do not add a parameter that you never
 supply.
 
-**A filter on the rows is the slow method.** It becomes slower as the body does more work.
-A parameter keys on the bindings, so the body runs only for the rows that you asked for.
-`Enum.filter/2` on the result runs the body for every match, and then discards most of the
-rows. For a body that builds a map and a string, 50 reads select 1 row out of 4,000
-matches. A filter on the result takes 18 ms. A parameter takes 0.01 ms. This is a factor of
-approximately 1,600, against the 860× that the same selection gives with a body that builds
-nothing. Declare the head if you know what you read by. Use a filter on the result only for
-an occasional selection that the query does not support.
+**A filter on the rows is the slow method.** A read runs no body, but `Enum.filter/2` on
+the result walks every kept row, and then discards most of them. A parameter reads one
+bucket. For a body that builds a map and a string, 50 reads select 1 row out of 4,000
+matches. A filter on the result takes 4 to 5 ms. A parameter takes 0.01 ms. This is a
+factor of approximately 500. Declare the head if you know what you read by. Use a filter on
+the result only for an occasional selection that the query does not support.
 
 ## The right hand side
 
@@ -1013,8 +1056,8 @@ end
 Every body runs in the process that calls `fire_rules/2`. A returned task is the only work
 that runs in parallel. At the default `concurrency: 1`, the engine awaits each task before
 the next body runs. Above `1`, it awaits up to that many tasks of one activation group
-together. A body that blocks without a task never overlaps another. `:timeout` limits how
-long the engine waits for one task.
+together. A body that blocks without a task never overlaps another. `:task_timeout` limits
+how long the engine waits for one task.
 
 Start the task in the body itself, because only its owner can await it. The task is an
 ordinary `Task`, and the usual process rules apply to it. When the engine sees it exit, it
@@ -1022,6 +1065,14 @@ raises an error that names the rule. See `docs/design/engine.md` §11.
 
 Return one bare task. A task inside a list, or a task that returns a task, raises an
 error.
+
+When `fire_rules/2` raises, for any reason, the engine cancels every task that it started
+and that still runs. A task that a timeout or an error leaves behind does not keep running.
+`:max_duration` limits the whole call, in milliseconds. The engine checks it before each
+cycle while work is pending, and it bounds each wait for a task. A call that is past it at a
+check raises, and cancels its tasks in the same way. A call that settles in its last cycle
+returns. The engine cannot see a process that a body starts and
+does not return, so it cannot cancel that one.
 
 ### The return value must follow from the bindings
 
@@ -1039,6 +1090,100 @@ tell which one belongs to the occurrence that left. The counts stay right, and t
 still drains to empty. But `Rete.Inspect.explain/1,2` names the wrong match for the fact.
 Read a clock or a counter **before** firing, and insert the value as a fact the rule
 matches on.
+
+### The activation cache
+
+A rule can take its conclusion from a cache, instead of running its body. It opts in when
+its `:cache` option is a value other than `nil` or `false`, such as `%{cache: true}` or
+`%{cache: 2}`. Build the cache from a session that fired, and give it to `fire_rules/2`:
+
+```elixir
+prior = session |> Session.insert(facts) |> Session.fire_rules()
+cache = Rete.ActivationCache.from_session(prior)
+
+next =
+  fresh
+  |> Session.insert(facts)
+  |> Session.fire_rules(activation_cache: cache)
+```
+
+For each activation of a rule that opted in, the engine looks for an equal activation in
+the cache. If it finds one, it inserts what the cache holds for it, and the body does not
+run. If it does not, the body runs as usual. Use this for a body that is slow, such as one
+that calls a service.
+
+**The cache is a plain map.** Save it in the way that suits you, and load it before the
+fire. You do not need the session that built it, unless you want to inspect that session.
+
+```elixir
+File.write!(path, :erlang.term_to_binary(cache))
+
+cache = path |> File.read!() |> :erlang.binary_to_term([:safe])
+```
+
+`[:safe]` refuses an atom that the node does not know, so load the ruleset modules first.
+**A cache inserts facts, and no rule checks them. Load a cache only from storage you
+trust.**
+
+`from_session/2` reads the record that truth maintenance keeps of what each activation
+concluded. So there is nothing to fill. Some results of this:
+
+* a hit is recorded like a firing. So `from_session(next)` holds the hits too, and a chain
+  of fires works.
+* the cache holds what each match concluded, for every match that still holds in the
+  session it came from. A conclusion that lost its support there is not in it. A fact that
+  you retract yourself stays in it while its match holds.
+* a session from `Rete.Session.load/2` gives a cache too.
+* the option applies to one call. `next` does not keep the cache.
+
+Two activations are equal when the rule and the key are equal. The rule is its module, its
+name, a hash of its source, and its `:cache` value. The hash covers the left hand side, the
+options map and the body. It also covers whether the production is a rule or a query. So an
+edit to the rule makes a miss. A new `:cache` value makes a miss too, also when a default
+gives it. So the value acts as a version. The key is the bindings of the activation, because
+they are all that the body reads. The cache and the session can come from different builds,
+or from different sets of modules. Only the rules that both have can hit. A body that
+returned `nil` or `[]` hits too, and the engine inserts nothing.
+
+A body still runs in these cases:
+
+* the cache has no equal activation.
+* the rule did not opt in, or it had another `:cache` value when the cache was built.
+* the key function of the fire returned `nil` for the activation.
+
+The hash does not see the code of a function that the body calls. It does not see the value
+of a module attribute either, only its name. So a change to either one still hits, and
+replays the old conclusion. When you make such a change, give `:cache` a new value, for
+example `2` in place of `1`. Or give a key function that adds what the body depends on:
+
+```elixir
+key_fn = fn activation -> {Rete.ActivationCache.key(activation), MyApp.version()} end
+
+cache = Rete.ActivationCache.from_session(prior, key_fn: key_fn)
+Session.fire_rules(next, activation_cache: cache, activation_cache_key_fn: key_fn)
+```
+
+The key function gets `%{rule: {module, name}, hash: hash, cache: cache, token: token}`.
+`from_session/2` uses it to key the cache, and `fire_rules/2` uses it to key each
+activation. Give both the same function, or nothing hits. When it returns `nil`,
+`from_session/2` leaves that activation out of the cache, and `fire_rules/2` runs its body.
+A key function that raises is reported as a body that raises.
+
+A lookup builds the key and hashes it, so its cost grows with the size of the bindings.
+The cache suits a body that costs more than that, such as one that calls a service.
+
+A hit emits `{:activation_fired, source, token, facts}`, as a firing does. Its `source`
+has `cached: true`. The source of a firing has no `:cached` field. Each fact a hit inserts
+has the origin `{module, name, :cached}`. Its retraction has the plain pair. See
+`Rete.Listener`.
+
+A query can opt in too, with the same `:cache` option. A query fires as a rule does, so a
+hit gives its row and the body does not run. `from_session/2` reads the rows that the
+session keeps, and runs no body.
+
+The cache is sound because of the rule above: the return value follows from the bindings.
+A body that breaks it also breaks the cache, because a hit replays a value that the body
+would no longer return.
 
 ## Condition order
 

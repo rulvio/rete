@@ -2,7 +2,7 @@
 #
 # The whole comparison. Run it from anywhere:
 #
-#   bash bench/compare/run.sh          measure, and write RESULTS.md
+#   bash bench/compare/run.sh          measure, and write RESULTS-<chip>.md
 #   bash bench/compare/run.sh --smoke  run each scenario once, and check the counts agree
 #
 # See README.md in this directory.

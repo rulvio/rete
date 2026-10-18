@@ -128,7 +128,12 @@ defmodule Rete.BehaviorTest do
         |> Session.insert({:temp, 10, "MCI"})
         |> Session.fire_rules()
 
-      assert [_] = Collect.by_tag(session, :activation_fired)
+      # The rule fires, and then the query fires on what the rule concluded.
+      assert [{Lifecycle, :cold}, {Lifecycle, :cold_q}] ==
+               for(
+                 {:activation_fired, source, _token, _facts} <- Collect.events(session),
+                 do: source.rule
+               )
     end
 
     # clara test_rules/test-stored-insertion-retraction-ordering. Operations

@@ -28,7 +28,7 @@ becomes dormant again. You do no bookkeeping yourself.
 ```elixir
 def deps do
   [
-    {:rete, "~> 1.2"}
+    {:rete, "~> 1.3"}
   ]
 end
 ```
@@ -153,9 +153,9 @@ any activation at a lower one. See
 
 ### Fire
 
-`fire_rules/2` also takes `:max_cycles`, `:concurrency`, and `:timeout`. A rule body that
-waits on I/O can return a `Task`, and the result of the task is its facts. `:concurrency`
-says how many of those tasks run at once. See its own doc and
+`fire_rules/2` also takes `:max_cycles`, `:max_duration`, `:concurrency`, and
+`:task_timeout`. A rule body that waits on I/O can return a `Task`, and the result of the
+task is its facts. `:concurrency` says how many of those tasks run at once. See its own doc and
 [docs/design/engine.md](docs/design/engine.md) §11 for more.
 
 ```elixir
@@ -188,15 +188,16 @@ Nobody is dormant, because both customers have orders.
 
 ### Query
 
-A query has the same left hand side as a rule, but it never fires. It holds the matches
-that reached it. **It is a function in its own module**, so you read it back by calling it.
+A query has the same left hand side as a rule, and it fires as a rule does. Its body runs
+during the fire, and the session keeps the result as a row. **It is a function in its own
+module**, so you read the rows back by calling it.
 
 ```elixir
 Retail.large_orders(session, 1)
 #=> [{1, 250}]
 ```
 
-A query returns **what its body computes**, one result per match. It answers in whatever
+A query returns **what its body computed**, one result per match. It answers in whatever
 shape suits the caller, instead of handing back raw bindings.
 
 The `(cid)` before the conditions is the **head** of the query, and it is the argument list
@@ -396,7 +397,7 @@ A rule that calls a function of another module runs the version on the node that
 
 ## What is public
 
-Seven modules are public. They are the ones the examples above use:
+Eight modules are public:
 
 | module | for |
 |---|---|
@@ -404,6 +405,7 @@ Seven modules are public. They are the ones the examples above use:
 | `Rete.Ruleset` | `defrule`, `defquery`, `derive`, `underive` |
 | `Rete.Session` | building a session, inserting, retracting, firing, querying, dumping and loading |
 | `Rete.Inspect` | `explain/1,2`, `why_not/1,2` |
+| `Rete.ActivationCache` | `from_session/2` and `key/1`, to build an activation cache |
 | `Rete.Listener` (+ `.Collect`, `.Trace`) | watching what a session does |
 
 **Everything else is internal**: the DSL front end, the IR, the compiler, the network, the
@@ -435,13 +437,14 @@ docs under `docs/design/` record why.
 * **Firing is a blocking call.** `fire_rules/2` runs to quiescence in the calling process,
   and it returns the settled session. There is no async variant that hands back a `Task`.
   Every rule body runs in the calling process too. A body *can* return a `Task`. Pass
-  `:concurrency`, and optionally `:timeout`, to `fire_rules/2` to await the tasks of one
+  `:concurrency`, and optionally `:task_timeout`, to `fire_rules/2` to await the tasks of one
   activation group together. A body that blocks without a task never overlaps another — see
   [docs/design/engine.md](docs/design/engine.md) §11.
 * **Snapshots carry rules, not data migrations.** `Rete.Session.dump/2` and `load/2` move
   a session to a node that runs other code, and the session keeps its own rules. There is no
   way to move a session onto the **new** rules of that node, and no distributed sync. Images
-  that a node loads stay loaded. See [docs/design/snapshot.md](docs/design/snapshot.md).
+  that a node loads stay loaded. Snapshots of different releases of rete are not
+  guaranteed to be compatible. See [docs/design/snapshot.md](docs/design/snapshot.md).
 * **Performance is measured by shape, not tuned for a number.** The algorithm is the right
   one: alpha and beta node sharing across modules as well as within one, hash joins,
   incremental retraction. Two profiling passes have run, and `mix bench` keeps their
