@@ -52,7 +52,7 @@ defmodule Rete.Compiler do
       hot upgrade of the module. `config :rete, target_images: true` changes the default.
     * `:default_rule_opts` gives every rule these options, as a map or a keyword list. It
       takes `:salience`, `:cache` and `:meta`. The defaults of a module, and the options
-      map of a rule, both win over it. A query does not get it.
+      map of a rule, both win over it. A query gets it too.
 
   `config :rete, compile_timeout: ms` limits each image compile. It acts when a ruleset
   module compiles, so no build option can change it.
@@ -99,8 +99,7 @@ defmodule Rete.Compiler do
 
   # Before extraction, so every production here is one the user wrote, and a negation
   # helper inherits a default salience as it inherits a written one. It never inherits
-  # `:cache`. See `Rete.Compiler.Negation`. A query takes the defaults too, and ignores
-  # `:salience` as it ignores a written one.
+  # `:cache`. See `Rete.Compiler.Negation`. A query takes the defaults too.
   defp with_defaults(productions, defaults) do
     case Parser.check_default_rule_opts!(":default_rule_opts", defaults, inspect(defaults)) do
       [] ->

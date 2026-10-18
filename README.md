@@ -154,9 +154,8 @@ any activation at a lower one. See
 ### Fire
 
 `fire_rules/2` also takes `:max_cycles`, `:max_duration`, `:concurrency`, and
-`:task_timeout`. A rule body that
-waits on I/O can return a `Task`, and the result of the task is its facts. `:concurrency`
-says how many of those tasks run at once. See its own doc and
+`:task_timeout`. A rule body that waits on I/O can return a `Task`, and the result of the
+task is its facts. `:concurrency` says how many of those tasks run at once. See its own doc and
 [docs/design/engine.md](docs/design/engine.md) §11 for more.
 
 ```elixir
@@ -189,15 +188,16 @@ Nobody is dormant, because both customers have orders.
 
 ### Query
 
-A query has the same left hand side as a rule, but it never fires. It holds the matches
-that reached it. **It is a function in its own module**, so you read it back by calling it.
+A query has the same left hand side as a rule, and it fires as a rule does. Its body runs
+during the fire, and the session keeps the result as a row. **It is a function in its own
+module**, so you read the rows back by calling it.
 
 ```elixir
 Retail.large_orders(session, 1)
 #=> [{1, 250}]
 ```
 
-A query returns **what its body computes**, one result per match. It answers in whatever
+A query returns **what its body computed**, one result per match. It answers in whatever
 shape suits the caller, instead of handing back raw bindings.
 
 The `(cid)` before the conditions is the **head** of the query, and it is the argument list

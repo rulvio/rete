@@ -1,6 +1,6 @@
 defmodule Rete.ActivationCache do
   @moduledoc """
-  Lets a cache, built from an earlier session, stand in for the body of a rule.
+  Lets a cache, built from an earlier session, take the place of the body of a rule.
 
   A rule opts in when its `:cache` option is a value other than `nil` or `false`, such as
   `%{cache: true}` or `%{cache: 2}`. A ruleset can give that option to all its rules with
@@ -20,8 +20,9 @@ defmodule Rete.ActivationCache do
   activation concluded, because truth maintenance needs that record. `from_session/2` reads
   that record. So there is no store to fill. A hit is concluded in the normal way, and the
   new session records it too. So `from_session(next)` holds the hits as well. A conclusion
-  that lost its support is gone from that record, so the cache holds only what is still
-  true in the session it came from.
+  that lost its support is gone from that record, so it is not in the cache. The cache
+  holds what each match concluded, for every match that still holds. A fact that you
+  retract yourself stays in it while its match holds.
 
   The cache is a plain map. Save it in the way that suits you, and load it before a fire:
 
@@ -36,9 +37,10 @@ defmodule Rete.ActivationCache do
   Two activations are equal when two things agree:
 
     * the rule. Its module, its name, its hash and its `:cache` value must be equal. The
-      hash covers the left hand side, the options map and the body, as written. So an edit
-      to the rule makes a miss. A new `:cache` value makes a miss too, also when a default
-      gives it. So the value acts as a version.
+      hash covers the left hand side, the options map and the body, as written. It also
+      covers whether the production is a rule or a query. So an edit to the rule makes a
+      miss. A new `:cache` value makes a miss too, also when a default gives it. So the
+      value acts as a version.
     * the key. `key/1` gives the bindings of the activation. `from_session/2` takes
       `:key_fn` to replace it, and `fire_rules/2` takes `:activation_cache_key_fn`. Give
       both the same function, or nothing hits. When the function returns `nil`, that
@@ -47,11 +49,9 @@ defmodule Rete.ActivationCache do
   The rule is found by these values and not by node ids. So a cache serves sessions from
   other builds, and from other sets of modules. Only the rules that both have can hit.
 
-  A query can opt in too. A query computes its rows when it is read, so a fire with a
-  cache keeps the rows that the cache gives for its tokens. A read then uses those rows,
-  and runs the body only for a token that the cache did not hold. `from_session/2` runs
-  the body of a cached query once for each token, unless a row came from a cache before.
-  The session keeps no reference to the cache after the fire.
+  A query can opt in too. A query fires as a rule does, and the session keeps the row
+  that its body gives. So a hit gives the row, and the body does not run. The session
+  keeps no reference to the cache after the fire.
 
   A lookup builds the key and hashes it, so its cost grows with the size of the bindings.
   Use the cache for a body that costs more than that, such as one that calls a service.
@@ -113,8 +113,8 @@ defmodule Rete.ActivationCache do
   @doc """
   Builds a cache from what a session concluded.
 
-  It holds every rule of the session that opted in, and every match that rule fired on
-  and that still holds. A match that concluded nothing is in it too, so it hits as well.
+  It holds every rule and query of the session that opted in, and every match that rule
+  fired on and that still holds. A match that concluded nothing is in it too, so it hits as well.
   Fire the session first, because a session that never fired holds no conclusions.
 
   Options:
@@ -132,7 +132,11 @@ defmodule Rete.ActivationCache do
       ...> |> Enum.map(fn {{module, name, _hash, cache}, entries} ->
       ...>   {module, name, cache, Map.values(entries)}
       ...> end)
-      [{Rete.Doc.Orders, :large_order, true, [[{:flagged, 1, 250}]]}]
+      ...> |> Enum.sort()
+      [
+        {Rete.Doc.Orders, :flagged_for, true, [{1, 250}]},
+        {Rete.Doc.Orders, :large_order, true, [[{:flagged, 1, 250}]]}
+      ]
   """
   @spec from_session(Rete.Session.t(), keyword()) :: t()
   def from_session(%Rete.Session{state: %State{} = state}, opts \\ []) do
@@ -150,30 +154,21 @@ defmodule Rete.ActivationCache do
   # Any batch of a token will do. `Rete.Memory.add_insertion/4` says why they are equal.
   defp entries(%Node.Production{} = node, %Memory{insertions: insertions}, key_fn) do
     for {token, [batch | _]} <- Map.get(insertions, node.id, %{}),
-        key = key_fn.(activation(node, token)),
+        key <- [key_fn.(activation(node, token))],
         key != nil,
         into: %{},
         do: {key, batch}
   end
 
-  # A query keeps no record of its rows. The row comes from a hit of an earlier fire, or
-  # from the body, which runs here once for each token.
   defp entries(%Node.Query{} = node, %Memory{} = memory, key_fn) do
-    for token <- Memory.all_tokens(memory, node.id),
-        key = key_fn.(activation(node, token)),
+    for {token, [row | _]} <- Memory.rows(memory, node.id),
+        key <- [key_fn.(activation(node, token))],
         key != nil,
         into: %{},
-        do: {key, row(node, memory, token)}
+        do: {key, row}
   end
 
   defp entries(_node, _memory, _key_fn), do: %{}
-
-  defp row(node, memory, token) do
-    case Memory.row(memory, node.id, token) do
-      {:ok, row} -> row
-      :error -> node.rhs.(node.hash, token.bindings)
-    end
-  end
 
   defp validate_key_fn!(fun) when is_function(fun, 1), do: fun
 
@@ -195,11 +190,31 @@ defmodule Rete.ActivationCache do
   def lookup({cache, key_fn}, node, token) do
     with true <- cached?(node),
          {:ok, entries} <- Map.fetch(cache, identity(node)),
-         key when key != nil <- key_fn.(activation(node, token)) do
-      Map.fetch(entries, key)
+         key when key != nil <- key_fn.(activation(node, token)),
+         {:ok, value} <- entries |> check_entries!(node) |> Map.fetch(key) do
+      {:ok, check_value!(value, node)}
     else
       _ -> :error
     end
+  end
+
+  # `from_session/2` never writes these shapes. A cache from storage can hold them, and
+  # without a check the error would name neither the rule nor the cache.
+  defp check_entries!(entries, _node) when is_map(entries), do: entries
+  defp check_entries!(entries, node), do: raise(ArgumentError, bad_shape(node, entries, "a map"))
+
+  defp check_value!(value, %Node.Production{} = node) do
+    if is_list(value) and not List.improper?(value),
+      do: value,
+      else: raise(ArgumentError, bad_shape(node, value, "a list of facts"))
+  end
+
+  defp check_value!(row, _query), do: row
+
+  defp bad_shape(node, value, expected) do
+    "The activation cache holds #{inspect(value, limit: 5)} for " <>
+      "#{Network.ref_string({node.module, node.name})}, where it must hold #{expected}. " <>
+      "Build it again with `Rete.ActivationCache.from_session/2`."
   end
 
   # A pattern rather than a field read, so a node from a snapshot that predates the field

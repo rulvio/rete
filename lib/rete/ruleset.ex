@@ -29,7 +29,7 @@ defmodule Rete.Ruleset do
   `config :rete, compile_timeout: ms` changes the two-minute limit on an image compile.
 
   `use Rete.Ruleset, default_rule_opts: %{cache: true}` gives every rule of the module
-  these options. A rule's own options map wins over them. A query does not get them. The
+  these options. A rule's own options map wins over them. A query gets them too. The
   defaults take `:salience`, `:cache` and `:meta`. See "Default rule options" in
   `docs/dsl.md`.
 
@@ -68,8 +68,8 @@ defmodule Rete.Ruleset do
 
     defaults = module_defaults(opts)
 
-    # The keys are put at expansion, because a module body expands in full before any of
-    # it runs, so a `defrule` below could not read an attribute that the quote sets. The
+    # The keys are put at expansion. A module body expands in full before any of it runs,
+    # so a `defrule` below could not read an attribute that the quote sets. The
     # values are set in the quote, so they are evaluated one time, here, where `use` is.
     Module.put_attribute(module, :rete_default_rule_opts, Keyword.keys(defaults))
 
@@ -331,8 +331,10 @@ defmodule Rete.Ruleset do
   @doc """
   Defines a query.
 
-  A query has the same left hand side as a rule, but it never fires. It holds the matches
-  that reached it. Its **body is what the caller gets**, one result per match.
+  A query has the same left hand side as a rule, and it fires as a rule does. Its body runs
+  during `fire_rules/2`, once for each match, and the session keeps the result as the row
+  of that match. Its **body is what the caller gets**, one result per match. A read runs no
+  body.
 
   **The query is a function.** `defquery find_user(...)` also defines `find_user` in the
   same module, so you run it by calling it. Its arity is one more than the number of

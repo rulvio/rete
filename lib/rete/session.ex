@@ -152,10 +152,12 @@ defmodule Rete.Session do
       order. Every body runs in the calling process. So a body that blocks without a task
       never overlaps another.
     * `:task_timeout` — milliseconds the engine waits for one returned task, or
-      `:infinity`, the default. A task that takes longer is shut down, and the call raises.
+      `:infinity`, the default. The wait starts when the task reaches its turn in group
+      order. A task that is not done when the wait ends is shut down, and the call raises.
     * `:max_duration` — milliseconds the whole call may run, or `:infinity`, the default. The
-      engine checks it before each cycle, and it bounds each wait for a task. A call that
-      runs past it raises. It cannot stop a body that blocks without returning a task.
+      engine checks it before each cycle while work is pending, and it bounds each wait for
+      a task. A call that is past it at a check raises. A call that settles in its last
+      cycle returns. It cannot stop a body that blocks without returning a task.
     * `:activation_cache` — a plain map from `Rete.ActivationCache.from_session/2`, or
       `nil`, the default. Any other value raises, a session included. A rule or a query can
       set `:cache` to a value other than `nil` or `false`. It then takes what the cache
@@ -208,7 +210,8 @@ defmodule Rete.Session do
   def settled?(%__MODULE__{state: state}), do: Engine.settled?(state)
 
   @doc """
-  Runs a query by `{module, name}`: one result per match, computed by its body.
+  Reads a query by `{module, name}`: one row per match. The body of the query ran during
+  `fire_rules/2`, and this runs no body.
 
   **Usually you would not write this.** `defquery flagged_for(...)` defines
   `flagged_for/2` in its own module, so the same call reads
@@ -233,7 +236,7 @@ defmodule Rete.Session do
   not raise, where `Rete.Inspect.why_not/2` does. Call `settled?/1` to tell the two cases
   apart.
 
-  Row order is **unspecified**. Rows come back in the order the facts arrived, so the same
+  Row order is **unspecified**. Rows come back in the order the matches fired, so the same
   facts fed in a different order answer in a different order. The *set* of rows never
   varies. Sort the result yourself if order matters to you.
 
@@ -365,8 +368,8 @@ defmodule Rete.Session do
   Returns `{:ok, binary}`, or `{:error, reason}`:
 
     * `{:not_portable, fun}` — the session holds an anonymous function, such as an
-      anonymous `:fact_type_fn`. Only a remote capture, `&Mod.fun/arity`, works on another
-      node.
+      anonymous `:fact_type_fn`, or a query row from an activation cache. Only a remote
+      capture, `&Mod.fun/arity`, works on another node.
     * `{:no_image, module, detail}` — the image of a ruleset module did not compile.
       `detail` is the cause that the compile gave.
     * `{:no_beam, image}` — the session runs an image that this node never compiled or

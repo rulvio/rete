@@ -196,7 +196,9 @@ By default, a live session keeps its captures of `MyRules` (§2). With
    equality. Changing it would make a retract of the same fact miss after the load.
 3. `Rete.Image.captures/1` finds any function that is not a remote capture, and `dump/2`
    returns `{:error, {:not_portable, fun}}`. An anonymous function runs only on the build
-   that made it. An anonymous `:fact_type_fn` is the usual cause.
+   that made it. An anonymous `:fact_type_fn` is the usual cause. A query row that an
+   activation cache gave is in the state too. So a row that holds a function also gives
+   this error.
 4. The snapshot takes the images that the state still captures. An image comes from a
    ruleset module of the network, or from the registry of images that this node compiled
    or loaded. So a loaded session dumps again with its v1 images, on
@@ -240,7 +242,9 @@ term as well, because `dump/2` never writes one either.
 2. Refuse an unknown format. The body holds the engine's own structs, such as
    `Rete.Memory`, `Rete.Agenda` and the network nodes. A release that changes one of them
    increases `@format` in `Rete.Snapshot`. This comes after the signature, so the format it
-   reports is one the key holder wrote.
+   reports is one the key holder wrote. A new field with a default that changes nothing is
+   the exception. The load fills it in, so an earlier body still loads. An earlier release
+   reads the same format, so it does not refuse the new body either.
 3. Decode the body. This cannot use `:safe`, because the image names are new atoms. A body
    that does not decode, or decodes to the wrong shape, returns `{:error, :undecodable}`.
    The signature is good, so the likely cause is another release of OTP or of rete. Each

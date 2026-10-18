@@ -233,7 +233,16 @@ defmodule Rete.ObservabilityTest do
         for event <- events do
           assert %{node: node, rule: {Rules, name}} = elem(event, 1)
           assert is_integer(node), "the node id is kept alongside the rule"
-          assert name in [:flag, :escalate, :vip_gold, :vip_spend, :dormant, :clean]
+
+          assert name in [
+                   :flag,
+                   :escalate,
+                   :vip_gold,
+                   :vip_spend,
+                   :dormant,
+                   :clean,
+                   :flagged_rows
+                 ]
         end
       end
     end

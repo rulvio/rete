@@ -54,7 +54,7 @@ defmodule Rete.ListenerTraceTest do
 
       for {label, pattern} <- [
             {"fire started", ~r/^\[rete\] fire$/},
-            {"fire finished", ~r/settled after \d+ activations/},
+            {"fire finished", ~r/settled after \d+ cycles/},
             {"inserted insert", ~r/^\[rete\]   \+ \{:order, \d+, \d+\}$/},
             {"concluded insert",
              ~r/^\[rete\]   \+ .* \(from Rete\.ListenerTraceTest\.Rules\.flag\)/},

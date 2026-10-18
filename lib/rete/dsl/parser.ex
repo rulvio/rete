@@ -73,7 +73,7 @@ defmodule Rete.DSL.Parser do
   def parse_production(env, decl, body, type) do
     decl = decl |> expand_aliases(env) |> resolve_constants(env)
     body = body |> expand_aliases(env) |> resolve_constants(env)
-    hash = Codegen.ast_hash([decl, body])
+    hash = Codegen.ast_hash([type, decl, body])
 
     parse_rule(env, hash, type, decl, body)
   end

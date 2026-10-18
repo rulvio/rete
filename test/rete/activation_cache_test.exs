@@ -1,6 +1,6 @@
 defmodule Rete.ActivationCacheTest do
   @moduledoc """
-  A cache from `Rete.ActivationCache.from_session/2` stands in for the body of a rule or a
+  A cache from `Rete.ActivationCache.from_session/2` takes the place of the body of a rule or a
   query. See `Rete.ActivationCache`.
 
   A body sends a message to the process that fires, so a test counts the bodies that ran
@@ -151,8 +151,8 @@ defmodule Rete.ActivationCacheTest do
     end
   end
 
-  # `quick` concludes the fact a cached query reads, while `slow` keeps a task in flight.
-  # So a key function that raises for the query does so with a task still running.
+  # One group, in this order: a quick task, a cached query, and a task that never ends. A
+  # key function that raises for the query does so with `slow` still in flight.
   defmodule QueryBehindTask do
     use Rete.Ruleset
 
@@ -163,13 +163,29 @@ defmodule Rete.ActivationCacheTest do
       end)
     end
 
+    defquery sourced(%{cache: true}, {:customer, cid}) when is_integer(cid), do: {:row, cid}
+
     defrule slow({:customer, test}) when is_pid(test) do
       task = Task.async(fn -> Process.sleep(:infinity) end)
       send(test, {:pid, :slow, task.pid})
       task
     end
+  end
 
-    defquery sourced(%{cache: true}, {:source, cid}), do: {:row, cid}
+  # The same source as a rule and as a query. Only the kind differs.
+  defmodule AsRule do
+    use Rete.Ruleset
+    defrule thing(%{cache: true}, {:a, x}), do: {:b, x}
+  end
+
+  defmodule AsRuleToo do
+    use Rete.Ruleset
+    defrule thing(%{cache: true}, {:a, x}), do: {:b, x}
+  end
+
+  defmodule AsQuery do
+    use Rete.Ruleset
+    defquery thing(%{cache: true}, {:a, x}), do: {:b, x}
   end
 
   defmodule NoDefaults do
@@ -337,16 +353,25 @@ defmodule Rete.ActivationCacheTest do
     end
 
     test "applies in group order behind a task that missed" do
-      cache = handmade([Tasks], :fetch, %{%{id: 1} => [{:done, 1}]})
-      facts = [{:job, 1}, {:job, 2}]
+      cache = handmade([Tasks], :fetch, %{%{id: 2} => [{:done, 2}]})
 
-      parallel = fire([Tasks], facts, concurrency: 2, activation_cache: cache)
-      assert ran() == [fetch: 2]
+      for concurrency <- [1, 2] do
+        fired =
+          [Tasks]
+          |> Session.new()
+          |> Session.with_listener(Collect, [])
+          |> Session.insert([{:job, 1}, {:job, 2}])
+          |> Session.fire_rules(concurrency: concurrency, activation_cache: cache)
 
-      serial = fire([Tasks], facts, activation_cache: cache)
-      assert ran() == [fetch: 2]
+        order =
+          for {:activation_fired, source, _token, facts} <- Collect.events(fired),
+              do: {Map.get(source, :cached, false), facts}
 
-      assert sorted_facts(parallel) == sorted_facts(serial)
+        assert order == [{false, [{:done, 1}]}, {true, [{:done, 2}]}],
+               "concurrency: #{concurrency}"
+
+        assert ran() == [fetch: 1]
+      end
     end
 
     test "is dropped when a conclusion ahead of it in the group takes its match away" do
@@ -402,6 +427,25 @@ defmodule Rete.ActivationCacheTest do
     end
   end
 
+  describe "a key function that returns false" do
+    test "false is a key like any other, and only nil leaves an activation out" do
+      key_fn = fn %{token: token} -> token.bindings.cid == 1 end
+      prior = fire([Cached], [{:customer, 1}, {:customer, 2}])
+      cache = ActivationCache.from_session(prior, key_fn: key_fn)
+      ran()
+
+      {_identity, entries} = Enum.find(cache, &match?({{Cached, :enrich, _, _}, _}, &1))
+      assert Map.keys(entries) |> Enum.sort() == [false, true]
+
+      fire([Cached], [{:customer, 1}, {:customer, 2}],
+        activation_cache: cache,
+        activation_cache_key_fn: key_fn
+      )
+
+      refute Enum.any?(ran(), &match?({:enrich, _}, &1))
+    end
+  end
+
   describe "a key function that returns nil" do
     test "runs that activation without the cache, under concurrency too" do
       cache = handmade([Tasks], :fetch, %{%{id: 1} => [{:done, 1}], %{id: 2} => [{:done, 2}]})
@@ -423,31 +467,33 @@ defmodule Rete.ActivationCacheTest do
   end
 
   describe "a cached query" do
-    test "reads the rows the cache gave, and runs no body" do
+    test "a hit gives the row, and the body does not run" do
       prior = fire([Queried], [{:customer, 1}, {:customer, 2}])
       cache = cache(prior)
-      assert Enum.sort(ran()) == [profile: 1, profile: 2]
+      assert Enum.sort(ran()) == [plain: 1, plain: 2, profile: 1, profile: 2]
 
       next = fire([Queried], [{:customer, 1}, {:customer, 2}], activation_cache: cache)
+      assert Enum.sort(ran()) == [plain: 1, plain: 2]
 
       assert Enum.sort(Queried.profile(next)) == [{:row, 1}, {:row, 2}]
       assert ran() == []
     end
 
-    test "runs the body on read for a token the cache does not hold" do
+    test "runs the body during the fire for a token the cache does not hold" do
       cache = [Queried] |> fire([{:customer, 1}]) |> cache()
       ran()
 
       next = fire([Queried], [{:customer, 1}, {:customer, 2}], activation_cache: cache)
+      assert Enum.sort(ran()) == [plain: 1, plain: 2, profile: 2]
 
       assert Enum.sort(Queried.profile(next)) == [{:row, 1}, {:row, 2}]
-      assert ran() == [profile: 2]
+      assert ran() == []
     end
 
     test "drops the row of a token that leaves, and keeps no row in a drained session" do
       cache = [Queried] |> fire([{:customer, 1}]) |> cache()
       next = fire([Queried], [{:customer, 1}], activation_cache: cache)
-      assert map_size(next.state.memory.query_rows) == 1
+      assert next.state.memory.query_rows != %{}
 
       drained = next |> Session.retract({:customer, 1}) |> Session.fire_rules()
 
@@ -469,16 +515,47 @@ defmodule Rete.ActivationCacheTest do
       next = fire([Queried], [{:customer, 1}], activation_cache: loaded)
 
       assert Queried.profile(next) == [{:row, 1}]
+      assert ran() == [plain: 1]
+    end
+
+    test "a query that did not opt in runs its body during the fire" do
+      cache = [Queried] |> fire([{:customer, 1}]) |> cache()
+      ran()
+
+      next = fire([Queried], [{:customer, 1}], activation_cache: cache)
+      assert ran() == [plain: 1]
+
+      assert Queried.plain(next) == [1]
       assert ran() == []
     end
 
-    test "a query that did not opt in runs its body" do
+    test "from_session reads the rows, and runs no body" do
       cache = [Queried] |> fire([{:customer, 1}]) |> cache()
       next = fire([Queried], [{:customer, 1}], activation_cache: cache)
       ran()
 
-      assert Queried.plain(next) == [1]
-      assert ran() == [plain: 1]
+      assert cache(next) == cache
+      assert ran() == []
+    end
+
+    test "a hit emits :activation_fired with cached: true and the row" do
+      cache = [Queried] |> fire([{:customer, 1}]) |> cache()
+
+      fired =
+        [Queried]
+        |> Session.new()
+        |> Session.with_listener(Collect, [])
+        |> Session.insert({:customer, 1})
+        |> Session.fire_rules(activation_cache: cache)
+        |> Collect.events()
+
+      assert Enum.any?(fired, fn
+               {:activation_fired, %{rule: {Queried, :profile}, cached: true}, _token, rows} ->
+                 rows == [{:row, 1}]
+
+               _event ->
+                 false
+             end)
     end
 
     test "the session keeps no cache after the fire" do
@@ -508,11 +585,33 @@ defmodule Rete.ActivationCacheTest do
     end
   end
 
+  describe "the hash" do
+    test "differs between a rule and a query with the same source" do
+      [rule, rule_too, query] =
+        for module <- [AsRule, AsRuleToo, AsQuery] do
+          [module]
+          |> Session.new()
+          |> Session.network()
+          |> Network.beta_nodes()
+          |> Enum.find(&match?(%{name: :thing}, &1))
+          |> Map.fetch!(:hash)
+        end
+
+      assert rule == rule_too
+      assert rule != query
+    end
+  end
+
   describe "from_session/2" do
     test "holds the rules that opted in, keyed by identity" do
       cache = [Cached] |> fire([{:customer, 1}]) |> cache()
 
-      names = for {{Cached, name, hash, true}, _entries} <- cache, is_integer(hash), do: name
+      assert Enum.all?(
+               Map.keys(cache),
+               &match?({Cached, _name, hash, true} when is_integer(hash), &1)
+             )
+
+      names = for {{Cached, name, _hash, true}, _entries} <- cache, do: name
       assert Enum.sort(names) == [:chained, :enrich, :tag]
     end
 
@@ -725,6 +824,34 @@ defmodule Rete.ActivationCacheTest do
       refute error.message =~ "returned :not_a_fact"
     end
 
+    test "a rule that did not opt in runs its body, even when the cache has its identity" do
+      cache = handmade([Cached], :live, %{%{cid: 1} => [{:fake, 1}]})
+
+      fired = fire([Cached], [{:customer, 1}], activation_cache: cache)
+
+      assert {:seen, 1} in Session.facts(fired)
+      refute {:fake, 1} in Session.facts(fired)
+      assert {:live, 1} in ran()
+    end
+
+    test "a cached value that is not a list names the cache" do
+      for value <- [{:profile, 1}, nil, %{id: 1}, [{:profile, 1} | :oops]] do
+        cache = handmade([Cached], :enrich, %{%{cid: 1} => value})
+
+        assert_raise ArgumentError,
+                     ~r/The activation cache holds .* for Rete.ActivationCacheTest.Cached.enrich, where it must hold a list of facts/,
+                     fn -> fire([Cached], [{:customer, 1}], activation_cache: cache) end
+      end
+    end
+
+    test "entries that are not a map name the cache" do
+      cache = handmade([Cached], :enrich, [:oops])
+
+      assert_raise ArgumentError, ~r/where it must hold a map/, fn ->
+        fire([Cached], [{:customer, 1}], activation_cache: cache)
+      end
+    end
+
     test "a cache that is not a map is refused" do
       assert_raise ArgumentError, ~r/:activation_cache must be a map/, fn ->
         fire([Cached], [], activation_cache: :bogus)
@@ -794,6 +921,7 @@ defmodule Rete.ActivationCacheTest do
 
     test "a cache from a rule that did not opt in holds nothing for it" do
       prior = fire_built([], [{:a, 1}])
+      assert cache(prior) == %{}
       next = fire_observed([default_rule_opts: %{cache: true}], [{:a, 1}], prior)
 
       assert hits(next) == []
@@ -837,9 +965,9 @@ defmodule Rete.ActivationCacheTest do
       ran()
 
       next = fire([QueryDefaults], [{:item, 1}, {:item, 2}], activation_cache: cache)
+      assert Enum.sort(ran()) == [own_off: 1, own_off: 2]
 
       assert Enum.sort(QueryDefaults.rows(next)) == [{:row, 1}, {:row, 2}]
-      assert ran() == []
     end
 
     test "a build default caches a query that sets no option" do
@@ -848,28 +976,24 @@ defmodule Rete.ActivationCacheTest do
       ran()
 
       next = fire_with([BareQueries], opts, [{:item, 1}], activation_cache: cache)
+      assert ran() == [off: 1]
 
       assert BareQueries.rows(next) == [{:row, 1}]
-      assert ran() == []
     end
 
     test "a query's own cache: false opts out of either default" do
-      module_next =
-        fire([QueryDefaults], [{:item, 1}],
-          activation_cache: [QueryDefaults] |> fire([{:item, 1}]) |> cache()
-        )
-
+      module_cache = [QueryDefaults] |> fire([{:item, 1}]) |> cache()
       ran()
-      assert QueryDefaults.own_off(module_next) == [1]
+      module_next = fire([QueryDefaults], [{:item, 1}], activation_cache: module_cache)
       assert ran() == [own_off: 1]
+      assert QueryDefaults.own_off(module_next) == [1]
 
       opts = [default_rule_opts: %{cache: true}]
       cache = [BareQueries] |> fire_with(opts, [{:item, 1}]) |> cache()
-      build_next = fire_with([BareQueries], opts, [{:item, 1}], activation_cache: cache)
-
       ran()
-      assert BareQueries.off(build_next) == [1]
+      build_next = fire_with([BareQueries], opts, [{:item, 1}], activation_cache: cache)
       assert ran() == [off: 1]
+      assert BareQueries.off(build_next) == [1]
     end
 
     test "on a query, the build default is beneath the module and the query's own map" do
@@ -882,25 +1006,25 @@ defmodule Rete.ActivationCacheTest do
       assert query_cache(BareQueries, :rows) == nil
     end
 
-    test "a default salience on a query is accepted, and changes nothing" do
-      with_salience = fire([QueryDefaults], [{:item, 1}])
-      without = fire_with([BareQueries], [], [{:item, 1}])
-
-      assert QueryDefaults.rows(with_salience) == BareQueries.rows(without)
+    test "a default salience reaches a query" do
+      assert query_node(QueryDefaults, :rows, []).salience == 5
+      assert query_node(BareQueries, :rows, default_rule_opts: %{salience: 3}).salience == 3
+      assert query_node(BareQueries, :rows, []).salience == 0
     end
 
     test "the cache value is part of a query's identity" do
       cache =
         [BareQueries] |> fire_with([default_rule_opts: %{cache: 2}], [{:item, 1}]) |> cache()
 
+      ran()
+
       next =
         fire_with([BareQueries], [default_rule_opts: %{cache: 3}], [{:item, 1}],
           activation_cache: cache
         )
 
-      ran()
+      assert {:rows, 1} in ran()
       assert BareQueries.rows(next) == [{:row, 1}]
-      assert ran() == [rows: 1]
     end
   end
 
@@ -1027,15 +1151,18 @@ defmodule Rete.ActivationCacheTest do
     end
 
     test "a module default is evaluated where `use` is" do
-      Code.compile_string("""
-      defmodule Rete.ActivationCacheTest.Reassigned do
-        @v 3
-        use Rete.Ruleset, default_rule_opts: [cache: @v]
-        defrule r({:x, id}), do: {:y, id}
-        @v 4
-        defrule s({:x, id}), do: {:z, id}
-      end
-      """)
+      # `@v 4` is never read, which is the point, so its warning is captured.
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+        Code.compile_string("""
+        defmodule Rete.ActivationCacheTest.Reassigned do
+          @v 3
+          use Rete.Ruleset, default_rule_opts: [cache: @v]
+          defrule r({:x, id}), do: {:y, id}
+          @v 4
+          defrule s({:x, id}), do: {:z, id}
+        end
+        """)
+      end)
 
       assert cache_flags(Session.new([Rete.ActivationCacheTest.Reassigned])) == %{r: 3, s: 3}
     end

@@ -6,25 +6,26 @@ defmodule Rete.Memory do
   durability, checkpointing, and advanced tooling will need to reach in here. Treat its
   functions as liable to change.
 
-  Five memories, one index over them, and one flag:
+  Six memories, one index over them, and one flag:
 
       elements    node_id => join_key => Bucket of Element   right of a beta node
       tokens      node_id => join_key => Bucket of Token     left of a beta node
       accum       node_id => join_key => group_key => [member] what a collection gathered
       insertions  node_id => token => [[fact]]               truth maintenance
+      query_rows  node_id => token => [row]                  what each query match gave
       facts       fact => occurrences                        what it was told
 
       inserters   fact => {node_id, token} => count          `insertions`, reversed
-      query_rows  node_id => token => row                    rows an activation cache gave
-
-  `query_rows` is not a memory either. A query computes its rows when it is read, so a
-  fire with an activation cache keeps the rows that the cache gave, for the read to use.
-  A row goes with its token. It is left out of `dump/1`, because it is not something the
-  session concluded.
 
   `inserters` is not a memory. It is `insertions` indexed by fact, for the readers that ask
   "which matches inserted *this fact*". It stays `nil` until `index_inserters/1` builds it,
   and it is left out of `dump/1`, being a cache.
+
+  `query_rows` is to a query what `insertions` is to a rule. The body of a query runs when
+  its match fires, and the row it gives is kept here against the token. When the match
+  goes, its row goes with it. A query is a terminal, so no node reads its bucket in
+  `tokens`. That bucket holds `{token, row}` instead, under the parameters of the query. A
+  read takes the rows from it, and looks nothing up.
 
   **Arrival order is load-bearing.** A bucket decides the order tokens propagate, so it
   decides the order two matches of one rule fire. One that gave items back in a different
@@ -62,7 +63,7 @@ defmodule Rete.Memory do
           insertions: %{node_id() => %{Token.t() => [[term()]]}},
           inserters: %{term() => %{inserter() => pos_integer()}} | nil,
           facts: %{term() => pos_integer()},
-          query_rows: %{node_id() => %{Token.t() => term()}},
+          query_rows: %{node_id() => %{Token.t() => [term()]}},
           root_seeded?: boolean()
         }
 
@@ -403,46 +404,55 @@ defmodule Rete.Memory do
   # --- query rows ------------------------------------------------------------------
 
   @doc """
-  Keeps the row an activation cache gave for one token at a query node.
+  Records the row that one activation of a query gave.
+
+  The row goes to two places. `query_rows` keeps it against the token, a list for each
+  token, newest first, for the reason that `add_insertion/4` gives. And the bucket of the
+  query under `key` keeps `{token, row}` for reads. `key` is the join key of the token on
+  the parameters of the query.
   """
-  @spec put_row(t(), node_id(), Token.t(), term()) :: t()
-  def put_row(%__MODULE__{query_rows: rows} = memory, node_id, token, row) do
-    %__MODULE__{
-      memory
-      | query_rows: Map.update(rows, node_id, %{token => row}, &Map.put(&1, token, row))
-    }
+  @spec add_row(t(), node_id(), key(), Token.t(), term()) :: t()
+  def add_row(%__MODULE__{query_rows: rows} = memory, node_id, key, token, row) do
+    rows =
+      Map.update(
+        rows,
+        node_id,
+        %{token => [row]},
+        &Map.update(&1, token, [row], fn kept -> [row | kept] end)
+      )
+
+    add_tokens(%__MODULE__{memory | query_rows: rows}, node_id, key, [{token, row}])
   end
 
   @doc """
-  Drops the rows of tokens that left a query node.
+  Takes back the newest row of a token at a query node, from both places that
+  `add_row/5` put it. A token that never fired has no row, and this returns the memory
+  unchanged.
 
-  An equal token can still be there. It then has no row, and a read runs the body for it.
-  That is correct, and only slower.
   """
-  @spec drop_rows(t(), node_id(), [Token.t()]) :: t()
-  def drop_rows(%__MODULE__{query_rows: rows} = memory, node_id, tokens) do
-    case Map.fetch(rows, node_id) do
-      {:ok, by_token} ->
-        %__MODULE__{memory | query_rows: store_at(rows, node_id, Map.drop(by_token, tokens))}
+  @spec take_row(t(), node_id(), key(), Token.t()) :: t()
+  def take_row(%__MODULE__{query_rows: rows} = memory, node_id, key, token) do
+    by_token = Map.get(rows, node_id, %{})
 
-      :error ->
+    case Map.get(by_token, token, []) do
+      [] ->
+        memory
+
+      [row | rest] ->
+        rows = store_at(rows, node_id, store_at(by_token, token, rest))
+
+        memory = %__MODULE__{memory | query_rows: rows}
+        {memory, _removed} = remove_tokens(memory, node_id, key, [{token, row}])
+
         memory
     end
   end
 
   @doc """
-  The rows a query node holds, or `nil` when it holds none.
+  The rows a query node holds, by token, or `%{}` when it holds none.
   """
-  @spec rows(t(), node_id()) :: %{Token.t() => term()} | nil
-  def rows(%__MODULE__{query_rows: rows}, node_id), do: Map.get(rows, node_id)
-
-  @doc """
-  The row of one token at a query node. The row itself can be `nil`.
-  """
-  @spec row(t(), node_id(), Token.t()) :: {:ok, term()} | :error
-  def row(%__MODULE__{query_rows: rows}, node_id, token) do
-    with {:ok, by_token} <- Map.fetch(rows, node_id), do: Map.fetch(by_token, token)
-  end
+  @spec rows(t(), node_id()) :: %{Token.t() => [term()]}
+  def rows(%__MODULE__{query_rows: rows}, node_id), do: Map.get(rows, node_id, %{})
 
   # --- the fact multiset ----------------------------------------------------------
 
@@ -498,6 +508,7 @@ defmodule Rete.Memory do
           tokens: %{node_id() => %{key() => [Token.t()]}},
           accum: %{node_id() => %{key() => %{key() => [term()]}}},
           insertions: %{node_id() => %{Token.t() => [[term()]]}},
+          query_rows: %{node_id() => %{Token.t() => [term()]}},
           facts: %{term() => pos_integer()},
           root_seeded?: boolean()
         }
@@ -507,6 +518,7 @@ defmodule Rete.Memory do
       tokens: listed(memory.tokens),
       accum: memory.accum,
       insertions: memory.insertions,
+      query_rows: memory.query_rows,
       facts: memory.facts,
       root_seeded?: memory.root_seeded?
     }

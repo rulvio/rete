@@ -57,15 +57,17 @@ defmodule Rete.Engine.State do
   @doc """
   A state over a network, with empty memory and nothing pending.
 
-  `:order` is the compile position of each production, so two activations of equal
-  salience fire in the order the rules were written.
+  `:order` is the compile position of each rule and query, so two activations of equal
+  salience fire in the order they were written.
   """
   @spec new(Network.t()) :: t()
   def new(%Network{} = network) do
     order =
       network
       |> Network.beta_nodes()
-      |> Enum.filter(&match?(%Network.Node.Production{}, &1))
+      |> Enum.filter(
+        &(is_struct(&1, Network.Node.Production) or is_struct(&1, Network.Node.Query))
+      )
       |> Enum.sort_by(& &1.id)
       |> Enum.with_index()
       |> Map.new(fn {node, index} -> {node.id, index} end)

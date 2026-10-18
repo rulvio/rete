@@ -685,9 +685,8 @@ defmodule Bench.ThreeKeyQuery do
   defquery rows(a, b, c)({:rec, a, b, c}), do: {a, b, c}
 end
 
-# A body that does enough work to be worth skipping. The point of a head is that the body
-# runs for the rows it returns and not for the rows it passes over, and a body returning a
-# tuple of what it already has is too cheap to show that.
+# A body that builds a larger row. The body runs once for each match during the fire, so a
+# read does not run it. A larger row shows what a filter on the result costs to scan.
 defmodule Bench.FatQuery do
   @moduledoc false
   use Rete.Ruleset
@@ -1352,7 +1351,7 @@ IO.puts("")
 
        parameter =
          Bench.time(fn ->
-           for _ <- 1..200, do: Bench.WideQuery.rows(keyed_session, a: 0)
+           for _ <- 1..200, do: Bench.WideQuery.rows(keyed_session, 0)
          end)
 
        {to_string(cardinality),
@@ -1374,11 +1373,8 @@ IO.puts("")
    :ok
  end).()
 
-# The same comparison with a body that does work. The sweep above uses a body that returns
-# what it already holds, which understates the difference: a filter on the result runs the
-# body for every match and then discards most of the rows, and a head never runs it for a
-# row it does not return. So the gap widens with the cost of the body, and this is the
-# shape that shows it.
+# The same comparison with a larger row. A read runs no body, so both sides read kept
+# rows. A filter on the result scans every row, and a head reads one bucket.
 (fn ->
    n = 4_000
    facts = for i <- 1..n, do: {:rec, i, i, i}
@@ -1406,7 +1402,7 @@ IO.puts("")
        :keyed ->
          for _ <- 1..50, do: Bench.FatKeyedQuery.rows(keyed, 1)
      end,
-     note: "50 reads. The filter runs the body 4,000 times per read, and the head runs it once"
+     note: "50 reads. The filter scans 4,000 kept rows per read, and the head reads one bucket"
    )
 
    :ok
@@ -1631,14 +1627,14 @@ Bench.scenario(
   "build a cache from a session of n matches",
   cache_sizes,
   fn n -> n |> Bench.Cached.get() |> elem(1) |> Rete.ActivationCache.from_session() end,
-  note: "one pass over the records of the rule, and one body run per row of the query"
+  note: "one pass over the records of the rule and of the query, and no body runs"
 )
 
 Bench.scenario(
   "read n query rows that a cache gave",
   cache_sizes,
   fn n -> n |> Bench.Cached.get() |> elem(3) |> Bench.Cached.totals() end,
-  note: "a map lookup per row, in place of the body"
+  note: "a read of kept rows. A hit gave them, and no body ran"
 )
 
 # Last, because it sets the exit status of the run.

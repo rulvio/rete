@@ -9,11 +9,14 @@ defmodule Rete.Snapshot do
   alias Rete.Compiler.BetaGraph
   alias Rete.Engine.State
   alias Rete.Image
+  alias Rete.Memory
   alias Rete.Network
   alias Rete.Network.Node
+  alias Rete.Token
 
   # Increase this when an engine struct changes. The struct-shape test in `snapshot_test.exs`
-  # fails until it does. Increase it also when the contract of `Negation.marker/2`,
+  # fails until it does. A new field with a default that changes nothing is the exception.
+  # `fill_defaults/1` says why. Increase it also when the contract of `Negation.marker/2`,
   # `marker_alpha/1` or `Taxonomy.default_fact_type/1` changes. No test catches that. The
   # envelope and the MAC input never change, so an older release can still report
   # `{:format, n}`.
@@ -66,11 +69,12 @@ defmodule Rete.Snapshot do
          :ok <- verify(format, signature, body, secret),
          :ok <- check_format(format),
          {:ok, %{images: images, state: state}} <- decode(body),
+         rows? = Map.has_key?(state.memory, :query_rows),
          state = fill_defaults(state),
          # A refused load keeps these images. Another session can need them.
          :ok <- Image.load(images),
          [] <- Image.missing(state, images) do
-      {:ok, state}
+      {:ok, if(rows?, do: state, else: fill_rows(state))}
     else
       [_ | _] = missing -> {:error, {:missing, missing}}
       {:error, _reason} = error -> error
@@ -85,7 +89,7 @@ defmodule Rete.Snapshot do
   def message({:not_portable, fun}) do
     "It holds #{inspect(fun)}. That is an anonymous function, and it runs only on the " <>
       "build that made it. Use a remote capture such as `&MyApp.fact_type/1`. Look in " <>
-      ":fact_type_fn, and in your facts."
+      ":fact_type_fn, in your facts, and in the rows that an activation cache gave a query."
   end
 
   def message({:no_image, _module, _detail} = reason), do: Image.message(reason)
@@ -153,7 +157,7 @@ defmodule Rete.Snapshot do
     nodes =
       Map.new(nodes, fn
         {id, %Node.Production{} = node} -> {id, Map.put_new(node, :cache, nil)}
-        {id, %Node.Query{} = node} -> {id, Map.put_new(node, :cache, nil)}
+        {id, %Node.Query{} = node} -> {id, query_defaults(node)}
         entry -> entry
       end)
 
@@ -162,6 +166,31 @@ defmodule Rete.Snapshot do
   end
 
   defp memory(%State{memory: memory}), do: Map.put_new(memory, :query_rows, %{})
+
+  defp query_defaults(node) do
+    node
+    |> Map.put_new(:cache, nil)
+    |> Map.put_new(:salience, 0)
+    |> Map.put_new(:internal_salience, 0)
+    |> Map.put_new_lazy(:args, fn -> node.hash end)
+  end
+
+  # An earlier release ran the body of a query when it was read, so its snapshot holds the
+  # tokens of a query in its bucket, and no rows. This runs each body once, for each token,
+  # after the images load. The bucket then holds `{token, row}`, as `Memory.add_row/5` keeps.
+  defp fill_rows(%State{network: network, memory: memory} = state) do
+    queries = for %Node.Query{} = node <- Network.beta_nodes(network), do: node
+    matches = for node <- queries, token <- Memory.all_tokens(memory, node.id), do: {node, token}
+    memory = %Memory{memory | tokens: Map.drop(memory.tokens, Enum.map(queries, & &1.id))}
+
+    memory =
+      Enum.reduce(matches, memory, fn {node, token}, memory ->
+        key = Token.join_key(token, node.params)
+        Memory.add_row(memory, node.id, key, token, node.rhs.(node.args, token.bindings))
+      end)
+
+    %State{state | memory: memory}
+  end
 
   # The network without its taxonomy. The taxonomy can hold a `:fact_type_fn`, which is not
   # part of any rule. It keeps its captures, so it always runs the version of the node, as a

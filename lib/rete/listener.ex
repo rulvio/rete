@@ -25,7 +25,7 @@ defmodule Rete.Listener do
   | event | when |
   |---|---|
   | `{:fire_started}` | `fire_rules/2` begins |
-  | `{:fire_finished, fired}` | the agenda is empty; `fired` is how many activations fired, cache hits included |
+  | `{:fire_finished, fired}` | the agenda is empty. `fired` is how many cycles ran, as `:max_cycles` counts them |
   | `{:fact_inserted, fact, origin}` | one occurrence of a fact is added to working memory |
   | `{:fact_retracted, fact, origin}` | one occurrence of a fact leaves working memory |
   | `{:propagated, op, node_id, count}` | a node consumed `count` items |
@@ -42,10 +42,13 @@ defmodule Rete.Listener do
   added or lost the fact. This is what lets a listener reconstruct provenance, without
   reading memory. See `docs/design/observability.md` §1.
 
-  An activation cache can answer for a body. See `Rete.ActivationCache`. Its
+  An activation cache can answer for the body of a rule. See `Rete.ActivationCache`. Its
   `:activation_fired` then has `cached: true` in its source, and the body did not run.
-  Each fact it inserts has the origin `{module, name, :cached}`. A hit counts in `fired`,
-  and in the `:max_cycles` of `fire_rules/2`, as a firing does.
+  Each fact that the hit inserts has the origin `{module, name, :cached}`. A retraction of
+  that fact has the origin `{module, name}`, because it names the rule whose match lost
+  the fact. To pair the two events, compare the first two elements. The hit takes its
+  place in a cycle as a firing does. A query fires as a rule does. Its `facts` is a list
+  that holds its one row.
   """
 
   @typedoc "Anything a listener chooses to carry between events."
@@ -59,8 +62,8 @@ defmodule Rete.Listener do
         }
 
   @typedoc """
-  Where a fact came from, or what took it away: your own call, or a rule. A rule that an
-  activation cache answered for adds `:cached`.
+  Where a fact came from, or what took it away: your own call, or a rule. An insertion
+  that an activation cache answered for adds `:cached`. A retraction never does.
   """
   @type origin :: {module(), atom()} | {module(), atom(), :cached}
 
@@ -118,7 +121,10 @@ defmodule Rete.Listener.Collect do
       ...> |> Session.fire_rules()
       ...> |> Collect.by_tag(:activation_fired)
       ...> |> Enum.map(fn {_tag, source, _token, facts} -> {source.rule, facts} end)
-      [{{Rete.Doc.Orders, :large_order}, [{:flagged, 1, 250}]}]
+      [
+        {{Rete.Doc.Orders, :large_order}, [{:flagged, 1, 250}]},
+        {{Rete.Doc.Orders, :flagged_for}, [{1, 250}]}
+      ]
   """
   @spec by_tag(Rete.Session.t(), atom()) :: [Rete.Listener.event()]
   def by_tag(session, tag), do: session |> events() |> Enum.filter(&(elem(&1, 0) == tag))
@@ -156,7 +162,7 @@ defmodule Rete.Listener.Trace do
   end
 
   defp describe({:fire_started}), do: "fire"
-  defp describe({:fire_finished, fired}), do: "settled after #{fired} activations"
+  defp describe({:fire_finished, fired}), do: "settled after #{fired} cycles"
   defp describe({:fact_inserted, fact, {Rete.Session, :insert}}), do: "  + #{inspect(fact)}"
 
   defp describe({:fact_inserted, fact, {module, name, :cached}}),

@@ -68,10 +68,17 @@ to resolve it. `{module, name}` is already the identity that `Rete.Session.query
 shape every listener matches on. `{:propagated, ...}` is the exception, and it keeps the
 bare id: it fires for every node, and a join has no name.
 
-`origin` is a `{module, name}` pair. `{Rete.Session, :insert}` and
-`{Rete.Session, :retract}` mean your own call. Any other pair names the rule whose match
-added or lost the fact. So a listener can reconstruct provenance from events alone, without
-reading memory. The origin is the same pair that `Rete.Inspect` reports in `:sources`.
+`origin` is a `{module, name}` pair, with one exception below. `{Rete.Session, :insert}`
+and `{Rete.Session, :retract}` mean your own call. Any other pair names the rule whose
+match added or lost the fact. So a listener can reconstruct provenance from events alone,
+without reading memory. The origin is the same pair that `Rete.Inspect` reports in
+`:sources`.
+
+An activation cache changes two things. A hit adds `cached: true` to the source of its
+`:activation_fired`. A fact that the hit inserted has the origin `{module, name, :cached}`.
+Its first two elements are the pair that `Rete.Inspect` reports. The retraction of that
+fact has the plain pair, because the retraction names the rule whose match lost the fact.
+A listener that pairs the two events compares the first two elements.
 
 A listener **must** have a catch-all clause. The engine adds new events as it grows. A
 listener that crashed on an unfamiliar event would turn every upgrade into a breaking

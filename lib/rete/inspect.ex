@@ -242,7 +242,7 @@ defmodule Rete.Inspect do
   # A production's activations come from truth maintenance: `insertions` is
   # `node_id => token => [[fact]]`, which is "this match at this production inserted these
   # facts". One token is one match, so its batches are concatenated rather than reported
-  # apart. A query inserts nothing, so its activations are the tokens it holds.
+  # apart. A query inserts nothing, so its activations are its tokens, once for each row.
   defp activations(state, %Node.Production{} = node) do
     state.memory.insertions
     |> Map.get(node.id, %{})
@@ -253,8 +253,7 @@ defmodule Rete.Inspect do
   end
 
   defp activations(state, %Node.Query{} = node) do
-    state.memory
-    |> Memory.all_tokens(node.id)
+    for({token, rows} <- Memory.rows(state.memory, node.id), _row <- rows, do: token)
     |> Enum.map(&activation(state, &1, []))
     |> sort_activations()
   end
