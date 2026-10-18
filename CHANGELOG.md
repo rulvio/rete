@@ -4,7 +4,7 @@ All notable changes to `rete` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 1.3.0
 
 ### Added
 
@@ -23,13 +23,13 @@ All notable changes to `rete` are recorded here. The format follows
   `:activation_cache_key_fn` on `fire_rules/2` replace the key, and both must be the same
   function. When the function returns `nil`, that activation is left out of the cache, or
   runs without it. A key function that raises is reported as a body that raises. See
-  `Rete.ActivationCache`.
+  `Rete.ActivationCache`, which is a new public module.
 * A cached query takes its row from the cache, as a rule takes its facts, and its body does
   not run. The session keeps no reference to the cache after the fire.
 * A hit emits `:activation_fired` with `cached: true` in its source. Each fact that a hit
-  inserts has the origin `{module, name, :cached}`. Its retraction has the plain pair. `Rete.Listener.Trace`
-  writes `cached` for the hit and for each fact it inserts. An error about a cached fact
-  names the cache and not the body.
+  inserts has the origin `{module, name, :cached}`. Its retraction has the plain pair.
+  `Rete.Listener.Trace` writes `cached` for the hit and for each fact it inserts. An error
+  about a cached fact names the cache and not the body.
 * `default_rule_opts` gives options to many rules and queries at once. `use Rete.Ruleset,
   default_rule_opts: ...` gives them to one module, and evaluates them one time, where
   `use` is. The `:default_rule_opts` build option gives them to every production of a
@@ -39,7 +39,6 @@ All notable changes to `rete` are recorded here. The format follows
   `salience` and `internal_salience`. The state has a field for the cache, and the memory
   has `query_rows`. The snapshot format stays 1. Snapshots of different releases are not
   guaranteed to be compatible.
-
 * `:max_duration` on `fire_rules/2` limits the whole call, in milliseconds. The engine
   checks it before each cycle while work is pending, and it waits for a task no longer
   than the time left. A call that is past it at a check raises.
@@ -57,7 +56,6 @@ All notable changes to `rete` are recorded here. The format follows
   rule does. The `facts` of its `:activation_fired` is a list that holds its row.
 * A query body that returns a task is awaited, as a rule body is. The reply of the task is
   the row. A query activation counts in `:max_cycles` and takes part in `:concurrency`.
-
 * `:timeout` on `fire_rules/2` is now `:task_timeout`, because it limits the wait for one
   task. The old name raises an error, and the error names the new one.
 * When `fire_rules/2` raises, for any reason, the engine now cancels every task that it

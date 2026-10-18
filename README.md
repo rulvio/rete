@@ -28,7 +28,7 @@ becomes dormant again. You do no bookkeeping yourself.
 ```elixir
 def deps do
   [
-    {:rete, "~> 1.2"}
+    {:rete, "~> 1.3"}
   ]
 end
 ```
@@ -443,7 +443,8 @@ docs under `docs/design/` record why.
 * **Snapshots carry rules, not data migrations.** `Rete.Session.dump/2` and `load/2` move
   a session to a node that runs other code, and the session keeps its own rules. There is no
   way to move a session onto the **new** rules of that node, and no distributed sync. Images
-  that a node loads stay loaded. See [docs/design/snapshot.md](docs/design/snapshot.md).
+  that a node loads stay loaded. Snapshots of different releases of rete are not
+  guaranteed to be compatible. See [docs/design/snapshot.md](docs/design/snapshot.md).
 * **Performance is measured by shape, not tuned for a number.** The algorithm is the right
   one: alpha and beta node sharing across modules as well as within one, hash joins,
   incremental retraction. Two profiling passes have run, and `mix bench` keeps their

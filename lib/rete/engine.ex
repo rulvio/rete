@@ -818,22 +818,20 @@ defmodule Rete.Engine do
 
   # --- the tasks of a fire ------------------------------------------------------------
 
-  # Every task the fire has seen and not yet settled, by pid. `fire/2` cancels what is left
+  # Every task the fire has seen and not yet settled, by ref. `fire/2` cancels what is left
   # here when the call raises, and deletes the entry when it returns.
   #
-  # A task from `Task.completed/1` has no process, so there is nothing to cancel. When the
-  # fire raises before it settles, its reply stays in the mailbox of the caller.
-  defp track(_cfg, %Task{pid: nil} = task), do: task
-
-  defp track(cfg, %Task{pid: pid} = task) do
-    Process.put(cfg.tasks, Map.put(Process.get(cfg.tasks, %{}), pid, task))
+  # By ref and not by pid, because a task from `Task.completed/1` has no pid. It is still
+  # tracked, so that a raise shuts it down, and that flushes its reply.
+  defp track(cfg, %Task{ref: ref} = task) do
+    Process.put(cfg.tasks, Map.put(Process.get(cfg.tasks, %{}), ref, task))
     task
   end
 
-  defp untrack(cfg, %Task{pid: pid}) do
+  defp untrack(cfg, %Task{ref: ref}) do
     case Process.get(cfg.tasks) do
       nil -> :ok
-      tasks -> Process.put(cfg.tasks, Map.delete(tasks, pid))
+      tasks -> Process.put(cfg.tasks, Map.delete(tasks, ref))
     end
   end
 
@@ -844,8 +842,10 @@ defmodule Rete.Engine do
   # A task that finished first gives its reply to `Task.shutdown/2`. The tasks in that reply
   # are tracked, as a reply on any other path is.
   defp shut_down(cfg, %Task{owner: owner} = task) when owner == self() do
-    with {:ok, reply} <- Task.shutdown(task, :brutal_kill),
-         do: reply |> listed_tasks() |> Enum.each(&track(cfg, &1))
+    case Task.shutdown(task, :brutal_kill) do
+      {:ok, reply} -> reply |> listed_tasks() |> Enum.each(&track(cfg, &1))
+      _gone -> :ok
+    end
 
     untrack(cfg, task)
   end

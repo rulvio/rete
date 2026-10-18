@@ -3068,6 +3068,22 @@ defmodule Rete.EngineTest do
       end
     end
 
+    # In one group: a quick task, a body that raises, and a task from `Task.completed/1`.
+    # The completed task is still unsettled when the raise comes.
+    defmodule CompletedBehind do
+      use Rete.Ruleset
+
+      defrule quick({:done, _n}) do
+        Task.async(fn ->
+          Process.sleep(30)
+          []
+        end)
+      end
+
+      defrule boom({:done, _n}), do: raise("body boom")
+      defrule known({:done, n}), do: Task.completed({:known, n})
+    end
+
     defmodule Nester do
       use Rete.Ruleset
 
@@ -3232,6 +3248,17 @@ defmodule Rete.EngineTest do
       end
 
       gone(:reply)
+    end
+
+    test "a raise shuts down a task from Task.completed/1, so its reply does not stay behind" do
+      assert_raise RuntimeError, "body boom", fn ->
+        [CompletedBehind]
+        |> Session.new()
+        |> Session.insert({:done, 1})
+        |> Session.fire_rules(concurrency: 3)
+      end
+
+      refute_received {_ref, {:known, 1}}
     end
 
     test "a task of another process behind a retracted match is left, and nothing raises" do

@@ -705,9 +705,6 @@ The engine tracks a task when it first sees it, and it stops when it settles the
 * a task that a task returns, which is an error. Its owner is the outer task.
 * a task that another process owns, which is an error.
 
-A task from `Task.completed/1` is not tracked, because no process runs it. When a fire
-raises before it settles, its reply stays in the mailbox of the caller.
-
 The engine cancels a task of its own process with `Task.shutdown/2`, which also flushes the
 reply. It kills any other task only if the `$callers` of that task lead back to the
 firing process. That covers a task started inside a task that the fire started. A task
@@ -1118,8 +1115,8 @@ out of 4,000:
 That is a factor of approximately 500. A head reads one bucket. A filter on the result
 scans all 4,000 rows on each read, and discards 3,999 of them.
 
-The filter that this release removed ran on the bindings, inside the engine. It also
-scanned every match, so it did not read like a head. That filter is deleted, so
+The filter that the release of heads removed ran on the bindings, inside the engine. It
+also scanned every match, so it did not read like a head. That filter is deleted, so
 `mix bench` cannot measure it and no row here stands for it.
 
 You cannot reach for it by accident. A query with no head is `name/1`, so the old call

@@ -53,6 +53,9 @@ defmodule Rete.Memory do
   @type node_id :: term()
   @type key :: %{atom() => term()}
 
+  @typedoc "What a bucket in `tokens` holds: a token, or `{token, row}` at a query node."
+  @type stored :: Token.t() | {Token.t(), term()}
+
   @typedoc "One match at one production, identified by where it fired and what it matched."
   @type inserter :: {node_id(), Token.t()}
 
@@ -146,19 +149,19 @@ defmodule Rete.Memory do
   # --- tokens (left side) ------------------------------------------------------
 
   @doc "The tokens stored at a node under a join key, in arrival order."
-  @spec tokens(t(), node_id(), key()) :: [Token.t()]
+  @spec tokens(t(), node_id(), key()) :: [stored()]
   def tokens(%__MODULE__{tokens: tokens}, node_id, key) do
     tokens |> Map.get(node_id, %{}) |> bucket(key) |> Bucket.to_list()
   end
 
   @doc "Every token at a node, whatever its join key."
-  @spec all_tokens(t(), node_id()) :: [Token.t()]
+  @spec all_tokens(t(), node_id()) :: [stored()]
   def all_tokens(%__MODULE__{tokens: tokens}, node_id) do
     tokens |> Map.get(node_id, %{}) |> Map.values() |> Enum.flat_map(&Bucket.to_list/1)
   end
 
   @doc "Adds tokens at a node under a join key."
-  @spec add_tokens(t(), node_id(), key(), [Token.t()]) :: t()
+  @spec add_tokens(t(), node_id(), key(), [stored()]) :: t()
   def add_tokens(memory, _node_id, _key, []), do: memory
 
   def add_tokens(%__MODULE__{} = memory, node_id, key, new) do
@@ -168,7 +171,7 @@ defmodule Rete.Memory do
   @doc """
   Removes one occurrence of each given token, returning what was found.
   """
-  @spec remove_tokens(t(), node_id(), key(), [Token.t()]) :: {t(), [Token.t()]}
+  @spec remove_tokens(t(), node_id(), key(), [stored()]) :: {t(), [stored()]}
   def remove_tokens(memory, _node_id, _key, []), do: {memory, []}
 
   def remove_tokens(%__MODULE__{} = memory, node_id, key, targets) do
@@ -505,7 +508,7 @@ defmodule Rete.Memory do
   """
   @spec dump(t()) :: %{
           elements: %{node_id() => %{key() => [Element.t()]}},
-          tokens: %{node_id() => %{key() => [Token.t()]}},
+          tokens: %{node_id() => %{key() => [stored()]}},
           accum: %{node_id() => %{key() => %{key() => [term()]}}},
           insertions: %{node_id() => %{Token.t() => [[term()]]}},
           query_rows: %{node_id() => %{Token.t() => [term()]}},
