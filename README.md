@@ -397,7 +397,7 @@ A rule that calls a function of another module runs the version on the node that
 
 ## What is public
 
-Seven modules are public. They are the ones the examples above use:
+Eight modules are public:
 
 | module | for |
 |---|---|
@@ -405,6 +405,7 @@ Seven modules are public. They are the ones the examples above use:
 | `Rete.Ruleset` | `defrule`, `defquery`, `derive`, `underive` |
 | `Rete.Session` | building a session, inserting, retracting, firing, querying, dumping and loading |
 | `Rete.Inspect` | `explain/1,2`, `why_not/1,2` |
+| `Rete.ActivationCache` | `from_session/2` and `key/1`, to build an activation cache |
 | `Rete.Listener` (+ `.Collect`, `.Trace`) | watching what a session does |
 
 **Everything else is internal**: the DSL front end, the IR, the compiler, the network, the

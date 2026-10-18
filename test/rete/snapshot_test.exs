@@ -9,10 +9,7 @@ defmodule Rete.SnapshotTest do
 
   use ExUnit.Case, async: true
 
-  alias Rete.Doc.Orders
   alias Rete.Listener.Collect
-  alias Rete.Network
-  alias Rete.Network.Node
   alias Rete.Session
 
   @key "rete-snapshot-test"

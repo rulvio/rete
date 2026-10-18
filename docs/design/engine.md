@@ -9,7 +9,7 @@ Status: implemented, end to end.
 | module | file | what it is |
 |---|---|---|
 | `Rete.Token`, `Rete.Element`, `Rete.Activation` | `lib/rete/token.ex` | what travels |
-| `Rete.Memory` | `lib/rete/memory.ex` | the five working memories |
+| `Rete.Memory` | `lib/rete/memory.ex` | the six working memories |
 | `Rete.Agenda` | `lib/rete/agenda.ex` | salience-ordered activations |
 | `Rete.Engine.State` | `lib/rete/engine/state.ex` | everything that changes, as one value |
 | `Rete.Engine.Nodes` | `lib/rete/engine/nodes.ex` | what each node kind does |
@@ -136,7 +136,7 @@ term that triggered it is a different term of the same value. Match *order* is p
 token's identity: two tokens over the same facts, in a different order, are different
 matches.
 
-**`Rete.Activation`** — a production node plus the token that satisfied it, plus the
+**`Rete.Activation`** — a rule or query node plus the token that satisfied it, plus the
 salience and compile order it will be sorted by.
 
 ## 4. The six memories, and one index over them
@@ -214,7 +214,7 @@ It returns the new state, and the work produced.
 | `AccumulateJoin` | as `Accumulate`; candidates cannot be reduced until a token exists | the same |
 | `Test` | propagates when `:fun.(bindings)` is truthy | nothing — a test has no fact input |
 | `Production` | adds an activation to the agenda | nothing |
-| `Query` | stores the token for lookup | nothing |
+| `Query` | adds an activation to the agenda, as `Production` does | nothing |
 
 ### The retraction rule
 
@@ -301,9 +301,9 @@ found the activation. That is exactly the distinction a production needs on retr
 Either the match never fired and never will, or it fired, and its conclusions have to be
 taken back.
 
-Every activation of one production shares a key. Salience, internal salience, and compile
-order all come from the node, none from the match. So there are at most as many buckets as
-there are production nodes, however many facts a session holds. A single sorted list,
+Every activation of one rule or query shares a key. Salience, internal salience, and
+compile order all come from the node, none from the match. So there are at most as many
+buckets as there are rule and query nodes, however many facts a session holds. A single sorted list,
 instead, would walk past every match already queued for the same rule, on every insertion.
 
 The buckets themselves sit in a `:gb_trees`, keyed by sort key. That bounds the second
@@ -705,6 +705,9 @@ The engine tracks a task when it first sees it, and it stops when it settles the
 * a task that a task returns, which is an error. Its owner is the outer task.
 * a task that another process owns, which is an error.
 
+A task from `Task.completed/1` is not tracked, because no process runs it. When a fire
+raises before it settles, its reply stays in the mailbox of the caller.
+
 The engine cancels a task of its own process with `Task.shutdown/2`, which also flushes the
 reply. It kills any other task only if the `$callers` of that task lead back to the
 firing process. That covers a task started inside a task that the fire started. A task
@@ -1057,8 +1060,7 @@ scaling scenario in `bench/run.exs` stays at 0.03 ms for 500, 1,000, 2,000 and 4
 matches.
 
 A query with no parameters keys every row on `%{}`. This is one bucket, and it holds its
-rows in the order that they fired. A query with no head thus costs and behaves exactly as it did
-before heads existed.
+rows in the order that they fired. So a query with no head pays nothing for the keying.
 
 **The cost of a head is the cardinality of the variable that it names. The head itself
 costs almost nothing.** These measurements send 4,000 facts to a query node. The insert
@@ -1099,7 +1101,7 @@ report.
 
 #### The capability that was removed
 
-No operation became slower. This release removed a *capability* instead. The old query
+When heads came in, no operation became slower. That release removed a *capability* instead. The old query
 could filter on **any** binding, inside the engine, with no declaration. That filter ran on
 the bindings, and it called the body only for the rows that the filter kept.
 
@@ -1175,7 +1177,7 @@ the full item. Thus 500 facts cost 1.4 ms at a 1-field payload, and 4.2 ms at 51
 
 Every quadratic here was first blamed on the wrong thing. The first attempt blamed beta
 memory's append, which was real but not dominant — the agenda was. The tell: a query
-terminal, which has no agenda, was near-linear while a production terminal was not. The
+terminal, which had no agenda then, was near-linear while a production terminal was not. The
 second blamed `insert_ordered/2` for the collection, and a probe agreed: feed members in
 descending order, making that walk a prepend, and the scenario goes linear. The fixture
 concealed the true cause, because it inserted the token last and thus never read a group

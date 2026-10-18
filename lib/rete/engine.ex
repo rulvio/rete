@@ -5,8 +5,8 @@ defmodule Rete.Engine do
   **Internal.** Not part of the public API. Call it through `Rete.Session`.
 
   Propagation drains a queue of pending work. A node consumes one unit, and returns the
-  work it produced. Firing pops the most salient activation, runs its right hand side, and
-  inserts what it returned. Propagation drains to completion **before** the next
+  work it produced. Firing pops the most salient activation and runs its right hand side.
+  A rule inserts what it returned, and a query keeps it as a row. Propagation drains to completion **before** the next
   activation fires, so a rule always sees a settled network.
 
   `fire_rules/2` is the only entry point that drains. `new/1`, `insert/3` and `retract/3`
@@ -821,7 +821,8 @@ defmodule Rete.Engine do
   # Every task the fire has seen and not yet settled, by pid. `fire/2` cancels what is left
   # here when the call raises, and deletes the entry when it returns.
   #
-  # A task from `Task.completed/1` has no process, so there is nothing to cancel.
+  # A task from `Task.completed/1` has no process, so there is nothing to cancel. When the
+  # fire raises before it settles, its reply stays in the mailbox of the caller.
   defp track(_cfg, %Task{pid: nil} = task), do: task
 
   defp track(cfg, %Task{pid: pid} = task) do

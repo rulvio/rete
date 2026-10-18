@@ -113,6 +113,7 @@ defmodule Rete.MixProject do
           Rete.Ruleset,
           Rete.Session,
           Rete.Inspect,
+          Rete.ActivationCache,
           Rete.Listener,
           Rete.Listener.Collect,
           Rete.Listener.Trace

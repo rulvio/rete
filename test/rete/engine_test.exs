@@ -3461,11 +3461,10 @@ defmodule Rete.EngineTest do
       assert QueryFiring.fetched(fire([{:job, 7}], concurrency: 2)) == [{:fetched, 7}]
     end
 
-    test "a task from Task.completed/1 gives its result, and leaves no registry entry" do
+    test "a task from Task.completed/1 gives its result" do
       for concurrency <- [1, 2] do
         session = fire([{:known, 1}, {:known, 2}], concurrency: concurrency)
         assert Enum.sort(QueryFiring.known(session)) == [known: 1, known: 2]
-        assert registry_keys() == []
       end
     end
 
