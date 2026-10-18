@@ -258,8 +258,8 @@ defmodule Rete.Engine do
         cache -> {cache, key_fn}
       end
 
-    # The cache is on the state only while this call runs. A query node reads it there
-    # during propagation. Clearing it on return keeps it out of the session and its dumps.
+    # The cache is on the state only while this call runs. `compute/4` reads it there when
+    # an activation fires. Clearing it on return keeps it out of the session and its dumps.
     state = emit(%State{state | activation_cache: cache}, fn -> {:fire_started} end)
 
     state

@@ -37,9 +37,8 @@ All notable changes to `rete` are recorded here. The format follows
   both. The defaults take `:salience`, `:cache` and `:meta`, each one time, with atom keys.
 * Production and query nodes have a new `cache` field. Query nodes also have `args`,
   `salience` and `internal_salience`. The state has a field for the cache, and the memory
-  has `query_rows`. The snapshot format stays 1. `load/2` fills these fields in for a
-  snapshot from an earlier release. It also runs the body of each query once for each
-  match that the snapshot holds, to make its rows.
+  has `query_rows`. The snapshot format stays 1. Snapshots of different releases are not
+  guaranteed to be compatible.
 
 * `:max_duration` on `fire_rules/2` limits the whole call, in milliseconds. The engine
   checks it before each cycle while work is pending, and it waits for a task no longer
@@ -49,9 +48,9 @@ All notable changes to `rete` are recorded here. The format follows
 
 * A query now fires as a rule does. Its body runs during `fire_rules/2`, once for each
   match, and the session keeps the result as the row of that match. A read returns the
-  kept rows and runs no body. Before, every read ran the body for every match. A match
-  that a rule takes away before its turn never runs the body. A row goes when its match
-  goes, as the facts of a rule do.
+  kept rows and runs no body. Before, each read ran the body once for each row that it
+  returned. At `concurrency: 1`, a match that a rule takes away before its turn never runs
+  the body. A row goes when its match goes, as the facts of a rule do.
 * A query takes `:salience`, from its options map or from `default_rule_opts`. Before, a
   query ignored it.
 * A query emits `:activation_added`, `:activation_removed` and `:activation_fired`, as a

@@ -3381,16 +3381,17 @@ defmodule Rete.EngineTest do
         {:seen, n}
       end
 
-      # `block` outranks `open`, and takes its match away before its turn.
-      defrule block(%{salience: 10}, {:item, n}) when n > 100, do: {:blocked, n}
-
+      # Each pair is written in the order that salience must reverse. `block` outranks
+      # `open`, and takes its match away before its turn.
       defquery open({:item, n}, {:not, [{:blocked, n}]}) do
         send(self(), {:ran, :open, n})
         n
       end
 
-      defquery early(%{salience: 20}, {:order, n}), do: n
+      defrule block(%{salience: 10}, {:item, n}) when n > 100, do: {:blocked, n}
+
       defrule late({:order, n}), do: {:late, n}
+      defquery early(%{salience: 20}, {:order, n}), do: n
 
       defquery fetched({:job, id}), do: Task.async(fn -> {:fetched, id} end)
     end

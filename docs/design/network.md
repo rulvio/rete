@@ -80,7 +80,7 @@ code, never by equality.
 | `AccumulateJoin` | collection with a cross-condition guard | as above; candidates cannot be reduced until a token exists |
 | `Test` | a rule level `when` | propagate the token when `:fun.(bindings)` is truthy |
 | `Production` | a rule terminal | call `:rhs.(args, bindings)`, logically insert the result |
-| `Query` | a query terminal | hold the tokens that reached it, keyed for lookup |
+| `Query` | a query terminal | activate as `Production` does, and keep the row of each firing, keyed for lookup |
 
 ### `:propagates_empty?` on the accumulate nodes
 

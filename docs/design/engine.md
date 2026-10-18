@@ -366,9 +366,9 @@ fewer events, larger counts, same shape.
 or a query whose `:cache` is a value other than `nil` or `false`. `Rete.ActivationCache` holds the
 user contract. This is how the engine does it.
 
-The cache comes from the `insertions` memory of a session that fired (§4). Truth
-maintenance already needs a record of what each activation concluded, so the cache adds no
-store. `Rete.ActivationCache.from_session/2` reads that record in one pass, and it builds
+The cache comes from the `insertions` and `query_rows` memories of a session that fired
+(§4). Truth maintenance already needs a record of what each activation concluded, so the
+cache adds no store. `Rete.ActivationCache.from_session/2` reads that record in one pass, and it builds
 an index from it. The index is a plain map, so a caller can save it and load it without
 the session. A fire does no pass of its own. A lookup finds the rule with one
 `Map.fetch/2`, then builds the key and finds it with another. The key is the bindings by
@@ -468,7 +468,9 @@ returns as the row of that token. It inserts nothing. The row goes to two places
   are its head. This is what a read uses.
 
 A token that leaves takes its row out of both, as truth maintenance takes back the facts of
-a rule. A match that leaves before its turn never runs the body.
+a rule. At `concurrency: 1`, a match that leaves before its turn never runs the body. Above
+it, the body can run while a task ahead of it is in flight, and the engine then discards
+the row, as it discards the facts of a rule. See §11.
 
 `Rete.Engine.query/3` is thus a map lookup on the key that a call supplies. It returns the
 rows in that bucket, one row for each match, and not the bindings. It runs no body, and it

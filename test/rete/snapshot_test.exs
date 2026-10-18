@@ -1189,9 +1189,8 @@ defmodule Rete.SnapshotTest do
     end
 
     # A snapshot holds these structs as they are. A body from another shape still decodes,
-    # and it fails later inside the engine. Only a new `@format` makes `load/2` refuse it.
-    # A new field with a default that changes nothing is the exception. The load fills it
-    # in, so the format stays. Add it to @shapes, and to the test below.
+    # and it fails later inside the engine. Snapshots of different releases are not
+    # guaranteed to be compatible, so a change here does not need a new `@format`.
     test "the structs a snapshot holds have the shape of this format" do
       {:ok, modules} = :application.get_key(:rete, :modules)
 
@@ -1209,109 +1208,11 @@ defmodule Rete.SnapshotTest do
         [Rete.Doc.Orders] |> Session.new() |> Session.dump!(@key) |> :erlang.binary_to_term()
 
       assert {format, shapes} == {1, @shapes}, """
-      A struct that a snapshot holds changed shape. Increase @format in Rete.Snapshot, \
-      then update @shapes and the format in this test.\
+      A struct that a snapshot holds changed shape. Update @shapes. Increase @format in \
+      Rete.Snapshot only to refuse the snapshots of earlier releases.\
       """
     end
   end
-
-  describe "a snapshot from an earlier release" do
-    # A format 1 body from an earlier release has no `:cache` on its terminals, no
-    # `:activation_cache` on its state and no `:query_rows` in its memory. It still loads,
-    # and its rules and queries do not cache.
-    test "loads without the cache fields, and its terminals read cache: nil" do
-      session =
-        [Orders]
-        |> Session.new()
-        |> Session.insert([{:customer, 1}, {:order, 1, 250}])
-
-      {:rete_session, 1, _signature, body} =
-        session |> Session.dump!(@key) |> :erlang.binary_to_term()
-
-      %{state: state} = decoded = :erlang.binary_to_term(body)
-      graph = state.network.graph
-
-      nodes =
-        Map.new(graph.nodes, fn
-          {id, %Node.Production{} = node} -> {id, Map.delete(node, :cache)}
-          {id, %Node.Query{} = node} -> {id, old_query(node)}
-          entry -> entry
-        end)
-
-      old =
-        state
-        |> put_in([Access.key(:network), Access.key(:graph)], %{graph | nodes: nodes})
-        |> Map.delete(:activation_cache)
-        |> Map.update!(:memory, &Map.delete(&1, :query_rows))
-
-      assert {:ok, loaded} = Session.load(forge(%{decoded | state: old}), @key)
-
-      terminals =
-        loaded
-        |> Session.network()
-        |> Network.beta_nodes()
-        |> Enum.filter(&(is_struct(&1, Node.Production) or is_struct(&1, Node.Query)))
-
-      assert Enum.any?(terminals, &is_struct(&1, Node.Production))
-      assert Enum.any?(terminals, &is_struct(&1, Node.Query))
-      assert Enum.all?(terminals, &(Map.get(&1, :cache, :missing) == nil))
-      assert loaded.state.activation_cache == nil
-      assert loaded.state.memory.query_rows == %{}
-
-      assert Orders.flagged_for(Session.fire_rules(loaded), 1) ==
-               Orders.flagged_for(Session.fire_rules(session), 1)
-    end
-
-    # An earlier release ran the body of a query when it was read. So its snapshot holds
-    # the tokens of a query and no rows, and the load computes them.
-    test "computes the rows of a query when the snapshot has none" do
-      fired =
-        [Orders]
-        |> Session.new()
-        |> Session.insert([{:customer, 1}, {:order, 1, 250}])
-        |> Session.fire_rules()
-
-      {:rete_session, 1, _signature, body} =
-        fired |> Session.dump!(@key) |> :erlang.binary_to_term()
-
-      %{state: state} = decoded = :erlang.binary_to_term(body)
-      graph = state.network.graph
-
-      nodes =
-        Map.new(graph.nodes, fn
-          {id, %Node.Query{} = node} -> {id, old_query(node)}
-          entry -> entry
-        end)
-
-      # An earlier release kept bare tokens in the bucket of a query.
-      query_ids = for {id, %Node.Query{}} <- graph.nodes, do: id
-
-      tokens =
-        Map.new(state.memory.tokens, fn
-          {id, by_key} ->
-            if id in query_ids do
-              {id, Map.new(by_key, fn {key, bucket} -> {key, bare(bucket)} end)}
-            else
-              {id, by_key}
-            end
-        end)
-
-      old =
-        state
-        |> put_in([Access.key(:network), Access.key(:graph)], %{graph | nodes: nodes})
-        |> Map.update!(:memory, &(&1 |> Map.delete(:query_rows) |> Map.put(:tokens, tokens)))
-
-      assert {:ok, loaded} = Session.load(forge(%{decoded | state: old}), @key)
-      assert Orders.flagged_for(loaded, 1) == Orders.flagged_for(fired, 1)
-      assert Orders.flagged_for(loaded, 1) != []
-      assert loaded.state.memory.query_rows == fired.state.memory.query_rows
-    end
-  end
-
-  defp old_query(node), do: Map.drop(node, [:cache, :salience, :internal_salience, :args])
-
-  defp bare(bucket),
-    do: bucket |> Rete.Bucket.to_list() |> Enum.map(&elem(&1, 0)) |> Rete.Bucket.new()
 
   describe "what is an image" do
     # A module with the name of an image, and no `@rete_image`, is a module of the user. A

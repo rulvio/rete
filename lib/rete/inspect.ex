@@ -120,7 +120,8 @@ defmodule Rete.Inspect do
 
   `activations: []` means the rule fired on no match that still holds. That is usually a
   rule that never matched, and `why_not/2` then says where it stopped. A rule whose body
-  returned `nil` or `[]` still reports each firing, with `asserts: []`.
+  returned `nil` or `[]` still reports the matches it fired on, with `asserts: []`. Two
+  equal matches report as one.
 
   Each entry of `:matches` says where its fact came from. `:sources` names the rules that
   concluded it, so you read a chain by following that pair to its own entry in the same
@@ -187,8 +188,8 @@ defmodule Rete.Inspect do
 
   This answers "why did this not fire?". Each entry of `:chain` reports what one node on
   the chain of the rule holds. `:elements` are the facts that matched this condition alone.
-  `:tokens` are partial matches from the left. `:activations`, on terminals only, is the
-  number of matches that it fired on.
+  `:tokens` are partial matches from the left. `:activations`, on rule terminals only, is
+  the number of matches that it fired on.
 
   ```
   %{rule: :large_order, module: MyRuleset,

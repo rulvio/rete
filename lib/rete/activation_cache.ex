@@ -217,8 +217,8 @@ defmodule Rete.ActivationCache do
       "Build it again with `Rete.ActivationCache.from_session/2`."
   end
 
-  # A pattern rather than a field read, so a node from a snapshot that predates the field
-  # is a node that did not opt in.
+  # A pattern rather than a field read, because `from_session/2` passes every beta node, and
+  # only a terminal has the field.
   defp cached?(%{cache: cache}), do: cache not in [nil, false]
   defp cached?(_node), do: false
 

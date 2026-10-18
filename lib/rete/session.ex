@@ -368,8 +368,8 @@ defmodule Rete.Session do
   Returns `{:ok, binary}`, or `{:error, reason}`:
 
     * `{:not_portable, fun}` — the session holds an anonymous function, such as an
-      anonymous `:fact_type_fn`, or a query row from an activation cache. Only a remote
-      capture, `&Mod.fun/arity`, works on another node.
+      anonymous `:fact_type_fn`, or a query row that holds one. Only a remote capture,
+      `&Mod.fun/arity`, works on another node.
     * `{:no_image, module, detail}` — the image of a ruleset module did not compile.
       `detail` is the cause that the compile gave.
     * `{:no_beam, image}` — the session runs an image that this node never compiled or
