@@ -105,6 +105,8 @@ jobs:
 
       - run: mix credo --strict
 
+      - run: mix docs --warnings-as-errors
+
       # The PLT is the expensive part and only changes when the dependencies or
       # the Erlang version do, so it is cached on its own key. Built as a
       # separate step so that "the PLT could not be built" and "dialyzer found
