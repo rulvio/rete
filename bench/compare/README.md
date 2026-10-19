@@ -5,10 +5,6 @@ its own file of results, named after its chip, such as `RESULTS-apple-m3-max.md`
 replaces the file of the machine it ran on, and leaves the files of other machines. A table
 compares only with a table from the same machine.
 
-The `RESULTS-*.md` files in this directory predate the removal of `Rete.Session.retract/2`.
-Their `negation` and `tms-retract` rows measured a session retract, and the next run on each
-machine replaces them.
-
 It is not `bench/run.exs`. That one measures shape, asserts on exponents, and gates CI.
 This one measures milliseconds at one size, compares two engines, and gates nothing. No
 figure from here belongs in `README.md`, `docs/**` or `CHANGELOG.md`, because those figures
