@@ -57,9 +57,10 @@ queues the work. `new/1` queues the root token the same way. So a state nobody h
 holds facts, and no matches, tokens or activations.
 
 Two things follow. A caller may batch any number of inserts for the cost of one settle.
-And a query reads propagated state, so it answers **as of the most recent fire**. On a session that never fired that is `[]`. On one that fired and then received an
-insert, it is the previous answer, which is stale rather than empty. The stale case is the
-one that catches people out, because an empty result at least looks wrong.
+And a query reads propagated state, so it answers **as of the most recent fire**. On a
+session that never fired that is `[]`. On one that fired and then received an insert, it is
+the previous answer, which is stale rather than empty. The stale case is the one that
+catches people out, because an empty result at least looks wrong.
 
 `Rete.Session.settled?/1` reports an empty queue. A query does not raise on a full one,
 because the last settled answer is a true answer about some state of the session.
@@ -85,9 +86,10 @@ reaches it, because the queue is empty and `settled?/1` answers `true`. The wind
 refuses that move, and asks nothing of how the queue was built.
 
 The session has no retract, so a caller queues one direction only. Retractions come from
-truth maintenance during a drain, and a drain does not coalesce. So today the window never
-closes. It stays because the merge cannot see what the rest of the engine puts in the
-queue, and it costs nothing while one direction arrives.
+truth maintenance during a drain. Each batch it queues goes one way, and the queue-wide
+merge runs only before the drain. So today the window never closes. It stays because the
+merge cannot see what the rest of the engine puts in the queue, and it costs nothing while
+one direction arrives.
 
 Concretely: `right[f], right_retract[f], right[f]` merged into `right[f, f],
 right_retract[f]` still settles right. `right_retract[f], right[f], right_retract[f]`
@@ -1087,8 +1089,8 @@ a unique field uses approximately 53% more memory, because each `Rete.Bucket` ha
 structure, and there is now one bucket for each row.
 
 Retraction is not in the table. A session has no retract, so the bench no longer takes
-every match away. A head keys one bucket per match, and a retraction takes the match out of
-the bucket it keys, as an insert puts it in.
+every match away. Each match goes into the one bucket that its head values key. A
+retraction takes it out of that bucket, as an insert puts it in.
 
 #### A comparison with the `index/2` model that this replaced
 

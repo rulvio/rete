@@ -278,6 +278,14 @@ defmodule Rete.Compiler.NegationTest do
       end
     end
 
+    test "an insert of a value with no type raises for its type, not as a marker" do
+      session = Session.new([Rules])
+
+      error = assert_raise ArgumentError, fn -> Session.insert(session, 42) end
+      assert error.message =~ "cannot determine the fact type of 42"
+      refute error.message =~ "marker"
+    end
+
     test "a :fact_type_fn that gives a user fact a marker type raises on insert" do
       type = fn
         {:forged, _} -> @marker

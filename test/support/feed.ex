@@ -65,7 +65,7 @@ defmodule Rete.Test.Feed do
 
   A session that withdrew everything it put should equal this, as `Rete.Test.Canon` sees
   it. Its feed facts arrive in one call with each `{:withdrawn, ref}` first, so the rule
-  here never fires.
+  here never matches.
   """
   @spec residue(Session.t()) :: Session.t()
   def residue(session) do

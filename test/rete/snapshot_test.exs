@@ -1188,6 +1188,31 @@ defmodule Rete.SnapshotTest do
       end
     end
 
+    defmodule Doubles do
+      use Rete.Ruleset
+
+      defrule double({:n, x}), do: {:doubled, x * 2}
+      defquery doubled({:doubled, x}), do: x
+    end
+
+    # The `Session.dump!/2` doc warns about this. A retracted conclusion stays as a
+    # tombstone in its bucket until compaction, and the siblings keep the bucket from
+    # compacting. No live fact holds 777123456, so only the tombstone can carry it.
+    test "a snapshot can hold a conclusion that was retracted" do
+      session =
+        [Doubles, Feed]
+        |> Session.new()
+        |> Feed.put([{:n, 388_561_728} | for(i <- 1..10, do: {:n, i})])
+        |> Session.fire_rules()
+        |> Feed.withdraw({:n, 388_561_728})
+        |> Session.fire_rules()
+
+      refute {:doubled, 777_123_456} in Session.facts(session)
+
+      assert session |> Session.dump!(@key) |> body_state() |> inspect(limit: :infinity) =~
+               "777123456"
+    end
+
     # A snapshot holds these structs as they are. A body from another shape still decodes,
     # and it fails later inside the engine. Snapshots of different releases are not
     # guaranteed to be compatible, so a change here does not need a new `@format`.
@@ -1594,6 +1619,12 @@ defmodule Rete.SnapshotTest do
     :code.purge(module)
     :code.delete(module)
     :code.purge(module)
+  end
+
+  defp body_state(snapshot) do
+    {:rete_session, _format, _signature, body} = :erlang.binary_to_term(snapshot)
+    %{state: state} = :erlang.binary_to_term(body)
+    state
   end
 
   # The three parts of a real snapshot, for a test that forges one of them.

@@ -58,8 +58,9 @@ A `cond` clause must name the order it checks things in. A rule instead states t
 the world it cares about. The engine finds every combination of facts with that shape. One
 combination is one *match*. One match fires the rule once.
 
-**Nothing happens until you say so.** `insert/2` records facts and queues the work. `fire_rules/2` is the only call that matches anything. It propagates everything
-waiting, runs the rules that match, and returns once the session settles.
+**Nothing happens until you say so.** `insert/2` records facts and queues the work.
+`fire_rules/2` is the only call that matches anything. It propagates everything waiting,
+runs the rules that match, and returns once the session settles.
 
 This lets you reason about a batch of facts together. Otherwise each fact would trigger a
 cascade of its own.
@@ -75,7 +76,9 @@ true as the world changes is the work of the engine, and not your work.
 
 **Facts you insert stay.** A session has no retract. To take something back, insert a fact
 that says so, and write the rule to read it under `{:not, [...]}`. The new fact breaks the
-match, and the engine withdraws what the match concluded.
+match, and the engine withdraws what the match concluded. The new fact stays too, so give
+each fact a unique id when two can be equal. See
+[docs/dsl.md#withdrawing-a-conclusion](docs/dsl.md#withdrawing-a-conclusion).
 
 The name comes from the algorithm underneath. Rete compiles the rules into a network that
 shares work between them.

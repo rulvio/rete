@@ -1037,6 +1037,17 @@ Rules that read `{:order, ...}` see an order while it holds. Insert
 and everything concluded from it. The placed order and the cancellation both stay, so the
 session keeps the history.
 
+A cancellation stays for the life of the session, as every fact you insert does. It blocks
+every fact that binds the same values. So `{:cancelled, 1, 250}` also blocks a second
+`{:placed, 1, 250}`, such as a second order of the same amount. When two facts can be
+equal, give each one a unique id, and put the id in its cancellation:
+
+```elixir
+defrule live({:placed, id, cid, amt}, {:not, [{:cancelled, id}]}) do
+  {:order, cid, amt}
+end
+```
+
 A session retract would share one multiset of facts with truth maintenance. It would take
 an occurrence by value, and it could take the one that a rule concluded. A negation has no
 such case, because the loss of a match is the only thing that retracts.
@@ -1316,9 +1327,9 @@ Rete.Session.facts(session)  #=> just the order; no conclusions
 MyRuleset.orders(session)    #=> [] — nothing has matched yet
 ```
 
-`insert/2` records facts and queues the work. **`fire_rules/2` is the only
-call that matches anything.** It propagates everything waiting, runs the rules that match,
-and returns once the session settles.
+`insert/2` records facts and queues the work. **`fire_rules/2` is the only call that
+matches anything.** It propagates everything waiting, runs the rules that match, and
+returns once the session settles.
 
 So a session you have not fired holds facts and nothing else. The engine has activated no
 rule, and a query answers nothing. This is what lets you reason about a batch of facts

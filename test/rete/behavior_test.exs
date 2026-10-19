@@ -59,6 +59,12 @@ defmodule Rete.BehaviorTest do
   # Holds the feed's own facts and nothing else, as `Rete.Test.Canon` sees it.
   defp drained?(session), do: Canon.dump(Feed.residue(session)) == Canon.dump(session)
 
+  # `session` after a put and a withdrawal of `fact` that never matched. The withdrawal
+  # arrives first, so the feed's own facts are there and nothing they concluded is.
+  defp never_put(session, fact) do
+    session |> Session.insert([{:withdrawn, fact}, {:fed, fact, fact}]) |> Session.fire_rules()
+  end
+
   defp tagged(session, tag) do
     session
     |> Session.facts()
@@ -1189,6 +1195,7 @@ defmodule Rete.BehaviorTest do
       assert [10] == Downstream.colds(cycled)
       assert Feed.counts(base) == Feed.counts(cycled)
       assert Feed.rule_insertions(base) == Feed.rule_insertions(cycled)
+      assert Canon.dump(never_put(base, {:cw, 10, 10})) == Canon.dump(cycled)
     end
 
     defmodule Many do
@@ -1809,6 +1816,9 @@ defmodule Rete.BehaviorTest do
 
         assert Feed.rule_insertions(base) == Feed.rule_insertions(cycled),
                "truth maintenance records changed for #{inspect(extra)}"
+
+        assert Canon.dump(never_put(base, extra)) == Canon.dump(cycled),
+               "a node kept state from #{inspect(extra)}"
       end
     end
 

@@ -708,10 +708,10 @@ defmodule Rete.PropertyTest do
   describe "equivalence to a rebuild" do
     property "after any sequence of puts and withdrawals the session equals a rebuild" do
       check all(ops <- list_of(op(), max_length: 30), max_runs: 40) do
-        {session, multiset} = apply_ops(ops)
+        {session, live} = apply_ops(ops)
 
         assert rebuild(session) == canon(session)
-        assert expected(multiset) == Feed.counts(session)
+        assert expected(facts_of(live)) == Feed.counts(session)
       end
     end
 
@@ -723,10 +723,10 @@ defmodule Rete.PropertyTest do
     # its retraction can both fall in one fire.
     property "batching a mixed sequence before one fire equals firing after each call" do
       check all(ops <- list_of(op(), max_length: 30), max_runs: 40) do
-        {each, multiset} = apply_ops(ops, :fire_each)
-        {last, ^multiset} = apply_ops(ops, :fire_last)
+        {each, live} = apply_ops(ops, :fire_each)
+        {last, ^live} = apply_ops(ops, :fire_last)
 
-        assert expected(multiset) == Feed.counts(last)
+        assert expected(facts_of(live)) == Feed.counts(last)
         assert canon(each) == canon(last)
         assert rebuild(last) == canon(last)
       end
@@ -748,8 +748,10 @@ defmodule Rete.PropertyTest do
         {session |> maybe_fire(when_to_fire) |> settled!(), live}
       end)
 
-    {Session.fire_rules(session), Enum.map(live, &elem(&1, 1))}
+    {Session.fire_rules(session), live}
   end
+
+  defp facts_of(live), do: Enum.map(live, &elem(&1, 1))
 
   # `live` holds `{ref, fact}` for every occurrence still put. A withdrawal of a fact
   # with no live occurrence changes nothing, so the reference multiset models that too.
@@ -777,12 +779,15 @@ defmodule Rete.PropertyTest do
               pending <- list_of(op(), max_length: 5),
               max_runs: 40
             ) do
-        {settled, _multiset} = apply_ops(ops)
+        {settled, live} = apply_ops(ops)
 
-        session =
-          Enum.reduce(pending, settled, fn
-            {:put, f}, session -> Feed.put(session, {:pending, f}, f)
-            {:withdraw, f}, session -> Feed.withdraw(session, {:pending, f})
+        # A pending withdrawal can take back a settled fact. Then the fire after the load
+        # runs truth maintenance over the memory that the snapshot carried.
+        {session, _live} =
+          pending
+          |> Enum.with_index()
+          |> Enum.reduce({settled, live}, fn {op, i}, {session, live} ->
+            apply_op(session, live, op, {:pending, i})
           end)
 
         {:ok, loaded} = session |> Session.dump!("key") |> Session.load("key")
