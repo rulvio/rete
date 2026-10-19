@@ -464,7 +464,7 @@ defmodule Rete.PropertyTest do
       end
     end
 
-    test "churning the same facts through the session does not grow any memory" do
+    test "churning the same facts through the session leaves nothing a rebuild lacks" do
       Enum.reduce(1..5, fresh_fed(), fn round, session ->
         refs = for fact <- @universe, do: {round, fact}
 
@@ -474,7 +474,7 @@ defmodule Rete.PropertyTest do
           |> Session.fire_rules()
           |> withdrawn(refs)
 
-        assert rebuild(cycled) == canon(cycled), "memory grew in round #{round}"
+        assert rebuild(cycled) == canon(cycled), "round #{round} left state that a rebuild lacks"
         cycled
       end)
     end

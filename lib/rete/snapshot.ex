@@ -16,7 +16,7 @@ defmodule Rete.Snapshot do
   # `Negation.marker/2`, `marker_alpha/1` or `Taxonomy.default_fact_type/1` changes, because
   # nothing else would catch it. The envelope and the MAC input never change, so an older
   # release can still report `{:format, n}`.
-  @format 1
+  @format 2
 
   # The first two bytes of a compressed term in the external term format.
   @etf_version 131

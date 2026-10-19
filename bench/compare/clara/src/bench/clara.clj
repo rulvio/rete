@@ -349,7 +349,7 @@
     :prepare (fn [v]
                (let [session (build v (chain-rules v))
                      facts (vec (for [i (range 2000)] (fact v :a i)))
-                     gone (vec (for [i (range 2000)] (fact v :gone i)))]
+                     gone (vec (for [i (range 1000)] (fact v :gone i)))]
                  #(-> session
                       (r/insert-all facts)
                       (r/fire-rules)

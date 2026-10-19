@@ -73,7 +73,7 @@ activation for each counted match, and the clara columns do not.
 | `join-one-key` | one customer and n orders, every match under one join key | 5,000 |
 | `collection` | n customers, 4 orders each, one sum per customer | 1,000 |
 | `negation` | n customers with no order, then n orders placed, then n cancelled | 2,000 |
-| `tms-withdraw` | a chain of three rules, insert n and fire, then insert n facts that its first rule negates, and fire | 2,000 |
+| `tms-withdraw` | a chain of three rules, insert n and fire, then insert n/2 facts that its first rule negates, and fire. n/2 matches stay, so a rule that never fired fails the count | 2,000 |
 | `cascade` | one activation at a time, each concluding the next, n deep | 2,000 |
 | `query-param` | 20,000 reads of one row out of n matches, by parameter | 4,000 |
 | `rule-count` | r rules over r fact types, one match each | 512 |

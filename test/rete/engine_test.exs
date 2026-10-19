@@ -828,8 +828,8 @@ defmodule Rete.EngineTest do
       assert 1 == Enum.count(drip_ops, &match?({:right, _node, 25}, &1))
     end
 
-    # The merge window, which no caller can reach now. A session has no retract, so the queue
-    # is built by hand. `right_retract[f], right[f], right_retract[f]` merged on direction
+    # The merge window, which no caller can reach. A session has no retract, so the queue is
+    # built by hand. `right_retract[f], right[f], right_retract[f]` merged on direction
     # alone becomes `right_retract[f, f], right[f]`, and the node keeps an element that no fire
     # takes back. See `docs/design/engine.md` §2.
     test "a node's merge window closes when the opposite direction reaches it" do
@@ -840,7 +840,7 @@ defmodule Rete.EngineTest do
 
       rights = :queue.to_list(Session.insert(settled, order).state.queue)
       retracts = for {:right, node, items} <- rights, do: {:right_retract, node, items}
-      {memory, :removed} = Rete.Memory.remove_fact(settled.state.memory, order)
+      memory = Rete.Memory.remove_fact(settled.state.memory, order)
 
       state = %{
         settled.state
@@ -854,6 +854,14 @@ defmodule Rete.EngineTest do
 
       assert [] == Deferred.flagged(fired)
       assert Canon.dump(never) == Canon.dump(fired)
+    end
+
+    # Truth maintenance removes only an occurrence that a rule concluded. A fact the memory
+    # does not hold means the engine lost count, so the removal stops there.
+    test "removing a fact the memory does not hold raises" do
+      assert_raise RuntimeError, ~r/does not hold it/, fn ->
+        Rete.Memory.remove_fact(Rete.Memory.new(), {:order, 1, 250})
+      end
     end
 
     # Nothing a caller can write reaches this. `{:event, ...}` and `{:retract_facts, ...}`

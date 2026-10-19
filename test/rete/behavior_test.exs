@@ -1833,8 +1833,8 @@ defmodule Rete.BehaviorTest do
     end
 
     # Churn, because a leak that costs one map entry per entity is invisible in
-    # a single pass and unbounded over a long-lived session.
-    test "repeated churn does not grow any memory" do
+    # a single pass and adds up over rounds.
+    test "repeated churn leaves nothing beyond the feed's own facts" do
       Enum.reduce(1..3, Session.new([Everything, Feed]), fn round, session ->
         refs = for fact <- @facts, do: {round, fact}
 

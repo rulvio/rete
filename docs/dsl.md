@@ -405,11 +405,11 @@ defrule wrong({:cust, cid}, {:not, [{:not, [{:order, cid, _a}]}]}) do
 end
 ```
 
-With two orders, that conclusion has **two** supports instead of one. Both must go before
-it does.
+With two orders, that conclusion has **two** supports instead of one. If the orders are
+conclusions too, both must go before it does.
 
 The fact list shows this as two equal entries, which is easy to miss. You can see the
-difference in the support count, or when one order goes and the conclusion stays.
+difference in the support count, or when one concluded order goes and the conclusion stays.
 
 This rewrite is sound as propositional logic, but wrong for existence. It is the same
 family of mistake as applying De Morgan's law over a conjunction — see
@@ -1047,6 +1047,10 @@ defrule live({:placed, id, cid, amt}, {:not, [{:cancelled, id}]}) do
   {:order, cid, amt}
 end
 ```
+
+So a session only grows. Each cancellation adds a fact, and no fact leaves. Keep a session
+short-lived. Build a new one often from your stable facts, so that it also runs your
+current rules.
 
 A session retract would share one multiset of facts with truth maintenance. It would take
 an occurrence by value, and it could take the one that a rule concluded. A negation has no

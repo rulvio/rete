@@ -87,7 +87,7 @@ refuses that move, and asks nothing of how the queue was built.
 
 The session has no retract, so a caller queues one direction only. Retractions come from
 truth maintenance during a drain. Each batch it queues goes one way, and the queue-wide
-merge runs only before the drain. So today the window never closes. It stays because the
+merge runs only before the drain. So the window never closes. It stays because the
 merge cannot see what the rest of the engine puts in the queue, and it costs nothing while
 one direction arrives.
 

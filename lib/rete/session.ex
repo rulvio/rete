@@ -5,7 +5,7 @@ defmodule Rete.Session do
   A session can be held, compared, kept as a checkpoint and sent between processes. The
   compiled network inside it is shared rather than copied, so two sessions built from the
   same rules differ only in their working memory. `dump/2` and `load/2` move a session to
-  another node.
+  another node, so you can explain it or debug it there.
 
   Facts you insert stay for the life of the session. There is no call that retracts them.
   Facts a *rule* concludes are logical: the engine holds them only while the match behind
@@ -14,6 +14,10 @@ defmodule Rete.Session do
 
   To withdraw a conclusion, insert a fact that its rule reads under `not`. The match below
   the `not` goes, and truth maintenance removes the conclusion. See `docs/dsl.md`.
+
+  A session is not meant to live long. Its working memory only grows, and it keeps the
+  rules it was built with. Build a new session often from your stable facts, and fire it.
+  Then it also runs your current rules.
 
   `fire_rules/2` is the only call that matches anything. `insert/2` records facts and
   queues the work. So a session you have not fired holds facts, and no matches.

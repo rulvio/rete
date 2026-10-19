@@ -41,7 +41,7 @@ defmodule Rete.Memory do
       iex> memory = Memory.add_fact(memory, {:order, 1})
       iex> Memory.facts(memory)
       [{:order, 1}, {:order, 1}]
-      iex> {memory, :removed} = Memory.remove_fact(memory, {:order, 1})
+      iex> memory = Memory.remove_fact(memory, {:order, 1})
       iex> Memory.facts(memory)
       [{:order, 1}]
   """
@@ -356,14 +356,13 @@ defmodule Rete.Memory do
   insert does, and `insertions` records it one time for each fact in a batch. So the
   difference between the two is what the user inserted.
 
-  The result is never below zero. Like `inserters/2`, this scans every insertion record
-  when the index is not built.
+  Like `inserters/2`, this scans every insertion record when the index is not built.
   """
   @spec inserted_count(t(), term()) :: non_neg_integer()
   def inserted_count(%__MODULE__{facts: facts} = memory, fact) do
+    # No other clause. A negative count means the engine lost an occurrence, so this raises.
     case Map.get(facts, fact, 0) - concluded_count(memory, fact) do
-      count when is_integer(count) and count > 0 -> count
-      _none -> 0
+      count when is_integer(count) and count >= 0 -> count
     end
   end
 
@@ -471,17 +470,28 @@ defmodule Rete.Memory do
   end
 
   @doc """
-  Drops one occurrence of a fact, returning `{memory, :removed | :absent}`.
+  Drops one occurrence of a fact.
 
-  Only `:removed` propagates. `:absent` says the session never held the fact, so there is
-  no match to take back.
+  Truth maintenance is the only caller, and it drops only an occurrence that a rule
+  concluded. So a fact the memory does not hold raises.
   """
-  @spec remove_fact(t(), term()) :: {t(), :removed | :absent}
+  @spec remove_fact(t(), term()) :: t()
   def remove_fact(%__MODULE__{facts: facts} = memory, fact) do
     case Map.get(facts, fact) do
-      nil -> {memory, :absent}
-      1 -> {%__MODULE__{memory | facts: Map.delete(facts, fact)}, :removed}
-      n -> {%__MODULE__{memory | facts: Map.put(facts, fact, n - 1)}, :removed}
+      nil ->
+        raise RuntimeError, """
+        #{inspect(fact)} cannot be removed, because the memory does not hold it.
+
+        Truth maintenance removes only an occurrence that a rule concluded, and that \
+        occurrence stays until it is removed. So this is a bug in the engine, not in a \
+        ruleset.\
+        """
+
+      1 ->
+        %__MODULE__{memory | facts: Map.delete(facts, fact)}
+
+      n ->
+        %__MODULE__{memory | facts: Map.put(facts, fact, n - 1)}
     end
   end
 

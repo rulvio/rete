@@ -15,6 +15,10 @@ defmodule Rete.SnapshotTest do
 
   @key "rete-snapshot-test"
 
+  # The format `Rete.Snapshot` writes. A forged envelope carries it, so the body reaches the
+  # decoder.
+  @format 2
+
   @shapes %{
     Taxo => [:ancestors, :descendants, :parents],
     Rete.Activation => [:internal_salience, :node_id, :order, :salience, :token],
@@ -1232,7 +1236,7 @@ defmodule Rete.SnapshotTest do
       {:rete_session, format, _signature, _body} =
         [Rete.Doc.Orders] |> Session.new() |> Session.dump!(@key) |> :erlang.binary_to_term()
 
-      assert {format, shapes} == {1, @shapes}, """
+      assert {format, shapes} == {@format, @shapes}, """
       A struct that a snapshot holds changed shape. Update @shapes. Increase @format in \
       Rete.Snapshot only to refuse the snapshots of earlier releases.\
       """
@@ -1494,7 +1498,7 @@ defmodule Rete.SnapshotTest do
     # crash.
     test "a signed body that does not decode, or decodes to the wrong shape, is refused" do
       for body <- [<<131, 1, 2, 3>>, :erlang.term_to_binary(%{other: 1})] do
-        snapshot = :erlang.term_to_binary({:rete_session, 1, sign(1, body), body})
+        snapshot = :erlang.term_to_binary({:rete_session, @format, sign(@format, body), body})
 
         assert {:error, :undecodable} == Session.load(snapshot, @key)
       end
@@ -1608,7 +1612,7 @@ defmodule Rete.SnapshotTest do
   # A snapshot around a body of your choosing, signed with the real key.
   defp forge(decoded) do
     body = :erlang.term_to_binary(decoded)
-    :erlang.term_to_binary({:rete_session, 1, sign(1, body), body})
+    :erlang.term_to_binary({:rete_session, @format, sign(@format, body), body})
   end
 
   # The signature `dump/2` writes: an HMAC over the format and the body.

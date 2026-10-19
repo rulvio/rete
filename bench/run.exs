@@ -803,19 +803,31 @@ for {label, take, note} <- [
       {"withdraw the newest facts in a bucket", &Enum.take(&1, -100),
        "the other end of the same bucket — a list makes one of these two slow"}
     ] do
-  Bench.scenario(
-    label,
-    [1_000, 2_000, 4_000],
-    fn n ->
+  sizes = [1_000, 2_000, 4_000]
+
+  # Built before the timer, so a repeat times the 100 withdrawals and not the n fires that
+  # fill the bucket. `time/1` runs in this process, so the closure copies nothing.
+  settled =
+    Map.new(sizes, fn n ->
       ids = Enum.to_list(1..n)
       raw = for i <- ids, do: {:raw, i}
 
-      gated_key
-      |> Bench.session()
-      |> Rete.Session.insert([{:a, 1} | raw])
-      |> Rete.Session.fire_rules()
-      |> Rete.Session.insert(for i <- take.(ids), do: {:gone, i})
-      |> Rete.Session.fire_rules()
+      session =
+        gated_key
+        |> Bench.session()
+        |> Rete.Session.insert([{:a, 1} | raw])
+        |> Rete.Session.fire_rules()
+
+      {n, {session, for(i <- take.(ids), do: {:gone, i})}}
+    end)
+
+  Bench.scenario(
+    label,
+    sizes,
+    fn n ->
+      {session, gone} = Map.fetch!(settled, n)
+
+      session |> Rete.Session.insert(gone) |> Rete.Session.fire_rules()
     end,
     note: note
   )

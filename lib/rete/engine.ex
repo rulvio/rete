@@ -84,20 +84,15 @@ defmodule Rete.Engine do
   # Truth maintenance is the only caller. `drain/1` gets here when a production loses the
   # token behind its conclusions, and `origin` names that rule. The session has no retract,
   # because a user retraction and truth maintenance would share one multiset of facts. Each
-  # occurrence held queues a retraction of its own, and one never held queues nothing.
+  # occurrence queues a retraction of its own.
   defp retract(%State{} = state, facts, origin) do
     {state, batches} =
       Enum.reduce(facts, {state, []}, fn fact, {%State{} = state, batches} ->
-        case Memory.remove_fact(state.memory, fact) do
-          {memory, :removed} ->
-            state =
-              emit(%State{state | memory: memory}, fn -> {:fact_retracted, fact, origin} end)
+        state =
+          %State{state | memory: Memory.remove_fact(state.memory, fact)}
+          |> emit(fn -> {:fact_retracted, fact, origin} end)
 
-            {state, [alpha_ops(state, fact, :right_retract) | batches]}
-
-          {memory, :absent} ->
-            {%State{state | memory: memory}, batches}
-        end
+        {state, [alpha_ops(state, fact, :right_retract) | batches]}
       end)
 
     State.enqueue(state, ordered_ops(batches))
@@ -114,8 +109,9 @@ defmodule Rete.Engine do
   #
   # Safe over the whole queue only here: a fire drains to empty, so the queue holds nothing
   # but `{direction, node, items}` at this point. `coalesce/1` re-checks rather than trust
-  # that. A caller now queues one direction only, so the merge window never closes here. It
-  # stays because the merge cannot see what the rest of the engine queues. See
+  # that. The session has no retract, so a caller queues one direction only, and the merge
+  # window never closes here. It stays because the merge cannot see what the rest of the
+  # engine queues. See
   # `docs/design/engine.md` §2.
   defp coalesce_queue(%State{queue: queue} = state) do
     %State{state | queue: queue |> :queue.to_list() |> coalesce() |> :queue.from_list()}

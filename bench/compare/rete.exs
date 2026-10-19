@@ -273,7 +273,7 @@ scenarios = [
     prepare: fn ->
       session = Cmp.Bench.session(Cmp.Chain)
       facts = for i <- 0..1_999, do: {:a, i}
-      gone = for i <- 0..1_999, do: {:gone, i}
+      gone = for i <- 0..999, do: {:gone, i}
 
       fn ->
         session

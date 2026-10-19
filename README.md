@@ -20,7 +20,7 @@ end
 Pattern matching in the argument list gives you destructuring, variable binding, and
 join-variable identification for free. `cid` appearing in two conditions *is* the join.
 
-Everything a rule concludes is truth-maintained. When the order goes away, the customer
+Everything a rule concludes is truth-maintained. When the order is withdrawn, the customer
 becomes dormant again. You do no bookkeeping yourself.
 
 ## Installation
@@ -28,7 +28,7 @@ becomes dormant again. You do no bookkeeping yourself.
 ```elixir
 def deps do
   [
-    {:rete, "~> 1.3"}
+    {:rete, "~> 2.0"}
   ]
 end
 ```
@@ -193,8 +193,8 @@ Rete.Session.facts(session) |> Enum.sort()
 Four things to notice here:
 
 1. `live` concluded one `:order` for each placed order, because nobody cancelled one.
-2. `{:order, 1, 40}` did not produce a `:large_order`. The guard runs against the threshold
-   *fact*, so changing the threshold changes the answer.
+2. `{:order, 1, 40}` did not produce a `:large_order`. The guard reads the threshold from a
+   *fact*, so a session with another threshold gives another answer.
 3. `{:spend, "Ada", 290}` is one activation over a list of two orders, not two activations.
 4. Bo has an order too. `derive :online_order, :placed` puts `{:online_order, ...}` under
    `:placed` in the taxonomy. So `live` matches it, even though the rule never mentions
