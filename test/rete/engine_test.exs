@@ -828,6 +828,34 @@ defmodule Rete.EngineTest do
       assert 1 == Enum.count(drip_ops, &match?({:right, _node, 25}, &1))
     end
 
+    # The merge window, which no caller can reach now. A session has no retract, so the queue
+    # is built by hand. `right_retract[f], right[f], right_retract[f]` merged on direction
+    # alone becomes `right_retract[f, f], right[f]`, and the node keeps an element that no fire
+    # takes back. See `docs/design/engine.md` §2.
+    test "a node's merge window closes when the opposite direction reaches it" do
+      order = {:order, 1, 250}
+
+      settled =
+        Session.new([Deferred]) |> Session.insert([{:cust, 1}, order]) |> Session.fire_rules()
+
+      rights = :queue.to_list(Session.insert(settled, order).state.queue)
+      retracts = for {:right, node, items} <- rights, do: {:right_retract, node, items}
+      {memory, :removed} = Rete.Memory.remove_fact(settled.state.memory, order)
+
+      state = %{
+        settled.state
+        | memory: memory,
+          queue: :queue.from_list(retracts ++ rights ++ retracts)
+      }
+
+      fired = %Session{state: Rete.Engine.fire_rules(state)}
+
+      never = Session.new([Deferred]) |> Session.insert({:cust, 1}) |> Session.fire_rules()
+
+      assert [] == Deferred.flagged(fired)
+      assert Canon.dump(never) == Canon.dump(fired)
+    end
+
     # Nothing a caller can write reaches this. `{:event, ...}` and `{:retract_facts, ...}`
     # are made during a drain, and a drain ends with an empty queue, so the merge never
     # meets one. The queue is put in that state by hand here, because the message is the
@@ -883,6 +911,19 @@ defmodule Rete.EngineTest do
 
       session = withdrawn(session, {:silenced, :all})
       assert [{:alarm, 1}] == derived(session, :alarm)
+    end
+
+    test "a leading negation round trips through put and withdraw" do
+      base = with_feed([LeadNeg], [], {:event, 1})
+
+      cycled =
+        base
+        |> Feed.put({:silenced, :all})
+        |> Session.fire_rules()
+        |> withdrawn({:silenced, :all})
+
+      assert Enum.sort(Feed.facts(base)) == Enum.sort(Feed.facts(cycled))
+      assert Canon.dump(Feed.residue(cycled)) == Canon.dump(cycled)
     end
 
     defmodule LeadColl do
@@ -964,6 +1005,20 @@ defmodule Rete.EngineTest do
       assert [{:odd, 1}] == derived(run([LeadXor], [{:p, 1}]), :odd)
       assert [{:odd, 1}] == derived(run([LeadXor], [{:q, 1}]), :odd)
       assert [] == derived(run([LeadXor], [{:p, 1}, {:q, 1}]), :odd)
+    end
+
+    # The root token is permanent, but everything built on top of it is not. The residue
+    # is fired, so the comparison also pins exactly one root token.
+    test "a rule opening with a negation drains its memories" do
+      emptied =
+        [LeadNeg]
+        |> with_feed([], [{:event, 1}, {:silenced, :all}])
+        |> withdrawn([{:event, 1}, {:silenced, :all}])
+
+      assert [] == Feed.facts(emptied)
+      assert %{} == emptied.state.memory.accum, "collection groups left behind"
+      assert %{} == emptied.state.memory.insertions, "truth maintenance records left behind"
+      assert Canon.dump(Feed.residue(emptied)) == Canon.dump(emptied)
     end
 
     # A production with no conditions at all is the degenerate case of everything
@@ -1097,6 +1152,14 @@ defmodule Rete.EngineTest do
     test "a guarded collection with no matches still fires with an empty list" do
       session = run([Local], [{:limit, 100}, {:cust, 1}, {:order, 1, 50}])
       assert [{:over, 1, 0}] == derived(session, :over)
+    end
+
+    test "it round trips and drains" do
+      facts = [{:limit, 100}, {:cust, 1}, {:order, 1, 500}]
+      emptied = Enum.reduce(facts, with_feed([Local], [], facts), &withdrawn(&2, &1))
+
+      assert [] == Feed.facts(emptied)
+      assert Canon.dump(Feed.residue(emptied)) == Canon.dump(emptied)
     end
 
     test "reading a local variable outside the collection is a compile error" do

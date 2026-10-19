@@ -910,6 +910,23 @@ defmodule Rete.BehaviorTest do
       assert 1 == session.state.memory.facts[{:cold, 10}]
     end
 
+    # clara's own shape: a member taken out and put back before one fire. A session has no
+    # retract, so the group never holds `:a`. This pins the net result of one batch, and
+    # the test above covers the emptied group.
+    test "a member withdrawn and replaced before one fire gives the final result" do
+      session =
+        [CollThreshold, Feed]
+        |> Session.new()
+        |> Session.insert({:threshold, 20})
+        |> Feed.put(:a, {:temp, 10, "MCI"})
+        |> Feed.withdraw(:a)
+        |> Feed.put(:b, {:temp, 10, "MCI"})
+        |> Session.fire_rules()
+
+      assert [10] == CollThreshold.cold(session)
+      assert 1 == session.state.memory.facts[{:cold, 10}]
+    end
+
     defmodule CollDownstream do
       use Rete.Ruleset
 

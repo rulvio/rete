@@ -13,8 +13,10 @@ All notable changes to `rete` are recorded here. The format follows
   source: a match that goes.
 
   A session retract shared one multiset of facts with truth maintenance. It took an
-  occurrence by value, so it could not say which occurrence it meant. Reviews found cases
-  where its cascade did not match what the rules concluded.
+  occurrence by value, so it could not say which occurrence it meant. Take a fact that the
+  caller inserted and a rule also concluded. A retract took one of the two occurrences, and
+  nothing recorded which. So the count of the fact and the records of the rule could
+  disagree about why the fact was there.
 
   To withdraw a conclusion, insert a fact that says so, and read it under a negation:
 
@@ -33,11 +35,13 @@ All notable changes to `rete` are recorded here. The format follows
 
 ### Changed
 
-* `bench/run.exs` drops the two scenarios that retracted from either end of a bucket. Four
-  more now withdraw through a negation: the cancelled activations, the chain, and the two
-  negations that flip. "What a head costs" has no retract column. The dump after half the
-  customers leave runs over a ruleset that closes them. The Clara comparison renames
-  `tms-retract` to `tms-withdraw`, and both engines do the same work through a negation.
+* `bench/run.exs` withdraws through a negation where it used to retract. This covers the
+  two scenarios at either end of a bucket, the cancelled activations, the chain, and the
+  two negations that flip. The bucket scenarios are now "withdraw the oldest facts in a
+  bucket" and "withdraw the newest facts in a bucket". "What a head costs" has no retract
+  column. The dump after half the customers leave runs over a ruleset that closes them.
+  The Clara comparison renames `tms-retract` to `tms-withdraw`, and both engines do the
+  same work through a negation.
 
 ## 1.3.0
 

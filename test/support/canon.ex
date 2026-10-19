@@ -123,18 +123,21 @@ defmodule Rete.Test.Canon do
   end
 
   # Two tokens that differ only in the order of a collection are one key here, so their
-  # rows are joined rather than one set replacing the other.
-  defp rows(by_token, collections) do
-    by_token
-    |> Enum.reduce(%{}, fn {t, rows}, acc ->
-      Map.update(acc, token(t, collections), rows, &(&1 ++ rows))
-    end)
-    |> Map.new(fn {t, rows} -> {t, Enum.sort(rows)} end)
-  end
+  # lists are joined rather than one replacing the other.
+  defp rows(by_token, collections), do: by_token |> join(collections) |> sort_values()
 
   defp batches(by_token, collections) do
-    Map.new(by_token, fn {t, batches} ->
-      {token(t, collections), Enum.sort(Enum.map(batches, &Enum.sort/1))}
+    by_token
+    |> Map.new(fn {t, batches} -> {t, Enum.map(batches, &Enum.sort/1)} end)
+    |> join(collections)
+    |> sort_values()
+  end
+
+  defp join(by_token, collections) do
+    Enum.reduce(by_token, %{}, fn {t, list}, acc ->
+      Map.update(acc, token(t, collections), list, &(&1 ++ list))
     end)
   end
+
+  defp sort_values(by_token), do: Map.new(by_token, fn {t, list} -> {t, Enum.sort(list)} end)
 end

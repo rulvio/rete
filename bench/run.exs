@@ -422,6 +422,19 @@ defmodule Bench.OneKey do
   end
 end
 
+defmodule Bench.GatedKey do
+  @moduledoc false
+  use Rete.Ruleset
+
+  # `Bench.OneKey`, with each `{:b, y}` concluded behind a negation. A session has no
+  # retract, so `{:gone, y}` is what takes an element out of the one bucket.
+  defrule b({:raw, y}, {:not, [{:gone, y}]}), do: {:b, y}
+
+  defrule pair({:a, x}, {:b, y}) do
+    {:pair, x, y}
+  end
+end
+
 defmodule Bench.ManyKeys do
   @moduledoc false
   use Rete.Ruleset
@@ -740,9 +753,10 @@ end
 # --- the scenarios ---------------------------------------------------------------
 
 alias Bench.{Agenda, Blocking, Cascade, Chain, Collection, FanIn, ManyKeys, Negation, OneKey}
-alias Bench.{Cancel, CompoundNegation, Shared, UnkeyedNegation}
+alias Bench.{Cancel, CompoundNegation, GatedKey, Shared, UnkeyedNegation}
 
 one_key = Bench.network(OneKey)
+gated_key = Bench.network(GatedKey)
 many_keys = Bench.network(ManyKeys)
 agenda = Bench.network(Agenda)
 cancel = Bench.network(Cancel)
@@ -782,6 +796,30 @@ Bench.scenario(
   end,
   note: "the well-keyed case: n buckets of one, so it exercises grouping instead"
 )
+
+for {label, take, note} <- [
+      {"withdraw the oldest facts in a bucket", &Enum.take(&1, 100),
+       "a fixed 100 withdrawals from the oldest end of one bucket"},
+      {"withdraw the newest facts in a bucket", &Enum.take(&1, -100),
+       "the other end of the same bucket — a list makes one of these two slow"}
+    ] do
+  Bench.scenario(
+    label,
+    [1_000, 2_000, 4_000],
+    fn n ->
+      ids = Enum.to_list(1..n)
+      raw = for i <- ids, do: {:raw, i}
+
+      gated_key
+      |> Bench.session()
+      |> Rete.Session.insert([{:a, 1} | raw])
+      |> Rete.Session.fire_rules()
+      |> Rete.Session.insert(for i <- take.(ids), do: {:gone, i})
+      |> Rete.Session.fire_rules()
+    end,
+    note: note
+  )
+end
 
 Bench.scenario(
   "pending activations of one rule",

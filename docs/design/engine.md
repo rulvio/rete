@@ -421,9 +421,11 @@ session. To withdraw a conclusion, the caller inserts a fact that the rule reads
 negation. That breaks the match, and truth maintenance does the rest.
 
 A session retract shared one multiset of facts with truth maintenance. It removed an
-occurrence by value, so it could not say which occurrence it meant. Reviews found cases
-where its cascade did not match what the rules concluded. Retraction now has one source,
-the loss of a match, so every occurrence that leaves has a record behind it.
+occurrence by value, so it could not say which occurrence it meant. Take a fact that the
+caller inserted and a rule also concluded. The session holds two equal occurrences of it.
+A retract took one of them, and nothing recorded which. So the count of the fact and the
+records of the rule could disagree about why the fact was there. Retraction now has one
+source, the loss of a match, so every occurrence that leaves has a record behind it.
 
 ### Support is grounded by construction
 
@@ -849,11 +851,12 @@ The second pass added the scenarios the first could not see, and found five more
 | filling one collection, no token yet | `~n^1.99`, 14 ms | `~n^1.0`, 0.7 ms | the same |
 | filling one collection one member at a time | `~n^1.78`, 31 ms | `~n^1.1`, 4 ms | the same, and the shape batching cannot hide |
 | an unkeyed negation taking n blockers | `~n^1.72`, 30 ms | `~n^1.1`, 5 ms | a plain negation is an emptiness edge, §5 |
-| cancel n pending activations of one rule | `~n^1.51`, 17 ms | `~n^1.0`, 12 ms | `Rete.Agenda` over `Rete.Bucket`, §7 |
+| cancel n pending activations of one rule | `~n^1.51`, 17 ms | `~n^1.0` | `Rete.Agenda` over `Rete.Bucket`, §7 |
 
 The last row now cancels through a rule of higher salience, because a session has no
-retract. Its `now` figure comes from that shape, and the `was` figure does not. The two
-exponents still compare, because each match is cancelled once in both.
+retract. For each match, that shape also fires the rule and runs a negation. So its time is
+not the cost of the cancel alone, and the row gives no time for it. Only the two exponents
+compare, because each match is cancelled once in both shapes.
 
 Each has a **control** beside it in the suite, because an exponent alone does not say which
 half of a scenario is slow. Two rules concluding the same fact used to run 37× the
