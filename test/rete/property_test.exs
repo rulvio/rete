@@ -17,9 +17,12 @@ defmodule Rete.PropertyTest do
   because a node's element list is appended to as facts arrive, and a collection
   gathers in reverse arrival order. `canon/1` sorts every leaf list, and every
   collection a token carries, and nothing else: no entry is dropped and no
-  duplicate is collapsed, so a support imbalance still shows. Where the
-  comparison can be exact — a round trip on one session, a full drain — it is
-  exact. See `Rete.Test.Canon`.
+  duplicate is collapsed, so a support imbalance still shows. See
+  `Rete.Test.Canon`.
+
+  A session has no retract. A property that takes a fact back puts it through
+  `Rete.Test.Feed` and withdraws it, so truth maintenance does the retraction.
+  Such a session is compared with a rebuild of its feed facts, made in one call.
 
   The second is the **oracle**. `expected/1` computes what the ruleset means over
   a fact multiset, in plain `for` comprehensions, counting one support per match.
@@ -34,6 +37,7 @@ defmodule Rete.PropertyTest do
   alias Rete.Listener.Collect
   alias Rete.Session
   alias Rete.Test.Canon
+  alias Rete.Test.Feed
 
   # --- the ruleset -----------------------------------------------------------------
 
@@ -190,15 +194,30 @@ defmodule Rete.PropertyTest do
     |> Session.fire_rules(concurrency: concurrency)
   end
 
-  # A fresh session that has fired. `refunds` is true of the empty session — a
-  # collection in first position with no new variables propagates `[]` — so the
-  # baseline a drained session must return to is a fresh session *after*
-  # `fire_rules/1`, not before it.
-  defp fresh do
-    [Everything] |> Session.new() |> Session.fire_rules()
+  defp counts(session), do: session.state.memory.facts
+
+  # A session has no retract, so a property that takes facts back puts each one through
+  # `Rete.Test.Feed` under a ref of its own. Withdrawing a ref takes back one occurrence.
+  defp build_fed(multiset) do
+    refs = Enum.with_index(multiset, fn f, i -> {i, f} end)
+
+    session =
+      refs
+      |> Enum.reduce(fresh_fed(), fn {_i, f} = ref, s -> Feed.put(s, ref, f) end)
+      |> Session.fire_rules()
+
+    {session, refs}
   end
 
-  defp counts(session), do: session.state.memory.facts
+  # Fired, because `refunds` is true of the empty session. A collection in first position
+  # with no new variables propagates `[]`, and only a fire plants the root token.
+  defp fresh_fed, do: [Everything, Feed] |> Session.new() |> Session.fire_rules()
+
+  defp withdrawn(session, refs), do: session |> Feed.withdraw(refs) |> Session.fire_rules()
+
+  # The rebuild of a fed session: every fact it put, in one call, with each withdrawal
+  # first. Only the facts still live conclude anything.
+  defp rebuild(session), do: canon(Feed.residue(session))
 
   defp unmarked(session) do
     reserved = session.state.network.reserved_types
@@ -218,10 +237,6 @@ defmodule Rete.PropertyTest do
   # exactly the same matches can hold different bucket internals. The dump is
   # the view that means something.
   defp canon(%Session{} = session), do: Canon.dump(session)
-
-  # The exact view: every match, in order, but without the derived state a
-  # `Rete.Bucket` carries — its tombstones, and whether its index has been built.
-  defp dump(%Session{state: %{memory: memory}}), do: Rete.Memory.dump(memory)
 
   # --- the oracle ---------------------------------------------------------------------
 
@@ -318,69 +333,33 @@ defmodule Rete.PropertyTest do
     end
   end
 
-  # --- 1. insert/retract symmetry -----------------------------------------------------------
+  # --- 1. put/withdraw symmetry ------------------------------------------------------------
 
-  describe "insert then retract" do
-    property "inserting and retracting an extra fact restores the session" do
+  describe "put then withdraw" do
+    property "putting and withdrawing an extra fact restores the session" do
       check all(facts <- multiset(), extra <- fact(), max_runs: 60) do
-        base = build(facts)
-        grown = base |> Session.insert(extra) |> Session.fire_rules()
-        cycled = grown |> Session.retract(extra) |> Session.fire_rules()
+        {base, _refs} = build_fed(facts)
+        cycled = base |> Feed.put(:extra, extra) |> Session.fire_rules() |> withdrawn(:extra)
 
-        # **Exact** while the session holds nothing twice: every element the
-        # extra fact created was appended and then removed, so even arrival
-        # order has to come back. Compared as a dump, because a bucket that has
-        # taken a retraction carries a tombstone until it compacts — invisible
-        # in what the session holds, and pinned separately by the bucket
-        # invariant below.
-        #
-        # **Canonical** once anything is held twice, and that is the semantics
-        # rather than a weakness. `Rete.Bucket.take/2` removes the *oldest*
-        # occurrence of an equal value, which rotates the bucket instead of
-        # undoing the append. Nothing can pick out "the one just added", because
-        # two occurrences of one fact are equal terms, and nothing downstream can
-        # tell the two apart either. `docs/design/engine.md` §7 says arrival
-        # order is not a contract.
-        #
-        # The grown session is what decides, not the base. A new fact can
-        # conclude something the base already held once, and that is a second
-        # occurrence the base cannot show.
-        if Enum.any?(grown.state.memory.facts, fn {_fact, held} -> held > 1 end) do
-          assert canon(base) == canon(cycled)
-        else
-          assert dump(base) == dump(cycled)
-        end
+        # Canonical, because the feed's own facts arrived in another order in the rebuild.
+        # Every count, element, token and truth maintenance record still has to match.
+        assert rebuild(cycled) == canon(cycled)
+        assert Feed.counts(base) == Feed.counts(cycled)
       end
     end
 
-    property "retracting and restoring a fact the session already holds round trips" do
+    property "withdrawing and restoring a fact the session already holds round trips" do
       check all(facts <- multiset(), facts != [], max_runs: 60) do
-        base = build(facts)
+        {base, refs} = build_fed(facts)
 
-        for held <- Enum.uniq(facts) do
-          cycled =
-            base
-            |> Session.retract(held)
-            |> Session.fire_rules()
-            |> Session.insert(held)
-            |> Session.fire_rules()
+        for {i, held} = ref <- refs do
+          cycled = base |> withdrawn(ref) |> Feed.put({:again, i}, held) |> Session.fire_rules()
 
-          # Canonical here: the element was removed from the middle of its list
-          # and re-appended, which is a reordering and nothing more.
-          assert canon(base) == canon(cycled),
+          assert rebuild(cycled) == canon(cycled),
                  "round trip changed the session for #{inspect(held)}"
+
+          assert Feed.counts(base) == Feed.counts(cycled)
         end
-      end
-    end
-
-    property "an extra fact that changes nothing observable still changes nothing internally" do
-      # A retraction of something absent must be a genuine no-op, not a
-      # propagation that happens to cancel out.
-      check all(facts <- multiset(), absent <- fact(), absent not in facts, max_runs: 40) do
-        base = build(facts)
-        poked = base |> Session.retract(absent) |> Session.fire_rules()
-
-        assert Rete.Memory.dump(base.state.memory) == Rete.Memory.dump(poked.state.memory)
       end
     end
   end
@@ -462,49 +441,40 @@ defmodule Rete.PropertyTest do
   # --- 3. full drain ----------------------------------------------------------------------------
 
   describe "full drain" do
-    property "retracting everything returns the memory to a fresh session's" do
+    property "withdrawing everything leaves only the feed's own facts" do
       check all(facts <- multiset(), max_runs: 60) do
-        drained =
-          facts
-          |> build()
-          |> then(fn session ->
-            Enum.reduce(Enum.shuffle(facts), session, fn f, s ->
-              s |> Session.retract(f) |> Session.fire_rules()
-            end)
-          end)
+        {session, refs} = build_fed(facts)
+        drained = Enum.reduce(Enum.shuffle(refs), session, &withdrawn(&2, &1))
 
-        # Equality with a fresh session, not "everything is empty": that is what
-        # pins "exactly one root token" and "no join key left pointing at an
-        # empty map", neither of which an emptiness check can see.
-        #
-        # Through the dump, which is what `Rete.Memory.dump/1` exists for. The
-        # struct additionally carries derived state — a bucket's tombstones and
-        # whether its index has been built — and a session that drained something
-        # legitimately differs there from one that never held anything.
-        assert dump(fresh()) == dump(drained)
+        # Equality with a rebuild, not "everything is empty": that is what pins
+        # "exactly one root token" and "no join key left pointing at an empty
+        # map", neither of which an emptiness check can see.
+        assert expected([]) == Feed.counts(drained)
+        assert rebuild(drained) == canon(drained)
       end
     end
 
-    property "retracting everything in one call drains just as completely" do
+    property "withdrawing everything in one call drains just as completely" do
       check all(facts <- multiset(), max_runs: 40) do
-        drained = facts |> build() |> Session.retract(facts) |> Session.fire_rules()
+        {session, refs} = build_fed(facts)
+        drained = withdrawn(session, refs)
 
-        assert dump(fresh()) == dump(drained)
+        assert expected([]) == Feed.counts(drained)
+        assert rebuild(drained) == canon(drained)
       end
     end
 
-    test "churning the same facts through the session does not grow any memory" do
-      facts = @universe
+    test "churning the same facts through the session leaves nothing a rebuild lacks" do
+      Enum.reduce(1..5, fresh_fed(), fn round, session ->
+        refs = for fact <- @universe, do: {round, fact}
 
-      Enum.reduce(1..5, fresh(), fn round, session ->
         cycled =
-          session
-          |> Session.insert(facts)
+          refs
+          |> Enum.reduce(session, fn {_round, fact} = ref, s -> Feed.put(s, ref, fact) end)
           |> Session.fire_rules()
-          |> Session.retract(facts)
-          |> Session.fire_rules()
+          |> withdrawn(refs)
 
-        assert fresh().state.memory == cycled.state.memory, "memory grew in round #{round}"
+        assert rebuild(cycled) == canon(cycled), "round #{round} left state that a rebuild lacks"
         cycled
       end)
     end
@@ -574,19 +544,19 @@ defmodule Rete.PropertyTest do
       # behind.
       #
       # Both lifecycles, because they run different code. `:fresh` never builds
-      # until the end, so every insert and retract before that is a no-op against
-      # a `nil` index and the whole thing comes from one pass over the records.
-      # `:maintained` builds first, exactly as reading a session with
+      # until the end, so every insert and retraction before that is a no-op
+      # against a `nil` index and the whole thing comes from one pass over the
+      # records. `:maintained` builds first, exactly as reading a session with
       # `Rete.Inspect` does, so the retraction below goes through `index_drop/3`
       # instead. Only `:maintained` can drift.
       check all(facts <- multiset(), facts != [], max_runs: 60) do
-        for lifecycle <- [:fresh, :maintained], dropped <- Enum.uniq(facts) do
+        {session, refs} = build_fed(facts)
+
+        for lifecycle <- [:fresh, :maintained], {_i, dropped} = ref <- refs do
           memory =
-            facts
-            |> build()
+            session
             |> then(&if lifecycle == :maintained, do: explained(&1), else: &1)
-            |> Session.retract(dropped)
-            |> Session.fire_rules()
+            |> withdrawn(ref)
             |> Map.fetch!(:state)
             |> Map.fetch!(:memory)
             |> Rete.Memory.index_inserters()
@@ -650,28 +620,26 @@ defmodule Rete.PropertyTest do
       # `{:premium, 1}` and `{:customer, 1}` are two distinct facts, both of
       # which reach `{:customer, cid}` through the taxonomy, so the collection
       # rule matches twice and the conclusion is held twice.
-      facts = [{:premium, 1}, {:customer, 1}, {:order, 1, 10}]
-      session = build(facts)
+      {session, _refs} = build_fed([{:premium, 1}, {:customer, 1}, {:order, 1, 10}])
 
       assert %{{:loyalty, 1, 1} => 2} = counts(session)
 
-      session = session |> Session.retract({:premium, 1}) |> Session.fire_rules()
+      session = withdrawn(session, {0, {:premium, 1}})
       assert %{{:loyalty, 1, 1} => 1} = counts(session)
 
-      session = session |> Session.retract({:customer, 1}) |> Session.fire_rules()
+      session = withdrawn(session, {1, {:customer, 1}})
       refute Map.has_key?(counts(session), {:loyalty, 1, 1})
     end
 
     test "a disjunction's two branches are two supports, not one" do
-      facts = [{:gold, 1}, {:silver, 1}, {:order, 1, 10}]
-      session = build(facts)
+      {session, _refs} = build_fed([{:gold, 1}, {:silver, 1}, {:order, 1, 10}])
 
       assert %{{:tagged, 1, 10} => 2} = counts(session)
 
-      session = session |> Session.retract({:gold, 1}) |> Session.fire_rules()
+      session = withdrawn(session, {0, {:gold, 1}})
       assert %{{:tagged, 1, 10} => 1} = counts(session)
 
-      session = session |> Session.retract({:silver, 1}) |> Session.fire_rules()
+      session = withdrawn(session, {1, {:silver, 1}})
       refute Map.has_key?(counts(session), {:tagged, 1, 10})
     end
   end
@@ -738,12 +706,12 @@ defmodule Rete.PropertyTest do
   # --- 5. equivalence to a rebuild ---------------------------------------------------------------
 
   describe "equivalence to a rebuild" do
-    property "after any sequence of inserts and retracts the session equals a rebuild" do
+    property "after any sequence of puts and withdrawals the session equals a rebuild" do
       check all(ops <- list_of(op(), max_length: 30), max_runs: 40) do
-        {session, multiset} = apply_ops(ops)
+        {session, live} = apply_ops(ops)
 
-        assert canon(build(Enum.shuffle(multiset))) == canon(session)
-        assert expected(multiset) == counts(session)
+        assert rebuild(session) == canon(session)
+        assert expected(facts_of(live)) == Feed.counts(session)
       end
     end
 
@@ -751,42 +719,49 @@ defmodule Rete.PropertyTest do
     # One fire at the end must land where a fire after every call lands.
     #
     # This is the only property here that batches a **mixed** sequence. `feed/3` above
-    # batches inserts alone, and the walk below fires every step, so neither reaches the
-    # queue that `fire_rules/2` coalesces holding both directions for one node. That queue
-    # is where merging an op back past its own inverse loses a retraction: the fact leaves
-    # working memory, the element stays in the node, and no later fire reaches it.
+    # batches inserts alone, and the walk below fires every step. Here a conclusion and
+    # its retraction can both fall in one fire.
     property "batching a mixed sequence before one fire equals firing after each call" do
       check all(ops <- list_of(op(), max_length: 30), max_runs: 40) do
-        {each, multiset} = apply_ops(ops, :fire_each)
-        {last, ^multiset} = apply_ops(ops, :fire_last)
+        {each, live} = apply_ops(ops, :fire_each)
+        {last, ^live} = apply_ops(ops, :fire_last)
 
-        assert expected(multiset) == counts(last)
+        assert expected(facts_of(live)) == Feed.counts(last)
         assert canon(each) == canon(last)
-        assert canon(build(Enum.shuffle(multiset))) == canon(last)
+        assert rebuild(last) == canon(last)
       end
     end
   end
 
   defp op do
-    one_of([tuple({constant(:insert), fact()}), tuple({constant(:retract), fact()})])
+    one_of([tuple({constant(:put), fact()}), tuple({constant(:withdraw), fact()})])
   end
 
   # `:fire_each` fires after every call, `:fire_last` only at the end. Either way the
   # returned session is settled, so the two are comparable.
   defp apply_ops(ops, when_to_fire \\ :fire_each) do
-    {session, multiset} =
-      Enum.reduce(ops, {fresh(), []}, fn
-        {:insert, f}, {session, multiset} ->
-          {session |> Session.insert(f) |> maybe_fire(when_to_fire) |> settled!(), [f | multiset]}
-
-        {:retract, f}, {session, multiset} ->
-          # Retracting a fact the session does not hold is a no-op, so the
-          # reference multiset has to model that too.
-          {session |> Session.retract(f) |> maybe_fire(when_to_fire) |> settled!(),
-           List.delete(multiset, f)}
+    {session, live} =
+      ops
+      |> Enum.with_index()
+      |> Enum.reduce({fresh_fed(), []}, fn {op, i}, {session, live} ->
+        {session, live} = apply_op(session, live, op, i)
+        {session |> maybe_fire(when_to_fire) |> settled!(), live}
       end)
 
-    {Session.fire_rules(session), multiset}
+    {Session.fire_rules(session), live}
+  end
+
+  defp facts_of(live), do: Enum.map(live, &elem(&1, 1))
+
+  # `live` holds `{ref, fact}` for every occurrence still put. A withdrawal of a fact
+  # with no live occurrence changes nothing, so the reference multiset models that too.
+  defp apply_op(session, live, {:put, f}, i), do: {Feed.put(session, i, f), [{i, f} | live]}
+
+  defp apply_op(session, live, {:withdraw, f}, _i) do
+    case List.keyfind(live, f, 1) do
+      {ref, ^f} -> {Feed.withdraw(session, ref), List.keydelete(live, ref, 0)}
+      nil -> {session, live}
+    end
   end
 
   defp maybe_fire(session, :fire_each), do: Session.fire_rules(session)
@@ -804,12 +779,15 @@ defmodule Rete.PropertyTest do
               pending <- list_of(op(), max_length: 5),
               max_runs: 40
             ) do
-        {settled, _multiset} = apply_ops(ops)
+        {settled, live} = apply_ops(ops)
 
-        session =
-          Enum.reduce(pending, settled, fn
-            {:insert, f}, session -> Session.insert(session, f)
-            {:retract, f}, session -> Session.retract(session, f)
+        # A pending withdrawal can take back a settled fact. Then the fire after the load
+        # runs truth maintenance over the memory that the snapshot carried.
+        {session, _live} =
+          pending
+          |> Enum.with_index()
+          |> Enum.reduce({settled, live}, fn {op, i}, {session, live} ->
+            apply_op(session, live, op, {:pending, i})
           end)
 
         {:ok, loaded} = session |> Session.dump!("key") |> Session.load("key")
@@ -879,10 +857,10 @@ defmodule Rete.PropertyTest do
         walk(unquote(seed), 1_000, 1)
       end
 
-      # The same walk, with a fire every third step instead of every step. The queue that
-      # `fire_rules/2` coalesces then holds a run of inserts and retractions for one node,
-      # which is the case a fire-per-step walk can never build. It checks only where it
-      # fired: between fires the session is behind the multiset on purpose.
+      # The same walk, with a fire every third step instead of every step. One fire then
+      # holds a run of puts and withdrawals, which is the case a fire-per-step walk can
+      # never build. It checks only where it fired: between fires the session is behind
+      # the multiset on purpose.
       test "seed #{seed}: three operations to a fire agrees just the same" do
         walk(unquote(seed), 1_000, 3)
       end
@@ -892,41 +870,42 @@ defmodule Rete.PropertyTest do
   defp walk(seed, steps, fire_every) do
     :rand.seed(:exsss, {seed, seed + 1, seed + 2})
 
-    {session, multiset} =
-      Enum.reduce(1..steps, {fresh(), []}, fn step, {session, multiset} ->
+    {session, live} =
+      Enum.reduce(1..steps, {fresh_fed(), []}, fn step, {session, live} ->
         # Held down to a handful of facts on purpose. The interesting
         # transitions — the last order for a customer leaving, a collection
         # group emptying, a negation flipping — only happen near the edges, and
         # a session carrying a hundred facts almost never reaches one.
         op =
           cond do
-            multiset == [] -> :insert
-            length(multiset) > 8 -> :retract
-            :rand.uniform() < 0.5 -> :retract
-            true -> :insert
+            live == [] -> :put
+            length(live) > 8 -> :withdraw
+            :rand.uniform() < 0.5 -> :withdraw
+            true -> :put
           end
 
-        {session, multiset} =
+        {session, live} =
           case op do
-            :insert ->
+            :put ->
               f = Enum.random(@universe)
-              {session |> Session.insert(f) |> settled!(), [f | multiset]}
+              {session |> Feed.put(step, f) |> settled!(), [{step, f} | live]}
 
-            :retract ->
-              f = Enum.random(multiset)
-              {session |> Session.retract(f) |> settled!(), List.delete(multiset, f)}
+            :withdraw ->
+              {ref, _f} = Enum.random(live)
+              {session |> Feed.withdraw(ref) |> settled!(), List.keydelete(live, ref, 0)}
           end
 
         if rem(step, fire_every) == 0 do
           session = session |> Session.fire_rules() |> settled!()
+          multiset = Enum.map(live, &elem(&1, 1))
           context = "seed #{seed}, step #{step}, holding #{inspect(Enum.sort(multiset))}"
 
-          assert expected(multiset) == counts(session), context
-          assert canon(build(Enum.shuffle(multiset))) == canon(session), context
+          assert expected(multiset) == Feed.counts(session), context
+          assert rebuild(session) == canon(session), context
 
-          {session, multiset}
+          {session, live}
         else
-          {session, multiset}
+          {session, live}
         end
       end)
 
@@ -934,11 +913,10 @@ defmodule Rete.PropertyTest do
     # `fire_every` divides `steps`, and a session with a queued op is not comparable to a
     # settled one. Firing a settled session costs nothing.
     drained =
-      Enum.reduce(multiset, Session.fire_rules(session), fn f, s ->
-        s |> Session.retract(f) |> Session.fire_rules()
-      end)
+      Enum.reduce(live, Session.fire_rules(session), fn {ref, _f}, s -> withdrawn(s, ref) end)
 
-    assert dump(fresh()) == dump(drained)
+    assert expected([]) == Feed.counts(drained)
+    assert rebuild(drained) == canon(drained)
   end
 
   # --- queries follow the same facts ------------------------------------------------------------------

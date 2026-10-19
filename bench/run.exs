@@ -422,6 +422,19 @@ defmodule Bench.OneKey do
   end
 end
 
+defmodule Bench.GatedKey do
+  @moduledoc false
+  use Rete.Ruleset
+
+  # `Bench.OneKey`, with each `{:b, y}` concluded behind a negation. A session has no
+  # retract, so `{:gone, y}` is what takes an element out of the one bucket.
+  defrule b({:raw, y}, {:not, [{:gone, y}]}), do: {:b, y}
+
+  defrule pair({:a, x}, {:b, y}) do
+    {:pair, x, y}
+  end
+end
+
 defmodule Bench.ManyKeys do
   @moduledoc false
   use Rete.Ruleset
@@ -440,6 +453,16 @@ defmodule Bench.Agenda do
   end
 end
 
+defmodule Bench.Cancel do
+  @moduledoc false
+  use Rete.Ruleset
+
+  # `stop` fires first, and each conclusion cancels one pending match of `note`. So every
+  # match of `note` reaches the agenda and leaves it unfired.
+  defrule stop(%{salience: 10}, {:seed, i}), do: {:stop, i}
+  defrule note({:seed, i}, {:not, [{:stop, i}]}), do: {:noted, i}
+end
+
 defmodule Bench.Cascade do
   @moduledoc false
   use Rete.Ruleset
@@ -455,7 +478,8 @@ defmodule Bench.Chain do
   @moduledoc false
   use Rete.Ruleset
 
-  defrule b({:a, x}), do: {:b, x}
+  # A session has no retract, so `{:gone, x}` is what takes the support of the chain away.
+  defrule b({:a, x}, {:not, [{:gone, x}]}), do: {:b, x}
   defrule c({:b, x}), do: {:c, x}
   defrule d({:c, x}), do: {:d, x}
 end
@@ -476,6 +500,9 @@ defmodule Bench.Negation do
   defrule dormant({:cust, id}, {:not, [{:order, id}]}) do
     {:dormant, id}
   end
+
+  # An order holds until it is cancelled, so a cancellation releases `dormant`.
+  defrule order({:placed, id}, {:not, [{:cancelled, id}]}), do: {:order, id}
 end
 
 defmodule Bench.UnkeyedNegation do
@@ -502,6 +529,9 @@ defmodule Bench.CompoundNegation do
   defrule clean({:cust, id}, {:nand, [{:order, id}, {:refund, id}]}) do
     {:clean, id}
   end
+
+  # A refund holds until it is voided, so a void takes the marker back.
+  defrule refund({:refund_request, id}, {:not, [{:void, id}]}), do: {:refund, id}
 end
 
 defmodule Bench.Shared do
@@ -723,11 +753,13 @@ end
 # --- the scenarios ---------------------------------------------------------------
 
 alias Bench.{Agenda, Blocking, Cascade, Chain, Collection, FanIn, ManyKeys, Negation, OneKey}
-alias Bench.{CompoundNegation, Shared, UnkeyedNegation}
+alias Bench.{Cancel, CompoundNegation, GatedKey, Shared, UnkeyedNegation}
 
 one_key = Bench.network(OneKey)
+gated_key = Bench.network(GatedKey)
 many_keys = Bench.network(ManyKeys)
 agenda = Bench.network(Agenda)
+cancel = Bench.network(Cancel)
 cascade = Bench.network(Cascade)
 chain = Bench.network(Chain)
 collection = Bench.network(Collection)
@@ -765,33 +797,41 @@ Bench.scenario(
   note: "the well-keyed case: n buckets of one, so it exercises grouping instead"
 )
 
-Bench.scenario(
-  "retract the oldest facts in a bucket",
-  [1_000, 2_000, 4_000],
-  fn n ->
-    facts = for i <- 1..n, do: {:b, i}
-    session = one_key |> Bench.session() |> Rete.Session.insert([{:a, 1} | facts])
+for {label, take, note} <- [
+      {"withdraw the oldest facts in a bucket", &Enum.take(&1, 100),
+       "a fixed 100 withdrawals from the oldest end of one bucket"},
+      {"withdraw the newest facts in a bucket", &Enum.take(&1, -100),
+       "the other end of the same bucket — a list makes one of these two slow"}
+    ] do
+  sizes = [1_000, 2_000, 4_000]
 
-    session
-    |> Rete.Session.retract(Enum.take(facts, 100))
-    |> Rete.Session.fire_rules()
-  end,
-  note: "a fixed 100 retractions, so time must not grow with the bucket at all"
-)
+  # Built before the timer, so a repeat times the 100 withdrawals and not the n fires that
+  # fill the bucket. `time/1` runs in this process, so the closure copies nothing.
+  settled =
+    Map.new(sizes, fn n ->
+      ids = Enum.to_list(1..n)
+      raw = for i <- ids, do: {:raw, i}
 
-Bench.scenario(
-  "retract the newest facts in a bucket",
-  [1_000, 2_000, 4_000],
-  fn n ->
-    facts = for i <- 1..n, do: {:b, i}
-    session = one_key |> Bench.session() |> Rete.Session.insert([{:a, 1} | facts])
+      session =
+        gated_key
+        |> Bench.session()
+        |> Rete.Session.insert([{:a, 1} | raw])
+        |> Rete.Session.fire_rules()
 
-    session
-    |> Rete.Session.retract(Enum.take(facts, -100))
-    |> Rete.Session.fire_rules()
-  end,
-  note: "the other end of the same bucket — a list makes one of these two slow"
-)
+      {n, {session, for(i <- take.(ids), do: {:gone, i})}}
+    end)
+
+  Bench.scenario(
+    label,
+    sizes,
+    fn n ->
+      {session, gone} = Map.fetch!(settled, n)
+
+      session |> Rete.Session.insert(gone) |> Rete.Session.fire_rules()
+    end,
+    note: note
+  )
+end
 
 Bench.scenario(
   "pending activations of one rule",
@@ -809,11 +849,10 @@ Bench.scenario(
   [250, 500, 1_000, 2_000],
   fn n ->
     facts = for i <- 1..n, do: {:seed, i}
-    session = agenda |> Bench.session() |> Rete.Session.insert(facts)
 
-    session |> Rete.Session.retract(facts) |> Rete.Session.fire_rules()
+    cancel |> Bench.session() |> Rete.Session.insert(facts) |> Rete.Session.fire_rules()
   end,
-  note: "retract the support before firing, so every match leaves the agenda unfired"
+  note: "a rule of higher salience blocks each match, so every one leaves the agenda unfired"
 )
 
 Bench.scenario(
@@ -833,13 +872,14 @@ Bench.scenario(
   [1_000, 2_000, 4_000],
   fn n ->
     facts = for i <- 1..n, do: {:a, i}
+    gone = for i <- 1..n, do: {:gone, i}
 
     session =
       chain |> Bench.session() |> Rete.Session.insert(facts) |> Rete.Session.fire_rules()
 
-    session |> Rete.Session.retract(facts) |> Rete.Session.fire_rules()
+    session |> Rete.Session.insert(gone) |> Rete.Session.fire_rules()
   end,
-  note: "retracting n facts that each support three conclusions"
+  note: "n negated facts, each taking the support of three conclusions"
 )
 
 Bench.scenario(
@@ -895,18 +935,19 @@ Bench.scenario(
   [500, 1_000, 2_000],
   fn n ->
     custs = for i <- 1..n, do: {:cust, i}
-    orders = for i <- 1..n, do: {:order, i}
+    placed = for i <- 1..n, do: {:placed, i}
+    cancelled = for i <- 1..n, do: {:cancelled, i}
 
     session =
       negation |> Bench.session() |> Rete.Session.insert(custs) |> Rete.Session.fire_rules()
 
     session
-    |> Rete.Session.insert(orders)
+    |> Rete.Session.insert(placed)
     |> Rete.Session.fire_rules()
-    |> Rete.Session.retract(orders)
+    |> Rete.Session.insert(cancelled)
     |> Rete.Session.fire_rules()
   end,
-  note: "n conclusions suppressed and then released"
+  note: "n conclusions suppressed, then released when their orders are cancelled"
 )
 
 Bench.scenario(
@@ -933,7 +974,8 @@ Bench.scenario(
   fn n ->
     custs = for i <- 1..n, do: {:cust, i}
     orders = for i <- 1..n, do: {:order, i}
-    refunds = for i <- 1..n, do: {:refund, i}
+    requests = for i <- 1..n, do: {:refund_request, i}
+    voids = for i <- 1..n, do: {:void, i}
 
     session =
       compound_negation
@@ -942,12 +984,12 @@ Bench.scenario(
       |> Rete.Session.fire_rules()
 
     session
-    |> Rete.Session.insert(refunds)
+    |> Rete.Session.insert(requests)
     |> Rete.Session.fire_rules()
-    |> Rete.Session.retract(refunds)
+    |> Rete.Session.insert(voids)
     |> Rete.Session.fire_rules()
   end,
-  note: "n markers concluded and retracted, so n conclusions suppressed and then released"
+  note: "n markers concluded, then retracted when their refunds are voided"
 )
 
 Bench.scenario(
@@ -1296,23 +1338,17 @@ IO.puts("")
 
        loaded = load.(network, facts)
 
-       retract =
-         Bench.time(fn ->
-           loaded |> Rete.Session.retract(facts) |> Rete.Session.fire_rules()
-         end)
-
        {label,
         [
           Bench.sig(insert) <> " ms",
-          Bench.sig(retract) <> " ms",
           "#{round(Bench.memory_kb(loaded))} KB",
           to_string(Bench.query_buckets(loaded, {module, :rows}))
         ]}
      end)
 
    Bench.table(
-     "what a head costs: 4,000 matches inserted, then all of them retracted",
-     ["insert", "retract", "memory", "buckets"],
+     "what a head costs: 4,000 matches inserted",
+     ["insert", "memory", "buckets"],
      rows,
      note: "insert includes the fire, which runs each body once. A head costs its cardinality"
    )
@@ -1496,6 +1532,15 @@ Bench.scenario(
   note: "one chain walk per rule — was a beta graph scan per rule to find its terminal"
 )
 
+defmodule Bench.Closing do
+  @moduledoc false
+  use Rete.Ruleset
+
+  # `Bench.ManyKeys` with a customer that holds until it is closed.
+  defrule cust({:signup, id}, {:not, [{:closed, id}]}), do: {:cust, id}
+  defrule paired({:cust, id}, {:order, id, amt}), do: {:paired, id, amt}
+end
+
 defmodule Bench.Snapshot do
   @moduledoc false
 
@@ -1510,13 +1555,26 @@ defmodule Bench.Snapshot do
     |> Rete.Session.fire_rules()
   end
 
+  # n customers with one order each, through `Bench.Closing`. Every second one is then
+  # closed, and truth maintenance retracts it and its match.
+  def retracted(n) do
+    facts = for i <- 1..n, fact <- [{:signup, i}, {:order, i, i}], do: fact
+    closed = for i <- 1..n//2, do: {:closed, i}
+
+    [Bench.Closing]
+    |> Rete.Session.new()
+    |> Rete.Session.insert(facts)
+    |> Rete.Session.fire_rules()
+    |> Rete.Session.insert(closed)
+    |> Rete.Session.fire_rules()
+  end
+
   # Read without copying, for the reason `Bench.Explain.put/1` gives. The binary is dumped
   # once here, so the load scenario times the load alone. The third session has every
   # second customer retracted.
   def put(n) do
     session = session(n)
-    gone = for i <- 1..n//2, do: {:cust, i}
-    retracted = session |> Rete.Session.retract(gone) |> Rete.Session.fire_rules()
+    retracted = retracted(n)
 
     :persistent_term.put(
       {__MODULE__, n},
@@ -1554,7 +1612,9 @@ Bench.scenario(
   snapshot_sizes,
   fn n -> n |> Bench.Snapshot.get() |> elem(2) |> Rete.Session.dump!("bench") end,
   isolate: true,
-  note: "the dump carries the tombstones that the retractions left"
+  note:
+    "a separate ruleset that closes customers, so its size is not the rows above. " <>
+      "The dump carries the tombstones that the retractions left"
 )
 
 defmodule Bench.Silent do

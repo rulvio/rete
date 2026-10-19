@@ -20,7 +20,7 @@ end
 Pattern matching in the argument list gives you destructuring, variable binding, and
 join-variable identification for free. `cid` appearing in two conditions *is* the join.
 
-Everything a rule concludes is truth-maintained. Retract the order, and the customer
+Everything a rule concludes is truth-maintained. When the order is withdrawn, the customer
 becomes dormant again. You do no bookkeeping yourself.
 
 ## Installation
@@ -28,7 +28,7 @@ becomes dormant again. You do no bookkeeping yourself.
 ```elixir
 def deps do
   [
-    {:rete, "~> 1.3"}
+    {:rete, "~> 2.0"}
   ]
 end
 ```
@@ -58,9 +58,9 @@ A `cond` clause must name the order it checks things in. A rule instead states t
 the world it cares about. The engine finds every combination of facts with that shape. One
 combination is one *match*. One match fires the rule once.
 
-**Nothing happens until you say so.** `insert/2` and `retract/2` record facts and queue the
-work. `fire_rules/2` is the only call that matches anything. It propagates everything
-waiting, runs the rules that match, and returns once the session settles.
+**Nothing happens until you say so.** `insert/2` records facts and queues the work.
+`fire_rules/2` is the only call that matches anything. It propagates everything waiting,
+runs the rules that match, and returns once the session settles.
 
 This lets you reason about a batch of facts together. Otherwise each fact would trigger a
 cascade of its own.
@@ -69,10 +69,16 @@ cascade of its own.
 the engine inserts the facts it returns *logically*. It remembers which match produced each
 fact.
 
-If you take away any fact behind that match, the conclusion is withdrawn. Anything
-concluded from that conclusion is withdrawn too, until the session settles. Plain functions
-cannot give you this. It is also why a rule's right hand side can only insert facts. To
-keep a conclusion true as the world changes is the work of the engine, and not your work.
+If the match goes away, the conclusion is withdrawn. Anything concluded from that
+conclusion is withdrawn too, until the session settles. Plain functions cannot give you
+this. It is also why a rule's right hand side can only insert facts. To keep a conclusion
+true as the world changes is the work of the engine, and not your work.
+
+**Facts you insert stay.** A session has no retract. To take something back, insert a fact
+that says so, and write the rule to read it under `{:not, [...]}`. The new fact breaks the
+match, and the engine withdraws what the match concluded. The new fact stays too, so give
+each fact a unique id when two can be equal. See
+[docs/dsl.md#withdrawing-a-conclusion](docs/dsl.md#withdrawing-a-conclusion).
 
 The name comes from the algorithm underneath. Rete compiles the rules into a network that
 shares work between them.
@@ -88,8 +94,13 @@ rulebase.
 defmodule Retail do
   use Rete.Ruleset
 
-  # An online order is a kind of order, so rules about orders see both.
-  derive :online_order, :order
+  # An online order is a kind of placed order, so rules about placed orders see both.
+  derive :online_order, :placed
+
+  # A placed order counts until someone cancels it.
+  defrule live({:placed, cid, amt}, {:not, [{:cancelled, cid, amt}]}) do
+    {:order, cid, amt}
+  end
 
   # An order over the current threshold is large.
   defrule large_order({:threshold, limit}, {:order, cid, amt} when amt > limit) do
@@ -119,7 +130,8 @@ This example uses four left hand side forms:
 * a collection (`orders = [...]`), which gathers every matching fact into a list
 * a negation (`{:not, [...]}`)
 
-`cid` is the join variable throughout.
+`cid` is the join variable throughout. The other rules read `{:order, ...}`, which only
+`live` concludes. So a cancellation reaches all of them through one negation.
 
 ### Insert
 
@@ -130,8 +142,8 @@ session =
     {:threshold, 100},
     {:customer, 1, "Ada"},
     {:customer, 2, "Bo"},
-    {:order, 1, 250},
-    {:order, 1, 40},
+    {:placed, 1, 250},
+    {:placed, 1, 40},
     {:online_order, 2, 30}
   ])
 
@@ -170,19 +182,23 @@ Rete.Session.facts(session) |> Enum.sort()
 #     {:online_order, 2, 30},
 #     {:order, 1, 40},
 #     {:order, 1, 250},
+#     {:order, 2, 30},
+#     {:placed, 1, 40},
+#     {:placed, 1, 250},
 #     {:spend, "Ada", 290},
 #     {:spend, "Bo", 30}
 #   ]
 ```
 
-Three things to notice here:
+Four things to notice here:
 
-1. `{:order, 1, 40}` did not produce a `:large_order`. The guard runs against the threshold
-   *fact*, so changing the threshold changes the answer.
-2. `{:spend, "Ada", 290}` is one activation over a list of two orders, not two activations.
-3. Bo's spend counts an `{:online_order, ...}` fact too. `derive :online_order, :order` puts
-   it under `:order` in the taxonomy, so the rule matches it even though the rule never
-   mentions online orders.
+1. `live` concluded one `:order` for each placed order, because nobody cancelled one.
+2. `{:order, 1, 40}` did not produce a `:large_order`. The guard reads the threshold from a
+   *fact*, so a session with another threshold gives another answer.
+3. `{:spend, "Ada", 290}` is one activation over a list of two orders, not two activations.
+4. Bo has an order too. `derive :online_order, :placed` puts `{:online_order, ...}` under
+   `:placed` in the taxonomy. So `live` matches it, even though the rule never mentions
+   online orders.
 
 Nobody is dormant, because both customers have orders.
 
@@ -229,37 +245,44 @@ When you choose the query at runtime, name the pair. That call takes the **bindi
 not the head, because it cannot know the pattern:
 `Rete.Session.query(session, {Retail, :large_orders}, cid: 1)`.
 
-### Retract
+### Cancel
 
 ```elixir
 session =
   session
-  |> Rete.Session.retract({:order, 1, 250})
+  |> Rete.Session.insert({:cancelled, 1, 250})
   |> Rete.Session.fire_rules()
 
 Rete.Session.facts(session) |> Enum.sort()
 #=> [
 #     {:threshold, 100},
+#     {:cancelled, 1, 250},
 #     {:customer, 1, "Ada"},
 #     {:customer, 2, "Bo"},
 #     {:online_order, 2, 30},
 #     {:order, 1, 40},
+#     {:order, 2, 30},
+#     {:placed, 1, 40},
+#     {:placed, 1, 250},
 #     {:spend, "Ada", 40},
 #     {:spend, "Bo", 30}
 #   ]
 ```
 
-`{:large_order, 1, 250}` is gone. Nothing retracted it directly. Its support went away.
+The cancellation breaks the match of `live`, so `{:order, 1, 250}` is gone.
+`{:large_order, 1, 250}` is gone too. Nothing removed it directly. Its support went away.
 
-`{:spend, "Ada", 290}` is gone too, replaced by `{:spend, "Ada", 40}`. The collection is
-part of the match, so a different list is a different match.
+`{:spend, "Ada", 290}` is gone, replaced by `{:spend, "Ada", 40}`. The collection is part
+of the match, so a different list is a different match.
 
-Retract the rest of the facts. The dormancy rules take over:
+The placed order stays, because you inserted it. A session keeps what you insert.
+
+Cancel the rest of the orders. The dormancy rules take over:
 
 ```elixir
 session =
   session
-  |> Rete.Session.retract([{:order, 1, 40}, {:online_order, 2, 30}])
+  |> Rete.Session.insert([{:cancelled, 1, 40}, {:cancelled, 2, 30}])
   |> Rete.Session.fire_rules()
 
 Rete.Session.facts(session) |> Enum.sort()
@@ -267,8 +290,14 @@ Rete.Session.facts(session) |> Enum.sort()
 #     {:dormant, "Ada"},
 #     {:dormant, "Bo"},
 #     {:threshold, 100},
+#     {:cancelled, 1, 40},
+#     {:cancelled, 1, 250},
+#     {:cancelled, 2, 30},
 #     {:customer, 1, "Ada"},
 #     {:customer, 2, "Bo"},
+#     {:online_order, 2, 30},
+#     {:placed, 1, 40},
+#     {:placed, 1, 250},
 #     {:spend, "Ada", 0},
 #     {:spend, "Bo", 0}
 #   ]
@@ -340,7 +369,7 @@ Every operation returns a new session and changes nothing:
 
 ```elixir
 quiet = Rete.Session.new([Retail]) |> Rete.Session.insert({:customer, 1, "Ada"})
-busy = quiet |> Rete.Session.insert({:order, 1, 250}) |> Rete.Session.fire_rules()
+busy = quiet |> Rete.Session.insert({:placed, 1, 250}) |> Rete.Session.fire_rules()
 # `quiet` is untouched. Reuse it as a checkpoint.
 ```
 
@@ -389,7 +418,7 @@ random key, such as `:crypto.strong_rand_bytes(32)`. Keep it in your secret stor
 from the place that keeps the snapshots.
 
 **A snapshot is signed, not encrypted.** Anyone who has the binary can read the facts in it,
-including a fact that was retracted. Encrypt the snapshots at rest if the facts are
+including a conclusion that was retracted. Encrypt the snapshots at rest if the facts are
 sensitive.
 
 A rule that calls a function of another module runs the version on the node that loads it.
@@ -403,7 +432,7 @@ Eight modules are public:
 |---|---|
 | `Rete` | aggregating rule, expression and taxonomy data across ruleset modules |
 | `Rete.Ruleset` | `defrule`, `defquery`, `derive`, `underive` |
-| `Rete.Session` | building a session, inserting, retracting, firing, querying, dumping and loading |
+| `Rete.Session` | building a session, inserting, firing, querying, dumping and loading |
 | `Rete.Inspect` | `explain/1,2`, `why_not/1,2` |
 | `Rete.ActivationCache` | `from_session/2` and `key/1`, to build an activation cache |
 | `Rete.Listener` (+ `.Collect`, `.Trace`) | watching what a session does |
@@ -432,8 +461,9 @@ docs under `docs/design/` record why.
   Gathering is linear. What a collection costs after that depends on how many members
   arrive per `insert` call — see `docs/dsl.md`.
 * **Logical inserts only.** A rule's body returns facts to insert. The engine truth-maintains
-  them. There is no unconditional insert and no retract from a rule. Session-level
-  `Rete.Session.retract/2` exists. Truth maintenance cascades from it.
+  them. There is no unconditional insert and no retract, from a rule or from the session.
+  A fact you insert stays. To withdraw a conclusion, insert a fact that the rule reads under
+  `{:not, [...]}`. Truth maintenance cascades from the broken match.
 * **Firing is a blocking call.** `fire_rules/2` runs to quiescence in the calling process,
   and it returns the settled session. There is no async variant that hands back a `Task`.
   Every rule body runs in the calling process too. A body *can* return a `Task`. Pass

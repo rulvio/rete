@@ -27,6 +27,9 @@ defmodule Rete.CanonTest do
     end
 
     defquery carried_q({:box, id, items}), do: {id, items}
+
+    # A query over a collection, so a query row is kept against a token that carries one.
+    defquery gathered_q({:crate, id}, parts = [{:part, id, _n}]), do: {id, length(parts)}
   end
 
   defp tokens(session) do
@@ -83,6 +86,45 @@ defmodule Rete.CanonTest do
     end
   end
 
+  describe "what still shows" do
+    # A query keeps its rows apart from its bucket. A canon that left them out would let a
+    # wrong row pass every comparison.
+    test "a query row shows" do
+      session = build(Lists, [{:box, 1, [3, 1, 2]}])
+      rows = session.state.memory.query_rows
+
+      assert map_size(rows) == 1
+
+      changed =
+        put_in(session.state.memory.query_rows, map_lists(rows, fn _rows -> [:other] end))
+
+      refute Canon.dump(session) == Canon.dump(changed)
+    end
+
+    # One session cannot hold two tokens that differ only in the order of a collection. So
+    # the second token is put in by hand. A canon that let one replace the other would lose
+    # a batch and a row, and multiplicity would no longer show.
+    test "two tokens equal up to collection order keep both of their lists" do
+      session = build(Lists, [{:crate, 1}, {:part, 1, 1}, {:part, 1, 2}])
+      memory = session.state.memory
+
+      changed =
+        put_in(session.state.memory, %{
+          memory
+          | insertions: with_reversed(memory.insertions),
+            query_rows: with_reversed(memory.query_rows)
+        })
+
+      dumped = Canon.dump(session)
+      doubled = Canon.dump(changed)
+
+      for store <- [:insertions, :query_rows] do
+        assert map_lists(dumped[store], &Enum.sort(&1 ++ &1)) == doubled[store],
+               "#{store} lost the list of one token"
+      end
+    end
+  end
+
   describe "one name, two meanings" do
     # The reason `Rete.Test.Canon` reads a token's own matches rather than
     # collecting every collection binding name in the network: `items` is a
@@ -100,6 +142,40 @@ defmodule Rete.CanonTest do
       assert [3, 1, 2] in binding(forwards, :items),
              "the fact's own list was sorted"
     end
+  end
+
+  defp map_lists(store, fun) do
+    Map.new(store, fn {id, by_token} ->
+      {id, Map.new(by_token, fn {token, list} -> {token, fun.(list)} end)}
+    end)
+  end
+
+  # Adds, for each token, a copy with its lists reversed. In these sessions every list in
+  # a token is a collection, because no fact carries one.
+  defp with_reversed(store) do
+    Map.new(store, fn {id, by_token} ->
+      copies =
+        for {token, list} <- by_token,
+            reversed = reverse(token),
+            reversed != token,
+            into: %{},
+            do: {reversed, list}
+
+      assert map_size(copies) == map_size(by_token), "a token had no collection to reverse"
+      {id, Map.merge(by_token, copies)}
+    end)
+  end
+
+  defp reverse(%Rete.Token{} = token) do
+    flip = fn
+      list when is_list(list) -> Enum.reverse(list)
+      other -> other
+    end
+
+    %Rete.Token{
+      matches: Enum.map(token.matches, fn {matched, id} -> {flip.(matched), id} end),
+      bindings: Map.new(token.bindings, fn {name, value} -> {name, flip.(value)} end)
+    }
   end
 
   defp build(module, facts) do

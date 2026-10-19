@@ -16,7 +16,7 @@ defmodule Rete.Snapshot do
   # `Negation.marker/2`, `marker_alpha/1` or `Taxonomy.default_fact_type/1` changes, because
   # nothing else would catch it. The envelope and the MAC input never change, so an older
   # release can still report `{:format, n}`.
-  @format 1
+  @format 2
 
   # The first two bytes of a compressed term in the external term format.
   @etf_version 131
@@ -32,8 +32,8 @@ defmodule Rete.Snapshot do
     state = %State{state | listeners: []}
 
     # Only the rules of the network are targeted at their images. A fact is matched by
-    # equality, so a changed capture inside one would make a retract of that fact miss after
-    # the load.
+    # equality, so a changed capture inside one would make a retraction of that fact miss
+    # after the load.
     # Only a module that the rules still capture counts. A loaded session captures images,
     # so the module of this node does not matter to it.
     network = state.network

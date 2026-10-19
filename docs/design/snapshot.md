@@ -183,9 +183,10 @@ By default, a live session keeps its captures of `MyRules` (§2). With
 1. Listeners go, always. A listener only watches, and its state can hold a pid that means
    nothing on another node. The caller attaches listeners again after `load/2`. The rest
    of the state travels as it is, so a loaded session is in exactly the state that was
-   dumped, apart from step 2. Work that `fire_rules/2` has not done yet stays in the queue, such as a pending
-   retract. A bucket keeps a retracted item as a tombstone until the tombstones outnumber
-   the live items. So a snapshot can hold a fact that was retracted.
+   dumped, apart from step 2. Work that `fire_rules/2` has not done yet stays in the
+   queue, such as a pending insert. A bucket keeps a retracted item as a tombstone until
+   the tombstones outnumber the live items. So a snapshot can hold a conclusion that was
+   retracted.
 2. With target images, the network captures images already, and this step changes
    nothing. Otherwise, `Rete.Image.target/2` replaces each capture of a ruleset module with
    the same capture of the image the module offers now. After a hot upgrade, that image
@@ -193,7 +194,7 @@ By default, a live session keeps its captures of `MyRules` (§2). With
    records those images in `:built_images`, so `latest?/1` checks the loaded session. This
    covers the
    network only. A capture inside a fact stays as it is, because a fact is matched by
-   equality. Changing it would make a retract of the same fact miss after the load.
+   equality. Changing it would make a retraction of the same fact miss after the load.
 3. `Rete.Image.captures/1` finds any function that is not a remote capture, and `dump/2`
    returns `{:error, {:not_portable, fun}}`. An anonymous function runs only on the build
    that made it. An anonymous `:fact_type_fn` is the usual cause. The rows of a query are

@@ -50,11 +50,11 @@ value: no processes, no ETS, no side channel.
 `Rete.Listener` lists the events and the shape of each. What matters here is **when** they
 reach a listener, which follows from the two loops rather than from the list.
 
-Only two of them reach a listener outside a fire. `insert/2` and `retract/2` emit
-`:fact_inserted` and `:fact_retracted`, because they update working memory at once. One
-event per occurrence: a fact inserted twice emits two. Everything else happens inside
-`fire_rules/2`, which is the only call that propagates. That covers every `:propagated`
-event and every `:activation_*` one. See `engine.md` §2.
+Only one of them reaches a listener outside a fire. `insert/2` emits `:fact_inserted`,
+because it updates working memory at once. One event per occurrence: a fact inserted twice
+emits two. Everything else happens inside `fire_rules/2`, which is the only call that
+propagates. A `:fact_retracted` is one of these, because only truth maintenance retracts.
+That covers every `:propagated` event and every `:activation_*` one. See `engine.md` §2.
 
 That is what lets a listener see a whole settle. Attach it to a fresh session. No matching
 has happened yet, so the listener misses nothing.
@@ -69,8 +69,8 @@ shape every listener matches on. `{:propagated, ...}` is the exception, and it k
 bare id: it fires for every node, and a join has no name.
 
 `origin` is a `{module, name}` pair, with one exception below. `{Rete.Session, :insert}`
-and `{Rete.Session, :retract}` mean your own call. Any other pair names the rule whose
-match added or lost the fact. So a listener can reconstruct provenance from events alone,
+means your own call. Any other pair names the rule whose match added or lost the fact. A
+retraction always names a rule. So a listener can reconstruct provenance from events alone,
 without reading memory. The origin is the same pair that `Rete.Inspect` reports in
 `:sources`.
 

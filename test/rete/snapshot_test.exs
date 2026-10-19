@@ -11,8 +11,13 @@ defmodule Rete.SnapshotTest do
 
   alias Rete.Listener.Collect
   alias Rete.Session
+  alias Rete.Test.Feed
 
   @key "rete-snapshot-test"
+
+  # The format `Rete.Snapshot` writes. A forged envelope carries it, so the body reaches the
+  # decoder.
+  @format 2
 
   @shapes %{
     Taxo => [:ancestors, :descendants, :parents],
@@ -348,9 +353,10 @@ defmodule Rete.SnapshotTest do
       module = compile(Rete.SnapshotTest.NoImagesDumped, :v1)
 
       session =
-        [module]
+        [module, Feed]
         |> Session.new()
-        |> Session.insert([{:customer, 1}, {:order, 1, 500}])
+        |> Session.insert({:customer, 1})
+        |> Feed.put({:order, 1, 500})
         |> Session.fire_rules()
 
       snapshot = Session.dump!(session, @key)
@@ -363,7 +369,7 @@ defmodule Rete.SnapshotTest do
       assert session.state.network.taxonomy.fact_type_fn ==
                loaded.state.network.taxonomy.fact_type_fn
 
-      retracted = loaded |> Session.retract({:order, 1, 500}) |> Session.fire_rules()
+      retracted = loaded |> Feed.withdraw({:order, 1, 500}) |> Session.fire_rules()
       assert [] == Session.query(retracted, {module, :flagged}, cid: 1)
     end
 
@@ -376,9 +382,10 @@ defmodule Rete.SnapshotTest do
       Code.compile_string(shapes_source(shapes, :v1))
 
       live =
-        [main, shapes]
+        [main, shapes, Feed]
         |> Session.new(target_images: true)
-        |> Session.insert([{:customer, 1}, {:order, 1, 600}, {:cap, 1, 300}, {:premium, 2}])
+        |> Session.insert([{:customer, 1}, {:cap, 1, 300}])
+        |> Feed.put([{:order, 1, 600}, {:premium, 2}])
         |> Session.fire_rules()
 
       snapshot = Session.dump!(live, @key)
@@ -393,8 +400,8 @@ defmodule Rete.SnapshotTest do
 
       steps = [
         &Session.insert(&1, [{:refund, 1}, {:refund, 1, 200}]),
-        &Session.retract(&1, {:order, 1, 600}),
-        &Session.retract(&1, {:premium, 2})
+        &Feed.withdraw(&1, {:order, 1, 600}),
+        &Feed.withdraw(&1, {:premium, 2})
       ]
 
       {live, loaded} =
@@ -866,8 +873,8 @@ defmodule Rete.SnapshotTest do
     end
 
     # A fact is matched by equality, so the dump leaves a capture inside one alone. After the
-    # load, the caller can still retract the fact that it inserted, and a fact inserted again
-    # stays equal to the first copy through a second dump.
+    # load, truth maintenance can still retract the fact, and a fact inserted again stays
+    # equal to the first copy through a second dump.
     test "a fact that holds a capture keeps its identity across a load" do
       source = """
       defmodule Rete.SnapshotTest.CaptureFact2 do
@@ -879,11 +886,11 @@ defmodule Rete.SnapshotTest do
 
       module = compile_source(source, Rete.SnapshotTest.CaptureFact2)
       fact = {:h, Function.capture(module, :f, 1)}
-      fired = [module] |> Session.new() |> Session.insert(fact) |> Session.fire_rules()
+      fired = [module, Feed] |> Session.new() |> Feed.put(:h, fact) |> Session.fire_rules()
 
       loaded = round_trip(fired)
       assert fact in Session.facts(loaded)
-      assert [] == loaded |> Session.retract(fact) |> Session.fire_rules() |> Session.facts()
+      assert [] == loaded |> Feed.withdraw(:h) |> Session.fire_rules() |> Feed.facts()
 
       again = loaded |> Session.insert(fact) |> Session.fire_rules()
       twice = round_trip(again)
@@ -1150,8 +1157,9 @@ defmodule Rete.SnapshotTest do
   end
 
   describe "what a snapshot holds" do
-    # The tombstone of the retracted customer travels too, so the equality covers it. A
-    # session with target images runs its images already, so even its network is equal.
+    # The withdrawn customer travels too, with the tombstones its retraction left. The
+    # exact equality of the states below covers them. A session with target images runs its
+    # images already, so even its network is equal.
     # Any other session differs only in its network, because the dump points its rules at
     # the images.
     test "a loaded session is in exactly the state that was dumped" do
@@ -1159,17 +1167,16 @@ defmodule Rete.SnapshotTest do
 
       for opts <- [[target_images: true], []] do
         session =
-          [Rete.Doc.Orders]
+          [Rete.Doc.Orders, Feed]
           |> Session.new(opts)
-          |> Session.insert([{:customer, 777_123_456} | others])
+          |> Feed.put([{:customer, 777_123_456} | others])
           |> Session.fire_rules()
-          |> Session.retract({:customer, 777_123_456})
+          |> Feed.withdraw({:customer, 777_123_456})
           |> Session.fire_rules()
-          |> Session.retract({:customer, 1})
+          |> Feed.withdraw({:customer, 1})
           |> Session.insert({:order, 2, 900})
 
         snapshot = Session.dump!(session, @key)
-        assert snapshot |> body_state() |> inspect(limit: :infinity) =~ "777123456"
 
         {:ok, loaded} = Session.load(snapshot, @key)
         fired = Session.fire_rules(session)
@@ -1183,6 +1190,31 @@ defmodule Rete.SnapshotTest do
           assert %{fired_loaded.state | network: nil} == %{fired.state | network: nil}
         end
       end
+    end
+
+    defmodule Doubles do
+      use Rete.Ruleset
+
+      defrule double({:n, x}), do: {:doubled, x * 2}
+      defquery doubled({:doubled, x}), do: x
+    end
+
+    # The `Session.dump!/2` doc warns about this. A retracted conclusion stays as a
+    # tombstone in its bucket until compaction, and the siblings keep the bucket from
+    # compacting. No live fact holds 777123456, so only the tombstone can carry it.
+    test "a snapshot can hold a conclusion that was retracted" do
+      session =
+        [Doubles, Feed]
+        |> Session.new()
+        |> Feed.put([{:n, 388_561_728} | for(i <- 1..10, do: {:n, i})])
+        |> Session.fire_rules()
+        |> Feed.withdraw({:n, 388_561_728})
+        |> Session.fire_rules()
+
+      refute {:doubled, 777_123_456} in Session.facts(session)
+
+      assert session |> Session.dump!(@key) |> body_state() |> inspect(limit: :infinity) =~
+               "777123456"
     end
 
     # A snapshot holds these structs as they are. A body from another shape still decodes,
@@ -1204,7 +1236,7 @@ defmodule Rete.SnapshotTest do
       {:rete_session, format, _signature, _body} =
         [Rete.Doc.Orders] |> Session.new() |> Session.dump!(@key) |> :erlang.binary_to_term()
 
-      assert {format, shapes} == {1, @shapes}, """
+      assert {format, shapes} == {@format, @shapes}, """
       A struct that a snapshot holds changed shape. Update @shapes. Increase @format in \
       Rete.Snapshot only to refuse the snapshots of earlier releases.\
       """
@@ -1466,7 +1498,7 @@ defmodule Rete.SnapshotTest do
     # crash.
     test "a signed body that does not decode, or decodes to the wrong shape, is refused" do
       for body <- [<<131, 1, 2, 3>>, :erlang.term_to_binary(%{other: 1})] do
-        snapshot = :erlang.term_to_binary({:rete_session, 1, sign(1, body), body})
+        snapshot = :erlang.term_to_binary({:rete_session, @format, sign(@format, body), body})
 
         assert {:error, :undecodable} == Session.load(snapshot, @key)
       end
@@ -1580,7 +1612,7 @@ defmodule Rete.SnapshotTest do
   # A snapshot around a body of your choosing, signed with the real key.
   defp forge(decoded) do
     body = :erlang.term_to_binary(decoded)
-    :erlang.term_to_binary({:rete_session, 1, sign(1, body), body})
+    :erlang.term_to_binary({:rete_session, @format, sign(@format, body), body})
   end
 
   # The signature `dump/2` writes: an HMAC over the format and the body.

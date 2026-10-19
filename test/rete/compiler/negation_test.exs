@@ -264,12 +264,6 @@ defmodule Rete.Compiler.NegationTest do
       assert error.message =~ "type of a compound negation marker"
     end
 
-    test "a user retract of a marker raises" do
-      session = Session.new([Rules])
-
-      assert_raise ArgumentError, fn -> Session.retract(session, {@marker, %{cid: 1}}) end
-    end
-
     test "a rule that concludes a marker raises, and the error names the rule" do
       session = [Rules, Forger] |> Session.new() |> Session.insert({:forge, 1})
 
@@ -284,9 +278,12 @@ defmodule Rete.Compiler.NegationTest do
       end
     end
 
-    test "a retract of a value with no type is still a no-op" do
+    test "an insert of a value with no type raises for its type, not as a marker" do
       session = Session.new([Rules])
-      assert Session.facts(Session.retract(session, 42)) == []
+
+      error = assert_raise ArgumentError, fn -> Session.insert(session, 42) end
+      assert error.message =~ "cannot determine the fact type of 42"
+      refute error.message =~ "marker"
     end
 
     test "a :fact_type_fn that gives a user fact a marker type raises on insert" do

@@ -45,6 +45,7 @@ defmodule Rete.FactShapesTest do
   alias Rete.Inspect
   alias Rete.Network
   alias Rete.Session
+  alias Rete.Test.Feed
   alias ReteFactShapes.Adjustment
   alias ReteFactShapes.Customer
   alias ReteFactShapes.Mislabelled
@@ -54,6 +55,14 @@ defmodule Rete.FactShapesTest do
   defp run(mod, facts) do
     [mod] |> Session.new() |> Session.insert(facts) |> Session.fire_rules()
   end
+
+  # Puts each `{ref, fact}` through `Rete.Test.Feed`, so a test can withdraw it by its ref.
+  defp fed(mod, refs) do
+    Enum.reduce(refs, Session.new([mod, Feed]), fn {ref, fact}, s -> Feed.put(s, ref, fact) end)
+    |> Session.fire_rules()
+  end
+
+  defp withdrawn(session, refs), do: session |> Feed.withdraw(refs) |> Session.fire_rules()
 
   defp typed(session, type) do
     session
@@ -159,14 +168,10 @@ defmodule Rete.FactShapesTest do
       assert [] == typed(run(Maps, [customer, order]), :dormant)
     end
 
-    test "retracting the supporting map withdraws the conclusion" do
+    test "withdrawing the supporting map withdraws the conclusion" do
       order = %{__type__: :order, id: 1, cid: 1, amount: 250}
 
-      session =
-        Maps
-        |> run([order])
-        |> Session.retract(order)
-        |> Session.fire_rules()
+      session = Maps |> fed(a: order) |> withdrawn(:a)
 
       assert [] == typed(session, :large)
     end
@@ -183,20 +188,16 @@ defmodule Rete.FactShapesTest do
       assert [%{__type__: :large, id: 1}] == asserts
     end
 
-    # The tuple original is test/rete/behavior_test.exs:180. Facts are a multiset whatever
+    # The tuple original is in test/rete/behavior_test.exs. Facts are a multiset whatever
     # shape they take.
-    test "an equal map inserted twice needs two retractions" do
+    test "an equal map held twice needs two withdrawals" do
       order = %{__type__: :order, id: 1, cid: 1, amount: 250}
 
-      session =
-        Maps
-        |> run([order, order])
-        |> Session.retract(order)
-        |> Session.fire_rules()
+      session = Maps |> fed(a: order, b: order) |> withdrawn(:a)
 
       assert [%{__type__: :large, id: 1}] == typed(session, :large)
 
-      session = session |> Session.retract(order) |> Session.fire_rules()
+      session = withdrawn(session, :b)
 
       assert [] == typed(session, :large)
     end
@@ -314,14 +315,10 @@ defmodule Rete.FactShapesTest do
       assert [%Refund{id: 1, amount: 25}] == structs(session, Refund)
     end
 
-    test "retracting the supporting struct withdraws the conclusion" do
+    test "withdrawing the supporting struct withdraws the conclusion" do
       order = %Order{id: 1, cid: 1, amount: 250}
 
-      session =
-        Structs
-        |> run([order])
-        |> Session.retract(order)
-        |> Session.fire_rules()
+      session = Structs |> fed(a: order) |> withdrawn(:a)
 
       assert [] == typed(session, :large)
       assert [] == structs(session, Refund)
@@ -339,18 +336,14 @@ defmodule Rete.FactShapesTest do
       assert [%Refund{id: 1, amount: 25}] == asserts
     end
 
-    test "an equal struct inserted twice needs two retractions" do
+    test "an equal struct held twice needs two withdrawals" do
       order = %Order{id: 1, cid: 1, amount: 250}
 
-      session =
-        Structs
-        |> run([order, order])
-        |> Session.retract(order)
-        |> Session.fire_rules()
+      session = Structs |> fed(a: order, b: order) |> withdrawn(:a)
 
       assert [%{__type__: :large, id: 1}] == typed(session, :large)
 
-      session = session |> Session.retract(order) |> Session.fire_rules()
+      session = withdrawn(session, :b)
 
       assert [] == typed(session, :large)
     end

@@ -46,6 +46,8 @@ defmodule Rete.Test.Canon do
         Map.new(dumped.insertions, fn {id, by_token} ->
           {id, batches(by_token, collections)}
         end),
+      query_rows:
+        Map.new(dumped.query_rows, fn {id, by_token} -> {id, rows(by_token, collections)} end),
       facts: dumped.facts,
       root_seeded?: dumped.root_seeded?
     }
@@ -120,9 +122,22 @@ defmodule Rete.Test.Canon do
     end)
   end
 
+  # Two tokens that differ only in the order of a collection are one key here, so their
+  # lists are joined rather than one replacing the other.
+  defp rows(by_token, collections), do: by_token |> join(collections) |> sort_values()
+
   defp batches(by_token, collections) do
-    Map.new(by_token, fn {t, batches} ->
-      {token(t, collections), Enum.sort(Enum.map(batches, &Enum.sort/1))}
+    by_token
+    |> Map.new(fn {t, batches} -> {t, Enum.map(batches, &Enum.sort/1)} end)
+    |> join(collections)
+    |> sort_values()
+  end
+
+  defp join(by_token, collections) do
+    Enum.reduce(by_token, %{}, fn {t, list}, acc ->
+      Map.update(acc, token(t, collections), list, &(&1 ++ list))
     end)
   end
+
+  defp sort_values(by_token), do: Map.new(by_token, fn {t, list} -> {t, Enum.sort(list)} end)
 end

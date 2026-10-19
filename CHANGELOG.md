@@ -4,6 +4,60 @@ All notable changes to `rete` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.0.0
+
+**This release has breaking changes.** A session has no retract, and `load/2` refuses a
+snapshot that 1.x wrote.
+
+### Removed
+
+* **`Rete.Session.retract/2`.** A session has no retract. A fact you insert stays for the
+  life of the session, and only a concluded fact leaves. A retraction now comes from one
+  source: a match that goes.
+
+  A session retract shared one multiset of facts with truth maintenance. It took an
+  occurrence by value, so it could not say which occurrence it meant. Take a fact that the
+  caller inserted and a rule also concluded. A retract took one of the two occurrences, and
+  nothing recorded which. So the count of the fact and the records of the rule could
+  disagree about why the fact was there.
+
+  To withdraw a conclusion, insert a fact that says so, and read it under a negation:
+
+  ```elixir
+  defrule live({:placed, cid, amt}, {:not, [{:cancelled, cid, amt}]}) do
+    {:order, cid, amt}
+  end
+  ```
+
+  Inserting `{:cancelled, 1, 250}` breaks the match, and truth maintenance retracts the
+  order and everything concluded from it. `docs/dsl.md` has a section on this pattern. The
+  worked example in `README.md` now cancels orders instead of retracting them.
+
+* The `{Rete.Session, :retract}` origin. A `:fact_retracted` event always names the rule
+  whose match lost the fact, and it arrives only during `fire_rules/2`.
+
+### Changed
+
+* The snapshot format is 2. `Rete.Session.load/2` returns `{:error, {:format, 1}}` for a
+  snapshot that 1.x wrote. Such a snapshot can hold a queued retract from a user. It can
+  also hold a memory in which a user retract took an occurrence that a rule concluded.
+
+* A session is not meant to live long. It only grows, and it keeps the rules it was built
+  with. So build a new session often from your stable facts. The `Rete.Session` moduledoc
+  and `docs/dsl.md` say this.
+
+* `bench/run.exs` withdraws through a negation where it used to retract. This covers the
+  two scenarios at either end of a bucket, the cancelled activations, the chain, and the
+  two negations that flip. The bucket scenarios are now "withdraw the oldest facts in a
+  bucket" and "withdraw the newest facts in a bucket". "What a head costs" has no retract
+  column. The dump after half the customers leave runs over a ruleset that closes them.
+  The Clara comparison renames `tms-retract` to `tms-withdraw`, and both engines do the
+  same work through a negation.
+
+* The two bucket scenarios build their fired session before the timer. So they time the
+  100 withdrawals, and not the fires that fill the bucket. `tms-withdraw` withdraws half of
+  its facts. The other half stays, so a rule that never fired fails the count.
+
 ## 1.3.0
 
 ### Added

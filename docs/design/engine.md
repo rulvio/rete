@@ -47,20 +47,20 @@ Four consequences follow, and all of them are load-bearing:
 ## 2. Two nested loops
 
 ```
-insert / retract  ->  update memory, enqueue alpha ops. Nothing else.
+insert            ->  update memory, enqueue alpha ops. Nothing else.
 fire_rules        ->  drain, then: pop the most salient activation, run it,
                       insert what it returned, drain, repeat until the agenda is empty
 ```
 
-**`fire_rules/2` is the only entry point that propagates.** `insert/3` and `retract/3`
-record the fact and queue the work. `new/1` queues the root token the same way. So a state
-nobody has fired holds facts, and no matches, tokens or activations.
+**`fire_rules/2` is the only entry point that propagates.** `insert/3` records the fact and
+queues the work. `new/1` queues the root token the same way. So a state nobody has fired
+holds facts, and no matches, tokens or activations.
 
-Two things follow. A caller may batch any number of inserts and retractions for the cost of
-one settle. And a query reads propagated state, so it answers **as of the most recent
-fire**. On a session that never fired that is `[]`. On one that fired and then received an
-insert, it is the previous answer, which is stale rather than empty. The stale case is the
-one that catches people out, because an empty result at least looks wrong.
+Two things follow. A caller may batch any number of inserts for the cost of one settle.
+And a query reads propagated state, so it answers **as of the most recent fire**. On a
+session that never fired that is `[]`. On one that fired and then received an insert, it is
+the previous answer, which is stale rather than empty. The stale case is the one that
+catches people out, because an empty result at least looks wrong.
 
 `Rete.Session.settled?/1` reports an empty queue. A query does not raise on a full one,
 because the last settled answer is a true answer about some state of the session.
@@ -83,10 +83,13 @@ moves an op back to where its target first appeared, and the two directions do n
 which is the retraction rule in §5. An op moved back past its own inverse can thus lose a
 retraction. The fact leaves working memory, and the element stays in the node. No later fire
 reaches it, because the queue is empty and `settled?/1` answers `true`. The window rule
-refuses that move, and asks nothing of how the queue was built. One `insert/3` or
-`retract/3` call queues one direction, so a batch of any size still merges to one op. Only a
-caller that alternates the two directions on one node across calls gets more than one, and
-it gets one per run.
+refuses that move, and asks nothing of how the queue was built.
+
+The session has no retract, so a caller queues one direction only. Retractions come from
+truth maintenance during a drain. Each batch it queues goes one way, and the queue-wide
+merge runs only before the drain. So the window never closes. It stays because the
+merge cannot see what the rest of the engine puts in the queue, and it costs nothing while
+one direction arrives.
 
 Concretely: `right[f], right_retract[f], right[f]` merged into `right[f, f],
 right_retract[f]` still settles right. `right_retract[f], right[f], right_retract[f]`
@@ -97,9 +100,10 @@ merges. It was rejected. Whether it is sound depends on what the rest of the eng
 in the queue, and the merge cannot see that. The window rule is safe to read on its own.
 
 Where the caller put its call boundaries is therefore not part of what a session means. Any
-sequence of inserts and retractions batched before one fire settles where firing after every
-call settles. Queuing an insert and then a retract of the same fact drains to a net no-op.
-`Rete.PropertyTest` pins the general statement over random sequences.
+sequence of inserts batched before one fire settles where firing after every call settles.
+`Rete.PropertyTest` pins the general statement over random sequences. They put facts through
+a rule that a negation gates, and withdraw them, so a conclusion and its retraction can fall
+in one fire.
 
 **Propagation drains to completion before the next activation fires.** A rule must see a
 settled network, or it could act on a half-built match.
@@ -162,8 +166,8 @@ different answers. Only a level that really is gone may disappear.
 
 **Multisets, not sets, all the way down.** `facts` counts occurrences, and every occurrence
 propagates. `n` occurrences of a fact are `n` elements, `n` tokens below them and `n` rows
-from a query. Inserting the same fact twice, then retracting once, leaves it present *and*
-leaves one match of it standing. Two rules that conclude one fact conclude two occurrences
+from a query. Two occurrences of a fact, one of which loses its support, leave it present
+*and* leave one match of it standing. Two rules that conclude one fact conclude two occurrences
 of it, and invalidating one of them does not make the fact false. `elements` and `tokens`
 are lists for this reason. The engine retracts them one occurrence at a time.
 
@@ -275,7 +279,7 @@ hangs straight off the beta root, so the seeded token is its whole match. It the
 exactly one activation, on the first fire.
 
 Its conclusion rests on the root token, which no retraction reaches. So it is the one
-conclusion that survives retracting every fact the user inserted. That is not a leak. §8
+conclusion that survives when every other match goes. That is not a leak. §8
 records every insertion against the token behind it, and nothing ever retracts this token.
 
 A query written the same way holds that one token and answers one row, in every session
@@ -347,9 +351,7 @@ identical either way.
 **The call boundary does not decide it, from 0.5.0.** The merge used to run over one insert
 or retract call, because each call drained. A fire now coalesces the whole queue, so those
 two facts fire `5, 6, 5, 6` whether they arrive in one call or in two. Before 0.5.0 the
-two-call feed fired `5, 5, 6, 6`. A retraction between them is the one thing that brings
-the old sequence back: it closes the node's merge window, so the inserts on either side
-stay separate batches. See §2.
+two-call feed fired `5, 5, 6, 6`. See §2.
 
 That is pinned by tests rather than left to the suite, because the suite stayed green
 through the change: nothing else reads the sequence, only what the session settles to.
@@ -415,6 +417,17 @@ the session settles.
 This is why the right hand side inserts, and never retracts. A rule says what follows from
 a match. Keeping that true, as facts change, is the engine's job. With no unconditional
 insert, there is no way to leave behind a conclusion whose support is gone.
+
+The session has no retract either. A fact the caller inserts stays for the life of the
+session. To withdraw a conclusion, the caller inserts a fact that the rule reads under a
+negation. That breaks the match, and truth maintenance does the rest.
+
+A session retract shared one multiset of facts with truth maintenance. It removed an
+occurrence by value, so it could not say which occurrence it meant. Take a fact that the
+caller inserted and a rule also concluded. The session holds two equal occurrences of it.
+A retract took one of them, and nothing recorded which. So the count of the fact and the
+records of the rule could disagree about why the fact was there. Retraction now has one
+source, the loss of a match, so every occurrence that leaves has a record behind it.
 
 ### Support is grounded by construction
 
@@ -506,13 +519,15 @@ as a fact that survives a retraction that should have removed it.
 The test suite therefore asserts on `session.state.memory` instead. These six invariants
 are the ones that actually catch engine bugs:
 
-* **full drain.** Retract everything. Every memory then equals that of an **empty session
-  that has fired** (`[Mod] |> Rete.Session.new() |> Rete.Session.fire_rules()`). This pins
-  both "drained" and "exactly one root token" — an emptiness check alone cannot see either
-  one. The baseline has to be fired, from 0.5.0: `new/1` queues the root token rather than
-  planting it, so an unfired session has no token to compare against. See §2.
+* **full drain.** The tests put each fact through a rule that a negation gates
+  (`Rete.Test.Feed`), then insert the fact that the negation reads. Every memory then equals
+  that of a **fired session that holds only those gating facts**, inserted in one call so
+  that the gate never fires. This pins both "drained" and "exactly one root token". An
+  emptiness check alone cannot see either one. The baseline has to be fired, from 0.5.0:
+  `new/1` queues the root token rather than planting it, so an unfired session has no token
+  to compare against. See §2.
 * **support counting.** A fact concluded by exactly one match is held exactly once. Two
-  supports need two retractions, and the first retraction leaves the fact standing.
+  supports need two withdrawals, and the first withdrawal leaves the fact standing.
 * **one element per occurrence.** At every node and join key, a distinct element is held as
   many times as working memory holds the fact behind it — no fewer, and not one more. A beta
   node takes its elements from one alpha, so this is exact. It catches a node that
@@ -526,22 +541,16 @@ are the ones that actually catch engine bugs:
   oracle in `Rete.PropertyTest` compares every support count against a model of the
   ruleset, so it sees that. Before 0.9.0 a direct check was possible here, because no
   memory was allowed to hold the same token twice.
-* **round trip.** Insert X, fire, retract X, fire, and compare against the state before.
-  Exact while the session holds nothing twice. Once something is held twice, the comparison
-  is up to arrival order. A bucket gives back the *oldest* occurrence of an equal value, so
-  a retraction rotates the bucket rather than undoing the append. Nothing can pick out the
+* **round trip.** Put X, fire, withdraw X, fire, and compare against a rebuild, up to
+  arrival order. A bucket gives back the *oldest* occurrence of an equal value, so a
+  retraction rotates the bucket rather than undoing the append. Nothing can pick out the
   occurrence that was added, because two occurrences of one fact are equal terms. See §7.
 * **order independence.** The same facts, in any order and any batching, give the same
-  derived state. Any sequence of inserts and retracts leaves a session equal to one
-  rebuilt from the surviving facts.
-* **fire boundaries do not count.** Any sequence of inserts and retractions batched before
-  one `fire_rules/2` settles where firing after every call settles. Where the caller put its
+  derived state. Any sequence of puts and withdrawals leaves a session equal to one rebuilt
+  from the facts it put, with the withdrawn ones gated.
+* **fire boundaries do not count.** Any sequence of puts and withdrawals batched before one
+  `fire_rules/2` settles where firing after every call settles. Where the caller put its
   calls is not part of what a session means.
-
-  This is the invariant that catches a bad merge in `coalesce/1`, and it needs saying
-  separately from the one above, which held throughout 0.4.0. A queue carrying both
-  directions for one node is only ever built by a caller that batches *across* calls, so no
-  property that fires every call can reach it. See §2.
 
 Two more invariants need a direct test, since no end-to-end property over the facts reaches
 either. **A memory reports the occurrences it actually held, not the ones it was asked to
@@ -639,7 +648,7 @@ Discarding rather than applying is the whole reason the group is peeked, instead
 popped. Taking the group off the agenda up front would leave a later retraction nothing to
 cancel. The conclusion would then be inserted against a token that no longer existed, and
 no retraction could ever take it back. `Rete.EngineTest` checks both halves: the
-activation does not fire, and the session still drains to empty.
+activation does not fire, and withdrawing its facts leaves nothing behind.
 
 ### What a task runs in
 
@@ -788,8 +797,8 @@ check cannot stop a body that blocks without returning a task, or one long propa
   the session. This engine answers `[]` there.
 
   The two agree everywhere else in that test. Eleven of its sessions receive an insert, and
-  the test fires all eleven before it queries them. So deferring insert and retract costs
-  nothing against Clara. Only the untouched session differs.
+  the test fires all eleven before it queries them. So a deferred insert costs nothing
+  against Clara. Only the untouched session differs.
 
   The trade is deliberate. Propagating at construction meant a caller saw queued
   activations on a session they never touched. It also meant a listener could never
@@ -831,9 +840,9 @@ nobody has a baseline for.
 
 The first pass found three quadratics in the size of one join key's bucket. `Rete.Agenda`
 became buckets by sort key instead of one sorted list. Each bucket became an ordered
-multiset instead of a list. `insert/3` and `retract/3` stopped appending to their op
-accumulator once per fact. Inserting 4,000 facts under one key went from 250 ms to under
-10 ms.
+multiset instead of a list. `insert/3`, and the session retract that existed then, stopped
+appending to their op accumulator once per fact. Inserting 4,000 facts under one key went
+from 250 ms to under 10 ms.
 
 The second pass added the scenarios the first could not see, and found five more:
 
@@ -844,7 +853,12 @@ The second pass added the scenarios the first could not see, and found five more
 | filling one collection, no token yet | `~n^1.99`, 14 ms | `~n^1.0`, 0.7 ms | the same |
 | filling one collection one member at a time | `~n^1.78`, 31 ms | `~n^1.1`, 4 ms | the same, and the shape batching cannot hide |
 | an unkeyed negation taking n blockers | `~n^1.72`, 30 ms | `~n^1.1`, 5 ms | a plain negation is an emptiness edge, §5 |
-| cancel n pending activations of one rule | `~n^1.51`, 17 ms | `~n^1.1`, 8 ms | `Rete.Agenda` over `Rete.Bucket`, §7 |
+| cancel n pending activations of one rule | `~n^1.51`, 17 ms | `~n^1.0` | `Rete.Agenda` over `Rete.Bucket`, §7 |
+
+The last row now cancels through a rule of higher salience, because a session has no
+retract. For each match, that shape also fires the rule and runs a negation. So its time is
+not the cost of the cancel alone, and the row gives no time for it. Only the two exponents
+compare, because each match is cancelled once in both shapes.
 
 Each has a **control** beside it in the suite, because an exponent alone does not say which
 half of a scenario is slow. Two rules concluding the same fact used to run 37× the
@@ -994,7 +1008,7 @@ Both are built on first use now. A session that only inserts never takes from a 
 and never cancels an activation, so no `Rete.Bucket` builds its `:counts`. Above
 `concurrency: 1`, the pending check, `Rete.Bucket.member/2`, builds it too. A session nobody
 explains never reaches `Rete.Inspect`, so `inserters` stays `nil`. Neither is
-asymptotically worse for a session that does retract.
+asymptotically worse for a session where matches lose their support.
 
 | insertion-only workload | eager indexes | built on first use |
 |---|---|---|
@@ -1074,9 +1088,9 @@ for each row, and the buckets hold the same rows in a different arrangement. A p
 a unique field uses approximately 53% more memory, because each `Rete.Bucket` has its own
 structure, and there is now one bucket for each row.
 
-Retraction is not in the table. `mix bench` measures it, and it moves by more between two
-runs of one shape than it does between the four shapes. A head thus does not change what
-retraction costs, and the bench gives no figure precise enough to print.
+Retraction is not in the table. A session has no retract, so the bench no longer takes
+every match away. Each match goes into the one bucket that its head values key. A
+retraction takes it out of that bucket, as an insert puts it in.
 
 #### A comparison with the `index/2` model that this replaced
 
@@ -1160,9 +1174,10 @@ honest measure for a structure that shares as heavily as this one.
 | two-condition join | 533 KB | 4,275 KB | 546 B, unchanged across 8× |
 | one collection | 90 KB | 359 KB (4,001) | ~91 B |
 
-A session that inserts n facts and retracts them all comes back to **184 bytes**, whatever
-n was. `inserters` measures zero in both shapes, because nothing asked to explain either
-session, and `Rete.Inspect` is what builds it.
+A conclusion that loses its match gives back its elements, tokens and records, so truth
+maintenance leaves nothing behind. The full drain invariant in §10 checks that, and no
+figure here measures it. `inserters` measures zero in both shapes, because nothing asked to
+explain either session, and `Rete.Inspect` is what builds it.
 
 Two cautions. Per-field figures double-count, because a fact term is shared between
 `elements`, `tokens`, `insertions` and `facts`, so only the totals are honest. And cost

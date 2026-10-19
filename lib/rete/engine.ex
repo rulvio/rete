@@ -9,8 +9,8 @@ defmodule Rete.Engine do
   A rule inserts what it returned, and a query keeps it as a row. Propagation drains to completion **before** the next
   activation fires, so a rule always sees a settled network.
 
-  `fire_rules/2` is the only entry point that drains. `new/1`, `insert/3` and `retract/3`
-  queue work and return.
+  `fire_rules/2` is the only entry point that drains. `new/1` and `insert/3` queue work and
+  return.
 
   `fire_rules/2` returns at quiescence. Every rule whose left hand side holds has fired,
   and nothing whose support has gone is still asserting anything.
@@ -67,7 +67,7 @@ defmodule Rete.Engine do
   def insert(state, facts, origin \\ {Rete.Session, :insert})
 
   def insert(%State{} = state, facts, origin) do
-    check_reserved!(state, facts, origin, "insert")
+    check_reserved!(state, facts, origin)
 
     {state, batches} =
       Enum.reduce(facts, {state, []}, fn fact, {%State{} = state, batches} ->
@@ -81,35 +81,18 @@ defmodule Rete.Engine do
     State.enqueue(state, ordered_ops(batches))
   end
 
-  @doc """
-  Removes facts and queues the retraction.
-
-  Every occurrence a session holds queues a retraction of its own. A fact it never held
-  queues nothing. The engine retracts anything concluded from an occurrence in turn, once
-  `fire_rules/2` drains the queue and the network settles.
-
-  This does **not** propagate, for the reason `insert/3` gives. Queuing an insert and then
-  a retract of the same fact drains to a net no-op. The queued work for one node keeps the
-  order it arrived in, whatever a caller put between the two calls.
-  """
-  @spec retract(State.t(), [term()], Rete.Listener.origin()) :: State.t()
-  def retract(state, facts, origin \\ {Rete.Session, :retract})
-
-  def retract(%State{} = state, facts, origin) do
-    check_reserved!(state, facts, origin, "retract")
-
+  # Truth maintenance is the only caller. `drain/1` gets here when a production loses the
+  # token behind its conclusions, and `origin` names that rule. The session has no retract,
+  # because a user retraction and truth maintenance would share one multiset of facts. Each
+  # occurrence queues a retraction of its own.
+  defp retract(%State{} = state, facts, origin) do
     {state, batches} =
       Enum.reduce(facts, {state, []}, fn fact, {%State{} = state, batches} ->
-        case Memory.remove_fact(state.memory, fact) do
-          {memory, :removed} ->
-            state =
-              emit(%State{state | memory: memory}, fn -> {:fact_retracted, fact, origin} end)
+        state =
+          %State{state | memory: Memory.remove_fact(state.memory, fact)}
+          |> emit(fn -> {:fact_retracted, fact, origin} end)
 
-            {state, [alpha_ops(state, fact, :right_retract) | batches]}
-
-          {memory, :absent} ->
-            {%State{state | memory: memory}, batches}
-        end
+        {state, [alpha_ops(state, fact, :right_retract) | batches]}
       end)
 
     State.enqueue(state, ordered_ops(batches))
@@ -126,8 +109,10 @@ defmodule Rete.Engine do
   #
   # Safe over the whole queue only here: a fire drains to empty, so the queue holds nothing
   # but `{direction, node, items}` at this point. `coalesce/1` re-checks rather than trust
-  # that. It is also the call that needs the merge window, because a queue built by several
-  # calls carries both directions for one node. See `docs/design/engine.md` §2.
+  # that. The session has no retract, so a caller queues one direction only, and the merge
+  # window never closes here. It stays because the merge cannot see what the rest of the
+  # engine queues. See
+  # `docs/design/engine.md` §2.
   defp coalesce_queue(%State{queue: queue} = state) do
     %State{state | queue: queue |> :queue.to_list() |> coalesce() |> :queue.from_list()}
   end
@@ -1080,7 +1065,7 @@ defmodule Rete.Engine do
 
   # All facts are checked before any of them changes the state. See
   # `Rete.Compiler.Negation.marker_alpha/1` for why a marker type is reserved.
-  defp check_reserved!(%State{network: network}, facts, {Rete.Session, _call}, action) do
+  defp check_reserved!(%State{network: network}, facts, {Rete.Session, :insert}) do
     case Enum.find(facts, &reserved?(network, &1)) do
       nil ->
         :ok
@@ -1089,7 +1074,7 @@ defmodule Rete.Engine do
         type = Taxonomy.fact_type(network.taxonomy, fact)
 
         raise ArgumentError, """
-        cannot #{action} #{inspect(fact)}. \
+        cannot insert #{inspect(fact)}. \
         #{Negation.reserved_message(type)}
 
         Give the fact another type. If a :fact_type_fn gave it this type, change the \
@@ -1098,13 +1083,13 @@ defmodule Rete.Engine do
     end
   end
 
-  defp check_reserved!(_state, _facts, _origin, _action), do: :ok
+  defp check_reserved!(_state, _facts, _origin), do: :ok
 
   # A value with no type is not a marker. `Taxonomy.default_fact_type/1` raises
-  # `ArgumentError` for one. A retract of it stays a no-op, and an insert of it raises later,
-  # where the type is read for the alpha nodes. Any other error comes from a user
-  # `:fact_type_fn`, and surfaces here. The type is read twice only when the network has
-  # reserved types, because `Network.reserved?/2` checks that first.
+  # `ArgumentError` for one. An insert of it raises later, where the type is read for the
+  # alpha nodes. Any other error comes from a user `:fact_type_fn`, and surfaces here. The
+  # type is read twice only when the network has reserved types, because
+  # `Network.reserved?/2` checks that first.
   defp reserved?(network, fact) do
     Network.reserved?(network, fact)
   rescue

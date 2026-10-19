@@ -15,12 +15,17 @@ defmodule Rete.ListenerTraceTest do
 
   alias Rete.Listener.Trace
   alias Rete.Session
+  alias Rete.Test.Feed
 
   defmodule Rules do
     use Rete.Ruleset
 
     defrule flag({:order, cid, amt} when amt > 100), do: {:flagged, cid}
     defrule escalate({:flagged, cid}), do: {:escalated, cid}
+
+    # `hold` fires first and blocks `quiet`, so the activation of `quiet` is cancelled.
+    defrule hold(%{salience: 10}, {:order, cid, amt} when amt > 500), do: {:hold, cid}
+    defrule quiet({:order, cid, _amt}, {:not, [{:hold, cid}]}), do: {:quiet, cid}
   end
 
   defmodule CachedRules do
@@ -29,20 +34,20 @@ defmodule Rete.ListenerTraceTest do
     defrule flag(%{cache: true}, {:order, cid, amt} when amt > 100), do: {:flagged, cid}
   end
 
-  # Inserts one fact twice, retracts both occurrences so the conclusion cascades, then
-  # queues an insert and its retraction so an activation is cancelled before it fires.
+  # Puts one fact twice, withdraws both occurrences so the conclusion cascades, then
+  # inserts an order that `hold` blocks, so an activation is cancelled before it fires.
   defp traced(opts) do
     {:ok, io} = StringIO.open("")
 
-    [Rules]
+    [Rules, Feed]
     |> Session.new()
     |> Session.with_listener(Trace, Keyword.put(opts, :device, io))
-    |> Session.insert([{:order, 1, 250}, {:order, 1, 250}])
+    |> Feed.put(:a, {:order, 1, 250})
+    |> Feed.put(:b, {:order, 1, 250})
     |> Session.fire_rules()
-    |> Session.retract([{:order, 1, 250}, {:order, 1, 250}])
+    |> Feed.withdraw([:a, :b])
     |> Session.fire_rules()
     |> Session.insert({:order, 2, 900})
-    |> Session.retract({:order, 2, 900})
     |> Session.fire_rules()
 
     io |> StringIO.contents() |> elem(1) |> String.split("\n", trim: true)
@@ -58,7 +63,6 @@ defmodule Rete.ListenerTraceTest do
             {"inserted insert", ~r/^\[rete\]   \+ \{:order, \d+, \d+\}$/},
             {"concluded insert",
              ~r/^\[rete\]   \+ .* \(from Rete\.ListenerTraceTest\.Rules\.flag\)/},
-            {"inserted retract", ~r/^\[rete\]   - \{:order, \d+, \d+\}$/},
             {"concluded retract", ~r/\(support from .* gone\)/},
             {"activation added", ~r/^\[rete\]   ready  /},
             {"activation removed", ~r/^\[rete\]   cancel /},
